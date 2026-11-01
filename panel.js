@@ -509,4 +509,4 @@ function main() {
 }
 
 if (require.main === module) main();
-else module.exports = { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine };
+else module.exports = { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput };
