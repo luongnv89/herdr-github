@@ -5,11 +5,13 @@
 "use strict";
 const { execFile, spawn } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const HERDR = process.env.HERDR_BIN_PATH || "herdr";
 const SELF = process.env.HERDR_PANE_ID || null;
-const STATE = process.env.HERDR_PLUGIN_STATE_DIR || path.join(__dirname, ".state");
+// Outside herdr (node panel.js) there is no state dir; never write into the plugin root.
+const STATE = process.env.HERDR_PLUGIN_STATE_DIR || path.join(os.tmpdir(), "herdr-github");
 const STALE = 120000;
 const LIMIT = 50;
 const POLL = 2000;
@@ -201,7 +203,7 @@ async function refresh() {
 function openUrl(url) {
   if (!url) return;
   const cmd = process.platform === "darwin" ? "open" : "xdg-open";
-  try { spawn(cmd, [url], { detached: true, stdio: "ignore" }).on("error", () => {}).unref(); } catch {}
+  try { spawn(cmd, [url], { stdio: "ignore" }).on("error", () => {}).unref(); } catch {}
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────────

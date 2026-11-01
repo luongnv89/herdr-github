@@ -5,11 +5,12 @@
 "use strict";
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const HERDR = process.env.HERDR_BIN_PATH || "herdr";
 const PLUGIN = process.env.HERDR_PLUGIN_ID || "herdr-github";
-const REGISTRY = path.join(process.env.HERDR_PLUGIN_STATE_DIR || path.join(__dirname, ".state"), "panes");
+const REGISTRY = path.join(process.env.HERDR_PLUGIN_STATE_DIR || path.join(os.tmpdir(), "herdr-github"), "panes");
 // The panel's share of the tab's width, like the app's 368 px side panel.
 const WIDTH = 0.33;
 const MIN = 44;
