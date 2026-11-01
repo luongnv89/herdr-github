@@ -11,6 +11,8 @@ Each row shows the title (up to 2 lines), the description (up to 3 lines) and a 
 
 On GitLab, merge requests show as `!123` and have no checks mark: the list doesn't carry pipeline status. Their review state shows Changes requested and Review, but not Approved.
 
+Click a pull request or issue, or select it and press enter, to open it in your browser. Clicking needs `ui.mouse_capture = true` in your herdr config.
+
 It is the terminal twin of the GitHub panel in [Whole Herdr](https://github.com/luongnv89/whole-herdr), a layout for the Herdr desktop app.
 
 ## Install
