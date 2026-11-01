@@ -47,13 +47,13 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
   - `q` or esc closes the panel.
 - **Mouse:** click a row to open it, click the switch to change lists, click `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config.
 - **Fetching:** when the repo changes, every 2 minutes while the panel's tab is on screen, and on `r`. A panel in a tab you aren't looking at doesn't fetch.
-- **Lists:** the 50 most recently updated of each. The panel remembers which list you chose.
+- **Lists:** the 50 most recently opened of each on GitHub, and the 50 most recently updated on GitLab. The panel remembers which list you chose.
 
 ## Needs
 
 - herdr 0.9.5 or later, on macOS or Linux.
 - Node 18 or later, as `node` on the `PATH` of the herdr server.
-- For GitHub repos, [`gh`](https://cli.github.com), logged in (`gh auth login`).
+- For GitHub repos, [`gh`](https://cli.github.com), logged in (`gh auth login`; add `--hostname` for GitHub Enterprise).
 - For GitLab repos, [`glab`](https://gitlab.com/gitlab-org/cli), logged in (`glab auth login`; add `--hostname` for a self-hosted GitLab).
 
 ## What it runs
@@ -71,6 +71,7 @@ It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
 
 - **"Not a git repository":** the focused pane's folder isn't inside a git repo. `cd` into one, or focus a pane that is.
 - **A `gh` or `glab` error in red:** run the same command in that folder, for example `gh pr list` or `glab mr list`, to see the full message. Most often the CLI isn't logged in.
+- **"gh isn't installed" or "glab isn't installed":** the repo's site needs that CLI on the `PATH` of the herdr server. Install it (see [Needs](#needs)) and log in.
 - **"No GitHub or GitLab remote":** the repo has no remote, or only a local-path one. Pull requests and issues live on a hosting site, so there is nothing to list.
 - **Grey label dots on GitLab:** the label colors come from `glab label list`, which failed. Check `glab auth status`.
 - **Nothing opens:** check the action's log with `herdr plugin log list --plugin herdr-github`.

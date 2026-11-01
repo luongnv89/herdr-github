@@ -2,8 +2,14 @@
 
 ## Unreleased
 
+## 0.2.0 (2026-11-01)
+
 - GitLab support through `glab`, including self-hosted GitLab: merge requests (as `!123`, with draft and review state) and issues with label colors. The panel reads the repo's remote to pick `gh` or `glab`, and tries both for an unknown host.
 - The plugin id stays `herdr-github`, so installs and key bindings keep working. The pane is now titled "PRs & issues".
+- The action is now titled "Toggle PR and issue panel".
+- On GitLab, merge requests have no checks mark, since `glab`'s list output has no pipeline status, and never show Approved.
+- GitLab label colors come from `glab label list`. If that call fails, the dots are grey.
+- A repo with no remote, or only a local-path one, now shows "No GitHub or GitLab remote". A missing CLI shows "gh isn't installed" or "glab isn't installed".
 
 ## 0.1.1 (2026-11-01)
 
