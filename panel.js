@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The open pull requests and issues of the repo you're in, read with `gh`: the
-// terminal twin of Whole Herdr's GitHub panel for the Herdr desktop app. It follows
+// The open pull requests and issues of the repo you're in, read with `gh` (GitHub)
+// or `glab` (GitLab): the terminal twin of Whole Herdr's GitHub panel. It follows
 // the last focused pane of its own tab. Enter or a click opens a row in the browser.
 "use strict";
 const { execFile, spawn } = require("node:child_process");
@@ -74,7 +74,7 @@ function wrap(text, max, lines) {
   return kept;
 }
 
-// ── GitHub data (the same rules as the app panel) ───────────────────────────
+// ── Row data (the same rules as the app panel) ──────────────────────────────
 
 function ago(iso) {
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
@@ -95,7 +95,8 @@ function checks(rollup) {
   return "pass";
 }
 
-const firstLine = (text) => (text || "").trim().split("\n")[0];
+// The first line of a CLI's error, past glab's boxed "ERROR" heading.
+const firstLine = (text) => (text || "").split("\n").map((l) => l.trim()).find((l) => l && l !== "ERROR") ?? "";
 // Terminal text must not carry control characters from a title or body.
 const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 const clean = (text) => (text || "")
@@ -124,6 +125,80 @@ function plain(md) {
     .slice(0, 800);
 }
 
+// ── Forges: GitHub through `gh`, GitLab through `glab` ──────────────────────
+// Each turns its CLI's JSON into one shape the rows draw from:
+//   repo  { name, url }
+//   pr    { ref, title, body, author, branch, draft, review, checks, updatedAt, url }
+//   issue { ref, title, body, author, labels: [{ name, color }], updatedAt, url }
+
+const hex = (color) => (color || "").replace(/^#/, "");
+const REVIEW = { APPROVED: "approved", CHANGES_REQUESTED: "changes", REVIEW_REQUIRED: "review" };
+// GitLab's merge status says when changes are requested or approval is missing,
+// but not when a merge request is approved; its pipeline isn't in the list output.
+const MERGE_REVIEW = { requested_changes: "changes", not_approved: "review" };
+
+const FORGES = {
+  github: {
+    name: "GitHub", cli: "gh", prs: "Pull requests", pr: "pull request",
+    repoArgs: ["repo", "view", "--json", "nameWithOwner,url"],
+    prArgs: ["pr", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,isDraft,headRefName,updatedAt,url,reviewDecision,statusCheckRollup"],
+    issueArgs: ["issue", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,labels,updatedAt,url"],
+    repo: (r) => ({ name: r.nameWithOwner, url: r.url }),
+    toPr: (p) => ({
+      ref: `#${p.number}`, title: clean(p.title), body: plain(p.body), author: p.author?.login, branch: p.headRefName,
+      draft: Boolean(p.isDraft), review: REVIEW[p.reviewDecision] ?? null, checks: checks(p.statusCheckRollup),
+      updatedAt: p.updatedAt, url: p.url,
+    }),
+    toIssue: (i) => ({
+      ref: `#${i.number}`, title: clean(i.title), body: plain(i.body), author: i.author?.login,
+      labels: (i.labels ?? []).map((l) => ({ name: l.name, color: hex(l.color) })), updatedAt: i.updatedAt, url: i.url,
+    }),
+  },
+  gitlab: {
+    name: "GitLab", cli: "glab", prs: "Merge requests", pr: "merge request",
+    repoArgs: ["repo", "view", "--output", "json"],
+    prArgs: ["mr", "list", "--per-page", String(LIMIT), "--order", "updated_at", "--output", "json"],
+    issueArgs: ["issue", "list", "--per-page", String(LIMIT), "--order", "updated_at", "--output", "json"],
+    // The lists carry label names only; the colors come from the project's labels.
+    labelArgs: ["label", "list", "--per-page", "100", "--output", "json"],
+    repo: (r) => ({ name: r.path_with_namespace, url: r.web_url }),
+    toPr: (m) => ({
+      ref: `!${m.iid}`, title: clean(m.title), body: plain(m.description), author: m.author?.username, branch: m.source_branch,
+      draft: Boolean(m.draft ?? m.work_in_progress), review: MERGE_REVIEW[m.detailed_merge_status] ?? null, checks: null,
+      updatedAt: m.updated_at, url: m.web_url,
+    }),
+    toIssue: (i, colors = {}) => ({
+      ref: `#${i.iid}`, title: clean(i.title), body: plain(i.description), author: i.author?.username,
+      labels: (i.labels ?? []).map((l) => (typeof l === "string" ? { name: l, color: hex(colors[l]) } : { name: l.name, color: hex(l.color) })),
+      updatedAt: i.updated_at, url: i.web_url,
+    }),
+  },
+};
+
+// The host of a remote URL: https://host/x, ssh://git@host:22/x or git@host:x.
+function remoteHost(url) {
+  const m = /^[a-z][\w+.-]*:\/\/(?:[^@/]*@)?([^:/]+)/i.exec(url) || /^(?:[^@/]*@)?([^:/]+):/.exec(url);
+  return m ? m[1].toLowerCase() : null;
+}
+
+// `git remote -v` → the host of origin, else of the first remote.
+function pickHost(remotes) {
+  const urls = new Map();
+  for (const line of remotes.split("\n")) {
+    const [name, url] = line.split(/\s+/);
+    if (name && url && !urls.has(name)) urls.set(name, url);
+  }
+  const url = urls.get("origin") ?? urls.values().next().value;
+  return url ? remoteHost(url) : null;
+}
+
+// The forges to try for a host, most likely first; a self-hosted name says neither.
+function forgesFor(host) {
+  if (host.includes("github")) return ["github"];
+  if (host.includes("gitlab")) return ["gitlab"];
+  return ["github", "gitlab"];
+}
+
 // Resolves for any exit code; rejects only when the program can't start or times out.
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -137,7 +212,7 @@ function run(cmd, args, opts = {}) {
 // ── State ───────────────────────────────────────────────────────────────────
 
 const ui = {
-  view: "prs", prs: [], issues: [], errors: {}, repo: null, error: null,
+  view: "prs", prs: [], issues: [], errors: {}, repo: null, forge: null, error: null,
   loading: false, fetched: false, fetchedAt: 0, context: null,
   sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, frame: 0,
   rows: [], buttons: [], visible: true,
@@ -169,7 +244,7 @@ async function refresh() {
   if (ui.loading) return;
   const context = cwd;
   if (context !== ui.context) {
-    Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 } });
+    Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 } });
   }
   ui.fetchedAt = Date.now();
   if (!fs.existsSync(context)) { ui.error = "Folder not found"; draw(); return; }
@@ -179,25 +254,47 @@ async function refresh() {
     const top = await run("git", ["rev-parse", "--show-toplevel"], { cwd: context });
     if (cwd !== context) return;
     if (top.code !== 0) { ui.repo = null; ui.error = "Not a git repository"; return; }
-    const gh = (args) => run("gh", args, { cwd: top.stdout.trim() });
-    const [repo, prs, issues] = await Promise.all([
-      gh(["repo", "view", "--json", "nameWithOwner,url"]),
-      gh(["pr", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,isDraft,headRefName,updatedAt,url,reviewDecision,statusCheckRollup"]),
-      gh(["issue", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,labels,updatedAt,url"]),
-    ]);
+    const root = top.stdout.trim();
+    const host = pickHost((await run("git", ["remote", "-v"], { cwd: root })).stdout);
     if (cwd !== context) return;
-    if (repo.code !== 0) { Object.assign(ui, { repo: null, prs: [], issues: [], error: firstLine(repo.stderr) || "Not a GitHub repository" }); return; }
-    Object.assign(ui, { repo: JSON.parse(repo.stdout), error: null, errors: {}, fetched: true });
-    const parse = (out) => JSON.parse(out).map((x) => ({ ...x, title: clean(x.title), body: plain(x.body) }));
-    if (prs.code === 0) ui.prs = parse(prs.stdout); else { ui.prs = []; ui.errors.prs = firstLine(prs.stderr); }
-    if (issues.code === 0) ui.issues = parse(issues.stdout); else { ui.issues = []; ui.errors.issues = firstLine(issues.stderr); }
-    for (const v of ["prs", "issues"]) ui.sel[v] = Math.min(ui.sel[v], Math.max(0, ui[v].length - 1));
+    if (!host) { Object.assign(ui, { repo: null, forge: null, prs: [], issues: [], error: "No GitHub or GitLab remote" }); return; }
+    const errors = [];
+    for (const id of forgeCache.has(host) ? [forgeCache.get(host)] : forgesFor(host)) {
+      const result = await load(FORGES[id], root);
+      if (cwd !== context) return;
+      if (result.error) { errors.push(result.error); continue; }
+      forgeCache.set(host, id);
+      Object.assign(ui, result, { forge: FORGES[id], error: null, fetched: true });
+      for (const v of ["prs", "issues"]) ui.sel[v] = Math.min(ui.sel[v], Math.max(0, ui[v].length - 1));
+      return;
+    }
+    Object.assign(ui, { repo: null, forge: null, errors: {}, prs: [], issues: [], error: errors.join(" · ") });
   } catch (e) {
-    if (cwd === context) ui.error = `Can't run gh: ${e.message}`;
+    if (cwd === context) ui.error = `Can't read the repository: ${e.message}`;
   } finally {
     ui.loading = false;
     draw();
   }
+}
+
+// Which forge answered for a host, so a self-hosted one isn't probed on every refresh.
+const forgeCache = new Map();
+
+// One forge's repo, pull requests and issues; { error } when its CLI can't read the repo.
+async function load(forge, root) {
+  const sh = (args) => run(forge.cli, args, { cwd: root }).catch((e) =>
+    ({ code: -1, stderr: e.code === "ENOENT" ? `${forge.cli} isn't installed` : `Can't run ${forge.cli}: ${e.message}` }));
+  const [repo, prs, issues, labels] = await Promise.all([
+    sh(forge.repoArgs), sh(forge.prArgs), sh(forge.issueArgs), forge.labelArgs ? sh(forge.labelArgs) : null,
+  ]);
+  if (repo.code !== 0) return { error: firstLine(repo.stderr) || `Not a ${forge.name} repository` };
+  const colors = {};
+  // Label colors are a nicety: without them the dots are grey.
+  try { if (labels?.code === 0) for (const l of JSON.parse(labels.stdout)) colors[l.name] = l.color; } catch {}
+  const result = { repo: forge.repo(JSON.parse(repo.stdout)), errors: {}, prs: [], issues: [] };
+  if (prs.code === 0) result.prs = JSON.parse(prs.stdout).map(forge.toPr); else result.errors.prs = firstLine(prs.stderr);
+  if (issues.code === 0) result.issues = JSON.parse(issues.stdout).map((i) => forge.toIssue(i, colors)); else result.errors.issues = firstLine(issues.stderr);
+  return result;
 }
 
 function openUrl(url) {
@@ -228,16 +325,17 @@ function rowLines(item, selected, cols, icon, meta, trailing) {
 
 const part = (text, style = dim) => ({ w: width(text), s: style(text) });
 
+const REVIEWS = { approved: ["Approved", green], changes: ["Changes requested", red], review: ["Review", muted] };
+
 function prRow(p, selected, cols) {
-  const state = checks(p.statusCheckRollup);
-  const review = { APPROVED: ["Approved", green], CHANGES_REQUESTED: ["Changes requested", red], REVIEW_REQUIRED: ["Review", muted] }[p.reviewDecision];
+  const review = REVIEWS[p.review];
   const trailing = [];
-  if (p.isDraft) trailing.push(part("[Draft]"));
+  if (p.draft) trailing.push(part("[Draft]"));
   if (review) trailing.push(part(review[0], review[1]));
-  if (state) trailing.push(state === "fail" ? part("✗", red) : state === "pending" ? part("●", yellow) : part("✓", green));
+  if (p.checks) trailing.push(p.checks === "fail" ? part("✗", red) : p.checks === "pending" ? part("●", yellow) : part("✓", green));
   trailing.push(part(ago(p.updatedAt)));
-  return rowLines(p, selected, cols, p.isDraft ? dim("◌") : green("●"),
-    `#${p.number} · ${p.author?.login ?? "?"} · ${p.headRefName}`, trailing);
+  return rowLines(p, selected, cols, p.draft ? dim("◌") : green("●"),
+    [p.ref, p.author ?? "?", p.branch].filter(Boolean).join(" · "), trailing);
 }
 
 function issueRow(i, selected, cols) {
@@ -246,7 +344,7 @@ function issueRow(i, selected, cols) {
     return { w: width(name) + 2, s: `${rgb(l.color)("●")} ${dim(name)}` };
   });
   trailing.push(part(ago(i.updatedAt)));
-  return rowLines(i, selected, cols, green("◉"), `#${i.number} · ${i.author?.login ?? "?"}`, trailing);
+  return rowLines(i, selected, cols, green("◉"), `${i.ref} · ${i.author ?? "?"}`, trailing);
 }
 
 const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -256,10 +354,10 @@ function draw() {
   const out = [];
   ui.buttons = [];
 
-  // Header: repo, spinner, then the refresh and open-on-GitHub buttons.
+  // Header: repo, spinner, then the refresh and open-on-the-forge buttons.
   const right = ui.repo?.url ? " ↻  ↗ " : " ↻ ";
   const spin = ui.loading ? yellow(SPIN[ui.frame % SPIN.length]) + " " : "";
-  const title = fit(ui.repo?.nameWithOwner ?? "GitHub", cols - width(right) - 3 - (spin ? 2 : 0));
+  const title = fit(ui.repo?.name ?? ui.forge?.name ?? "Pull requests and issues", cols - width(right) - 3 - (spin ? 2 : 0));
   const gap = " ".repeat(Math.max(0, cols - 1 - width(title) - (spin ? 2 : 0) - width(right)));
   out.push(` ${bold(title)}${gap}${spin}${dim(right)}`);
   const at = cols - width(right);
@@ -267,7 +365,7 @@ function draw() {
   if (ui.repo?.url) ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => openUrl(ui.repo.url) });
   out.push(dim("─".repeat(cols)));
 
-  // The switch: Pull requests N / Issues N.
+  // The switch: Pull requests (or Merge requests) N / Issues N.
   const half = Math.floor(cols / 2);
   const segment = (view, label, count, w) => {
     const text = fit(ui.fetched && !ui.errors[view] ? `${label} ${count}` : label, w - 2);
@@ -275,7 +373,7 @@ function draw() {
     const cell = " ".repeat(padL) + text + " ".repeat(padR);
     return ui.view === view ? invert(bold(cell)) : muted(cell);
   };
-  out.push(segment("prs", "Pull requests", ui.prs.length, half) + segment("issues", "Issues", ui.issues.length, cols - half));
+  out.push(segment("prs", ui.forge?.prs ?? "Pull requests", ui.prs.length, half) + segment("issues", "Issues", ui.issues.length, cols - half));
   ui.buttons.push({ row: 2, from: 0, to: half, action: () => pick("prs") });
   ui.buttons.push({ row: 2, from: half, to: cols, action: () => pick("issues") });
   out.push(dim("─".repeat(cols)));
@@ -291,7 +389,7 @@ function draw() {
     if (i === ui.sel[view]) selEnd = lines.length;
   });
   if (!items.length) {
-    const msg = ui.error || ui.errors[view] || (ui.loading && !ui.fetched ? "Loading…" : view === "prs" ? "No open pull requests" : "No open issues");
+    const msg = ui.error || ui.errors[view] || (ui.loading && !ui.fetched ? "Loading…" : view === "prs" ? `No open ${ui.forge?.pr ?? "pull request"}s` : "No open issues");
     for (const l of wrap(msg, cols - 2, height)) { lines.push(" " + (ui.error || ui.errors[view] ? red(l) : dim(l))); owner.push(-1); }
   } else if (items.length >= LIMIT) {
     lines.push("", " " + dim(`Showing the ${LIMIT} most recent`)); owner.push(-1, -1);
@@ -411,4 +509,4 @@ function main() {
 }
 
 if (require.main === module) main();
-else module.exports = { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow };
+else module.exports = { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine };

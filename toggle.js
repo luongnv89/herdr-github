@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Opens the GitHub panel as a right split beside the focused pane, or closes it
+// Opens the pull request and issue panel as a right split beside the focused pane, or closes it
 // when the focused pane's tab already has one. Panels register their pane id under
 // the plugin's state dir, because Herdr's pane list doesn't say which plugin owns a pane.
 "use strict";
