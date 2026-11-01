@@ -1,7 +1,11 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine } = require("../panel.js");
+// Record what the panel would open instead of starting a browser. panel.js reads
+// spawn when it loads, so this has to come before the require below.
+const opened = [];
+require("node:child_process").spawn = (cmd, args) => { opened.push(args[0]); return { on() { return this; }, unref() {} }; };
+const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput } = require("../panel.js");
 
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const iso = (secondsAgo) => new Date(Date.now() - secondsAgo * 1000).toISOString();
@@ -165,4 +169,92 @@ test("firstLine skips blank lines and glab's ERROR heading", () => {
   assert.equal(firstLine("\n   ERROR  \n\n  Get https://gitlab.com/x: 401 Unauthorized.  \n"), "Get https://gitlab.com/x: 401 Unauthorized.");
   assert.equal(firstLine("gh: not logged in\nmore"), "gh: not logged in");
   assert.equal(firstLine(""), "");
+});
+
+// ── Clicks ──────────────────────────────────────────────────────────────────
+
+// Run fn against a 60x24 screen, returning the last frame's lines as plain text.
+// stdout is node --test's channel, so it is only borrowed for the call.
+function screen(fn) {
+  const { write } = process.stdout, cols = process.stdout.columns, rows = process.stdout.rows;
+  let frame = "";
+  process.stdout.write = (s) => { frame = s; return true; };
+  process.stdout.columns = 60; process.stdout.rows = 24;
+  try { fn(); } finally { Object.assign(process.stdout, { write, columns: cols, rows }); }
+  const lines = [];
+  for (const m of frame.matchAll(/\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K/g)) lines[m[1] - 1] = strip(m[2]);
+  return lines;
+}
+
+const items = (kind) => Array.from({ length: 10 }, (_, i) => ({
+  ref: `#${i}`, title: `Title ${i}`, body: `Body ${i}`, author: "a", labels: [], updatedAt: iso(60), url: `https://x/${kind}/${i}`,
+}));
+
+function setup(view) {
+  Object.assign(ui, {
+    view, prs: items("pull"), issues: items("issues"), errors: {}, error: null, repo: { name: "o/p", url: "https://x/o/p" },
+    loading: false, fetched: true, follow: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 },
+  });
+  opened.length = 0;
+  return screen(draw);
+}
+
+// SGR mouse events, as herdr sends them with mouse capture on (1-based x;y).
+const press = (y) => `\x1b[<0;5;${y + 1}M\x1b[<0;5;${y + 1}m`;
+const wheelDown = "\x1b[<65;5;10M";
+// Lines 0-3 are the header and the switch, 4-22 the list, 23 the key hints.
+const LIST = { from: 4, to: 22 }, FOOTER = 23;
+
+test("a click on a pull request opens that pull request", () => {
+  const lines = setup("prs");
+  const y = lines.findIndex((l) => l?.includes("Title 3"));
+  assert.ok(y >= LIST.from);
+  screen(() => onInput(Buffer.from(press(y))));
+  assert.deepEqual(opened, ["https://x/pull/3"]);
+  assert.equal(ui.sel.prs, 3);
+});
+
+test("a click on an issue opens that issue", () => {
+  const lines = setup("issues");
+  const y = lines.findIndex((l) => l?.includes("Body 2"));
+  screen(() => click(5, y));
+  assert.deepEqual(opened, ["https://x/issues/2"]);
+  assert.equal(ui.sel.issues, 2);
+});
+
+test("after scrolling, each row opens the item drawn on it and gaps open nothing", () => {
+  setup("prs");
+  const lines = screen(() => onInput(Buffer.from(wheelDown + wheelDown)));
+  assert.ok(ui.top.prs > 0);
+  let hits = 0;
+  for (let y = LIST.from; y <= FOOTER; y++) {
+    opened.length = 0;
+    const sel = ui.sel.prs;
+    screen(() => onInput(Buffer.from(press(y))));
+    if (y === FOOTER || lines[y].trim() === "") {
+      assert.deepEqual(opened, [], `line ${y} is not a row`);
+      assert.equal(ui.sel.prs, sel, `line ${y} is not a row`);
+      continue;
+    }
+    assert.equal(opened.length, 1, `line ${y}: ${lines[y]}`);
+    const k = opened[0].split("/").at(-1);
+    assert.ok([`Title ${k}`, `Body ${k}`, `#${k} ·`].some((t) => lines[y].includes(t)), `line ${y} "${lines[y]}" opened ${opened[0]}`);
+    hits++;
+  }
+  assert.ok(hits > 10);
+});
+
+test("a click leaves the lists and the scroll position as they were", () => {
+  setup("prs");
+  const lines = screen(() => onInput(Buffer.from(wheelDown + wheelDown)));
+  const top = { ...ui.top }, prs = JSON.stringify(ui.prs), issues = JSON.stringify(ui.issues);
+  // The bottom row is cut off: a click must not scroll to show the rest of it.
+  const y = LIST.to;
+  assert.match(lines[y], /Title \d/);
+  screen(() => onInput(Buffer.from(press(y))));
+  assert.equal(opened.length, 1);
+  assert.deepEqual(ui.top, top);
+  assert.equal(JSON.stringify(ui.prs), prs);
+  assert.equal(JSON.stringify(ui.issues), issues);
+  assert.equal(ui.view, "prs");
 });
