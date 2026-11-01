@@ -1,0 +1,4 @@
+# State written when panel.js runs outside herdr
+.state/
+.DS_Store
+node_modules/

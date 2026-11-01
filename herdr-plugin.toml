@@ -1,0 +1,18 @@
+id = "herdr-github"
+name = "Herdr GitHub"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "The current repo's open pull requests and issues, in a side pane."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "toggle"
+title = "Toggle GitHub panel"
+contexts = ["workspace"]
+command = ["node", "toggle.js"]
+
+[[panes]]
+id = "panel"
+title = "GitHub"
+placement = "split"
+command = ["node", "panel.js"]
