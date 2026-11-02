@@ -215,7 +215,7 @@ const ui = {
   view: "prs", prs: [], issues: [], errors: {}, repo: null, forge: null, error: null,
   loading: false, fetched: false, fetchedAt: 0, context: null,
   sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, frame: 0,
-  rows: [], buttons: [], visible: true,
+  rows: [], buttons: [], visible: true, notice: null,
 };
 let cwd = process.env.HERDR_GITHUB_CWD || process.cwd();
 let target = process.env.HERDR_GITHUB_PANE || null;
@@ -297,10 +297,27 @@ async function load(forge, root) {
   return result;
 }
 
+// A failed open shows the URL, so a panel without a browser (on a remote machine,
+// say) never just does nothing. A success draws nothing.
+let opens = 0;
 function openUrl(url) {
   if (!url) return;
+  if (ui.notice) { ui.notice = null; draw(); }
   const cmd = process.platform === "darwin" ? "open" : "xdg-open";
-  try { spawn(cmd, [url], { stdio: "ignore" }).on("error", () => {}).unref(); } catch {}
+  const seq = ++opens;
+  let done = false;
+  const fail = (reason) => {
+    if (done || seq !== opens) return;
+    done = true;
+    ui.notice = { url, reason: clean(reason) };
+    draw();
+  };
+  try {
+    spawn(cmd, [url], { stdio: "ignore" })
+      .on("error", (e) => fail(e.code === "ENOENT" ? `${cmd} not found` : e.message))
+      .on("exit", (code, signal) => { if (code !== 0) fail(code == null ? `${cmd} stopped by ${signal}` : `${cmd} exited ${code}`); })
+      .unref();
+  } catch (e) { fail(e.message); }
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────────
@@ -348,6 +365,14 @@ function issueRow(i, selected, cols) {
 }
 
 const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+const HINT = "Ctrl-click the title to open it on your machine";
+
+// A failed open, at most `room` lines: why, what to do instead, and the whole URL.
+function noticeLines({ url, reason }, cols, room) {
+  const lines = [dim("─".repeat(cols)), " " + red(fit(reason, cols - 2)), " " + dim(fit(HINT, cols - 2))];
+  for (const l of wrap(clean(url), cols - 2, Infinity)) lines.push(" " + accent(l));
+  return lines.slice(0, Math.max(0, room));
+}
 
 function draw() {
   const cols = process.stdout.columns || 60, rows = process.stdout.rows || 24;
@@ -378,8 +403,9 @@ function draw() {
   ui.buttons.push({ row: 2, from: half, to: cols, action: () => pick("issues") });
   out.push(dim("─".repeat(cols)));
 
-  // The list, scrolled so the selected row is in full view.
-  const view = ui.view, items = ui[view], listTop = out.length, height = Math.max(1, rows - listTop - 1);
+  // The list, scrolled so the selected row is in full view, above any notice.
+  const notice = ui.notice ? noticeLines(ui.notice, cols, rows - out.length - 2) : [];
+  const view = ui.view, items = ui[view], listTop = out.length, height = Math.max(1, rows - listTop - 1 - notice.length);
   const lines = [], owner = [];
   let selStart = 0, selEnd = 0;
   items.forEach((x, i) => {
@@ -405,6 +431,7 @@ function draw() {
     out.push(lines[ui.top[view] + r] ?? "");
     ui.rows[listTop + r] = owner[ui.top[view] + r] ?? -1;
   }
+  out.push(...notice);
 
   out.push(dim(fit(" ↑↓ select · ⏎ open · ⇥ switch · r refresh · o repo · q close", cols)));
 
@@ -458,6 +485,7 @@ function onInput(data) {
       continue;
     }
     if (k === "q" || k === "\x03" || (k === "\x1b" && data.length === 1)) return quit();
+    if (ui.notice) { ui.notice = null; draw(); }
     if (k === "\x1b[A" || k === "\x1bOA" || k === "k") move(-1);
     else if (k === "\x1b[B" || k === "\x1bOB" || k === "j") move(1);
     else if (k === "\x1b[5~") move(-5);
