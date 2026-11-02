@@ -47,7 +47,7 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
   - tab or `←`/`→` switches between pull requests and issues, `1` and `2` choose one;
   - `r` refreshes, `o` opens the repo on GitHub or GitLab;
   - `q` or esc closes the panel.
-- **Mouse:** click a row to open it, click the switch to change lists, click `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. Each title, and the repo name in the header, is also a terminal hyperlink: Ctrl-click it to open it where your terminal runs.
+- **Mouse:** click a row to open it, click the switch to change lists, click `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. Each title, and the repo name in the header, is also a terminal hyperlink (see [Remote machines](#remote-machines)).
 - **When a row can't be opened:** the panel shows why in red, and the whole URL above the key hints. Any key, or the next open, clears it.
 - **Fetching:** when the repo changes, every 2 minutes while the panel's tab is on screen, and on `r`. A panel in a tab you aren't looking at doesn't fetch.
 - **Lists:** the 50 most recently opened of each on GitHub, and the 50 most recently updated on GitLab. The panel remembers which list you chose.
@@ -56,7 +56,7 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
 
 A click or enter runs `open` (macOS) or `xdg-open` (Linux) on the computer where the panel runs, which is the computer where its herdr server runs. When that is a remote machine, it usually has no browser, so the panel shows the reason and the URL instead of opening it. To open a row on your own computer:
 
-- **`herdr --remote`, or a pane on a saved SSH machine:** Ctrl-click the title. The title is a terminal hyperlink (OSC 8), which opens on the computer you're sitting at. This needs `ui.mouse_capture = true`, which is herdr's default.
+- **`herdr --remote`, or a pane on a saved SSH machine:** Ctrl-click (or Cmd-click) the title. The title is a terminal hyperlink (OSC 8), so it should open on the computer you're sitting at, if herdr and your terminal pass hyperlinks through. This hasn't been tested live yet. If it doesn't open, try `ui.mouse_capture = false`: herdr documents that setting as letting your terminal handle clicks such as Cmd-clicking URLs, but then the panel's own clicks stop working.
 - **You `ssh` in, then run `herdr` there:** select and copy the URL the panel shows. Mouse capture sends your clicks to herdr, so hold your terminal's bypass modifier while you drag, for example Shift, or Option in some macOS terminals.
 - **A remote Mac:** `open` works there, so the row opens in a browser on that Mac's own screen, not yours.
 
