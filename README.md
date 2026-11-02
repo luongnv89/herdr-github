@@ -11,7 +11,7 @@ Each row shows the title (up to 2 lines), the description (up to 3 lines) and a 
 
 On GitLab, merge requests show as `!123` and have no checks mark: the list doesn't carry pipeline status. Their review state shows Changes requested and Review, but not Approved.
 
-Click a pull request or issue, or select it and press enter, to open it in your browser. Clicking needs `ui.mouse_capture = true` in your herdr config.
+Click a pull request or issue, or select it and press enter, to open it in your browser. Clicking needs `ui.mouse_capture = true` in your herdr config. On a remote machine, see [Remote machines](#remote-machines).
 
 It is the terminal twin of the GitHub panel in [Whole Herdr](https://github.com/luongnv89/whole-herdr), a layout for the Herdr desktop app.
 
@@ -47,9 +47,20 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
   - tab or `←`/`→` switches between pull requests and issues, `1` and `2` choose one;
   - `r` refreshes, `o` opens the repo on GitHub or GitLab;
   - `q` or esc closes the panel.
-- **Mouse:** click a row to open it, click the switch to change lists, click `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config.
+- **Mouse:** click a row to open it, click the switch to change lists, click `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. Each title, and the repo name in the header, is also a terminal hyperlink: Ctrl-click it to open it where your terminal runs.
+- **When a row can't be opened:** the panel shows why in red, and the whole URL above the key hints. Any key, or the next open, clears it.
 - **Fetching:** when the repo changes, every 2 minutes while the panel's tab is on screen, and on `r`. A panel in a tab you aren't looking at doesn't fetch.
 - **Lists:** the 50 most recently opened of each on GitHub, and the 50 most recently updated on GitLab. The panel remembers which list you chose.
+
+## Remote machines
+
+A click or enter runs `open` (macOS) or `xdg-open` (Linux) on the computer where the panel runs, which is the computer where its herdr server runs. When that is a remote machine, it usually has no browser, so the panel shows the reason and the URL instead of opening it. To open a row on your own computer:
+
+- **`herdr --remote`, or a pane on a saved SSH machine:** Ctrl-click the title. The title is a terminal hyperlink (OSC 8), which opens on the computer you're sitting at. This needs `ui.mouse_capture = true`, which is herdr's default.
+- **You `ssh` in, then run `herdr` there:** select and copy the URL the panel shows. Mouse capture sends your clicks to herdr, so hold your terminal's bypass modifier while you drag, for example Shift, or Option in some macOS terminals.
+- **A remote Mac:** `open` works there, so the row opens in a browser on that Mac's own screen, not yours.
+
+A plain click on a remote machine still can't open a browser on your computer.
 
 ## Needs
 
@@ -64,7 +75,7 @@ A herdr plugin runs as your user, with no sandbox. This one:
 
 - runs `git` in the repo's folder to find its remote, then `gh` or `glab` there to read the repo and its open pull requests (or merge requests) and issues;
 - runs `herdr` to find the focused pane, and to open, resize and close its own pane;
-- runs `open` (macOS) or `xdg-open` (Linux) when you open a row or the repo;
+- runs `open` (macOS) or `xdg-open` (Linux) when you open a row or the repo, on the computer where its herdr server runs (see [Remote machines](#remote-machines));
 - writes only under its herdr state folder (`~/.local/state/herdr/plugins/herdr-github/` on macOS): which list you chose, and the ids of its open panes.
 
 It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
@@ -76,8 +87,8 @@ It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
 - **"gh isn't installed" or "glab isn't installed":** the repo's site needs that CLI on the `PATH` of the herdr server. Install it (see [Needs](#needs)) and log in.
 - **"No GitHub or GitLab remote":** the repo has no remote, or only a local-path one. Pull requests and issues live on a hosting site, so there is nothing to list.
 - **Grey label dots on GitLab:** the label colors come from `glab label list`, which failed. Check `glab auth status`.
-- **Nothing opens:** check the action's log with `herdr plugin log list --plugin herdr-github`.
-- **Panes on saved SSH machines** are untested. The panel runs `git`, `gh` and `glab` on the computer where its herdr server runs.
+- **A row doesn't open, and the panel shows its URL with a red reason:** `open` or `xdg-open` is missing or failed, most often because the panel runs on a remote machine. See [Remote machines](#remote-machines).
+- **Saved SSH machines and `herdr --remote`:** the panel runs `git`, `gh` and `glab` on the computer where its herdr server runs. Ctrl-clicking a title there to open it on your own computer hasn't been tested live yet.
 
 ## Develop
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- On a remote machine, a click or enter on a pull request or issue no longer does nothing (#3). When `open` or `xdg-open` is missing or fails, the panel shows the reason and the whole URL, ready to copy. Each title, and the repo name in the header, is now a terminal hyperlink (OSC 8): Ctrl-click it to open it on your own computer under `herdr --remote` or a saved SSH machine. A plain click on a remote machine still can't open a browser on your computer. Opening locally works as before.
+
+### Changed
+
 - The README now says up front that a click or enter opens a pull request or issue in your browser, and tests check that a click opens the row you clicked, even after scrolling.
 
 ## 0.2.0 (2026-11-01)
