@@ -48,7 +48,7 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
   - `r` refreshes, `o` opens the repo on GitHub or GitLab;
   - `q` or esc closes the panel.
 - **Mouse:** click a row to open it, click the switch to change lists, click `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. Each title, and the repo name in the header, is also a terminal hyperlink (see [Remote machines](#remote-machines)).
-- **When a row can't be opened:** the panel shows why in red, and the whole URL above the key hints. Any key, or the next open, clears it.
+- **When a row can't be opened:** the panel shows why in red, a hint to Ctrl- or Cmd-click the URL, and the whole URL above the key hints. The URL is a terminal hyperlink too. Any key, or the next open, clears it.
 - **Fetching:** when the repo changes, every 2 minutes while the panel's tab is on screen, and on `r`. A panel in a tab you aren't looking at doesn't fetch.
 - **Lists:** the 50 most recently opened of each on GitHub, and the 50 most recently updated on GitLab. The panel remembers which list you chose.
 

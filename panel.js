@@ -315,6 +315,8 @@ function openUrl(url) {
     if (done || seq !== opens) return;
     done = true;
     ui.notice = { url, reason: clean(reason) };
+    // The notice takes rows from the list: keep the selected row in view above it.
+    ui.follow = true;
     draw();
   };
   try {
@@ -370,7 +372,7 @@ function issueRow(i, selected, cols) {
 }
 
 const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-const HINT = "Ctrl-click the title to open it on your machine";
+const HINT = "Ctrl- or Cmd-click the URL to open it on your machine";
 
 // A failed open, at most `room` lines: why, what to do instead, and the whole URL.
 function noticeLines({ url, reason }, cols, room) {

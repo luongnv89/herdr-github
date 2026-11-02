@@ -280,7 +280,7 @@ test("a click leaves the lists and the scroll position as they were", () => {
 
 // ── When a row can't be opened ──────────────────────────────────────────────
 
-const HINT = "Ctrl-click the title to open it on your machine";
+const HINT = "Ctrl- or Cmd-click the URL to open it on your machine";
 const enoent = () => Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" });
 
 test("when the opener isn't installed, a click shows the URL and the hint", () => {
@@ -304,6 +304,22 @@ test("when the opener exits with an error, enter shows the URL and the hint", ()
   assert.deepEqual(opened, ["https://x/pull/0"]);
   assert.deepEqual(noticeOf(lines) && { ...noticeOf(lines), from: 0 }, { reason: `${lastChild.cmd} exited 3`, url: "https://x/pull/0", from: 0 });
   assert.match(lines[FOOTER], /select · ⏎ open/);
+});
+
+test("the notice never covers the row that failed to open", () => {
+  setup("prs");
+  // Moving down leaves the selected row on the list's bottom edge.
+  const before = screen(() => onInput(Buffer.from("j".repeat(6))));
+  const bottom = before.findIndex((l) => l?.includes("#6 ·"));
+  assert.ok(bottom > LIST.to - 2, `#6 isn't at the bottom: ${bottom}`);
+  const lines = screen(() => { onInput(Buffer.from("\r")); lastChild.emit("exit", 3, null); });
+  assert.deepEqual(opened, ["https://x/pull/6"]);
+  const notice = noticeOf(lines);
+  assert.equal(notice?.url, "https://x/pull/6");
+  for (const t of ["Title 6", "Body 6", "#6 ·"]) {
+    const y = lines.findIndex((l) => l?.includes(t));
+    assert.ok(y >= LIST.from && y < notice.from, `${t} is at ${y}, the notice starts at ${notice.from}`);
+  }
 });
 
 test("o and the header's ↗ show the repo URL when it can't be opened", () => {
