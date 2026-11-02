@@ -25,6 +25,11 @@ const rgb = (hex) => {
   const n = parseInt(hex, 16);
   return /^[0-9a-f]{6}$/i.test(hex) ? sgr(`38;2;${n >> 16};${(n >> 8) & 255};${n & 255}`) : dim;
 };
+// An OSC 8 hyperlink: the terminal opens it on the machine you're sitting at, so
+// Ctrl-click (or Cmd-click) works even when the panel runs on a remote host. Only a
+// plain http(s) URL becomes a link; added after fit and wrap, it takes no cells.
+const linkable = (u) => typeof u === "string" && /^https?:\/\//i.test(u) && !/[\x00-\x1f\x7f-\x9f]/.test(u);
+const link = (u, text) => linkable(u) ? `\x1b]8;;${u}\x1b\\${text}\x1b]8;;\x1b\\` : text;
 
 // Display width of one code point: 0 for combining marks, 2 for wide CJK and emoji.
 function cellWidth(cp) {
@@ -328,7 +333,7 @@ function rowLines(item, selected, cols, icon, meta, trailing) {
   const inner = Math.max(10, cols - 5);
   const bar = selected ? accent("▌") : " ";
   const lines = [];
-  wrap(item.title || "", inner, 2).forEach((t, i) => lines.push(`${bar} ${i ? " " : icon} ${selected ? bold(t) : t}`));
+  wrap(item.title || "", inner, 2).forEach((t, i) => lines.push(`${bar} ${i ? " " : icon} ${link(item.url, selected ? bold(t) : t)}`));
   const body = item.body ? wrap(item.body, inner, 3).map(muted) : [dim("No description")];
   for (const b of body) lines.push(`${bar}   ${b}`);
   let parts = trailing.slice();
@@ -370,7 +375,7 @@ const HINT = "Ctrl-click the title to open it on your machine";
 // A failed open, at most `room` lines: why, what to do instead, and the whole URL.
 function noticeLines({ url, reason }, cols, room) {
   const lines = [dim("─".repeat(cols)), " " + red(fit(reason, cols - 2)), " " + dim(fit(HINT, cols - 2))];
-  for (const l of wrap(clean(url), cols - 2, Infinity)) lines.push(" " + accent(l));
+  for (const l of wrap(clean(url), cols - 2, Infinity)) lines.push(" " + link(url, accent(l)));
   return lines.slice(0, Math.max(0, room));
 }
 
@@ -384,7 +389,7 @@ function draw() {
   const spin = ui.loading ? yellow(SPIN[ui.frame % SPIN.length]) + " " : "";
   const title = fit(ui.repo?.name ?? ui.forge?.name ?? "Pull requests and issues", cols - width(right) - 3 - (spin ? 2 : 0));
   const gap = " ".repeat(Math.max(0, cols - 1 - width(title) - (spin ? 2 : 0) - width(right)));
-  out.push(` ${bold(title)}${gap}${spin}${dim(right)}`);
+  out.push(` ${link(ui.repo?.url, bold(title))}${gap}${spin}${dim(right)}`);
   const at = cols - width(right);
   ui.buttons.push({ row: 0, from: at, to: at + 3, action: () => refresh() });
   if (ui.repo?.url) ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => openUrl(ui.repo.url) });
