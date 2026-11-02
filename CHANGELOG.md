@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.1 (2026-11-02)
+
 - The README now says up front that a click or enter opens a pull request or issue in your browser, and tests check that a click opens the row you clicked, even after scrolling.
 
 ## 0.2.0 (2026-11-01)
