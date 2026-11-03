@@ -48,11 +48,27 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
   - enter opens the selected row in your browser;
   - tab or `←`/`→` switches between pull requests and issues, `1` and `2` choose one;
   - `r` refreshes, `o` opens the repo on GitHub or GitLab;
+  - `a` resolves the selected issue, or reviews the selected pull request, with your agent (see [Resolve and review with your agent](#resolve-and-review-with-your-agent));
   - `q` or esc closes the panel.
-- **Mouse:** click a row to open it, click the switch to change lists, click `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. On a remote machine, Ctrl-click the selected row's URL instead (see [Remote machines](#remote-machines)).
+- **Mouse:** click a row to open it, click the switch to change lists, click `Resolve #N` or `Review #N`, `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. On a remote machine, Ctrl-click the selected row's URL instead (see [Remote machines](#remote-machines)).
 - **When a row can't be opened:** the panel shows why in red, a hint to Ctrl- or Cmd-click the URL, and the whole URL above the key hints. The URL is a terminal hyperlink too. Any key, or the next open, clears it.
 - **Fetching:** when the repo changes, every 2 minutes while the panel's tab is on screen, and on `r`. A panel in a tab you aren't looking at doesn't fetch.
 - **Lists:** the 50 most recently opened of each on GitHub, and the 50 most recently updated on GitLab. The panel remembers which list you chose.
+
+## Resolve and review with your agent
+
+On GitHub, the header shows a button for the selected row: **Resolve #N** on the issues list, **Review #N** on the pull requests list. Click it, or press `a`, and the panel:
+
+1. finds your agent: the one in the pane the panel follows, else one in the panel's tab (`herdr agent list`);
+2. checks that the skill is installed for that kind of agent: `issue-resolver` for an issue, `issue-pr-review` for a pull request;
+3. opens a new pane below your agent, in the repo's folder, and starts the same kind of agent there (`herdr pane split`, then `herdr agent start`);
+4. sends it the skill and the number, for Claude `/issue-resolver 12` or `/issue-pr-review 34`; other agents get "Use the issue-resolver skill on issue #12." Nothing from the title or description goes into the prompt.
+
+Your own agent and its conversation are left alone. The panel shows what it is doing above the key hints, in yellow while it starts the agent, green once the prompt is sent, and red with the reason when something fails. A pane whose agent failed to start is closed again, unless the agent is waiting for an answer from you, such as a folder trust question.
+
+If the skill isn't installed, nothing starts and the panel points you to [luongnv.com/idd](https://luongnv.com/idd) to install the skills. It looks for `<skill>/SKILL.md` in the `skills` folder of `~/.claude`, `~/.agents`, `~/.codex` and `~/.<agent>`, and of the same folders in the repo. For Claude it also looks in the plugins you have installed and not disabled (`~/.claude/plugins/installed_plugins.json`, `enabledPlugins` in `~/.claude/settings.json` and the repo's `.claude/settings*.json`), and in synced plugins, and sends a plugin's skill under the plugin's name, such as `/idd:issue-resolver 12`.
+
+The button doesn't show on GitLab, because both skills work through `gh`.
 
 ## Remote machines
 
@@ -77,6 +93,7 @@ A herdr plugin runs as your user, with no sandbox. This one:
 
 - runs `git` in the repo's folder to find its remote, then `gh` or `glab` there to read the repo and its open pull requests (or merge requests) and issues;
 - runs `herdr` to find the focused pane, and to open, resize and close its own pane;
+- when you click Resolve or Review, or press `a`: runs `herdr` to list the agents, split a new pane below yours, start the same kind of agent in it and send it the skill and the number, and reads the skill folders listed under [Resolve and review with your agent](#resolve-and-review-with-your-agent);
 - runs `open` (macOS) or `xdg-open` (Linux) when you open a row or the repo, on the computer where its herdr server runs (see [Remote machines](#remote-machines));
 - writes only under its herdr state folder (`~/.local/state/herdr/plugins/herdr-github/` on macOS): which list you chose, and the ids of its open panes.
 
@@ -90,6 +107,8 @@ It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
 - **"No GitHub or GitLab remote":** the repo has no remote, or only a local-path one. Pull requests and issues live on a hosting site, so there is nothing to list.
 - **Grey label dots on GitLab:** the label colors come from `glab label list`, which failed. Check `glab auth status`.
 - **A row doesn't open, and the panel shows its URL with a red reason:** `open` or `xdg-open` is missing or failed, most often because the panel runs on a remote machine. See [Remote machines](#remote-machines).
+- **"The issue-resolver skill isn't installed" or "The issue-pr-review skill isn't installed":** install the skills from [luongnv.com/idd](https://luongnv.com/idd) for the agent named in the message, then try again.
+- **"No agent in this tab":** Resolve and Review start the same kind of agent as yours. Start your agent (for example `claude`) in a pane of the panel's tab, focus it, and try again.
 - **Saved SSH machines and `herdr --remote`:** the panel runs `git`, `gh` and `glab` on the computer where its herdr server runs. Ctrl-clicking the selected row's URL there to open it on your own computer hasn't been tested live yet.
 
 ## Develop
@@ -106,7 +125,7 @@ A linked plugin runs straight from your folder, so a change shows the next time 
 - `herdr-plugin.toml`: the manifest, with one action (`toggle`) and one pane (`panel`).
 - `toggle.js`: opens the panel beside the focused pane, or closes it.
 - `panel.js`: the panel itself. Plain Node, no npm packages.
-- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, and for what a failed open shows and how URLs and links are drawn.
+- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, and for what Resolve and Review run, with a stand-in for `herdr`.
 
 ## License
 

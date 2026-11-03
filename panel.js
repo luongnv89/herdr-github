@@ -133,8 +133,9 @@ function plain(md) {
 // ── Forges: GitHub through `gh`, GitLab through `glab` ──────────────────────
 // Each turns its CLI's JSON into one shape the rows draw from:
 //   repo  { name, url }
-//   pr    { ref, title, body, author, branch, draft, review, checks, updatedAt, url }
-//   issue { ref, title, body, author, labels: [{ name, color }], updatedAt, url }
+//   pr    { ref, number, title, body, author, branch, draft, review, checks, updatedAt, url }
+//   issue { ref, number, title, body, author, labels: [{ name, color }], updatedAt, url }
+// `number` is the bare number an agent is handed; `ref` is only for display.
 
 const hex = (color) => (color || "").replace(/^#/, "");
 const REVIEW = { APPROVED: "approved", CHANGES_REQUESTED: "changes", REVIEW_REQUIRED: "review" };
@@ -150,12 +151,12 @@ const FORGES = {
     issueArgs: ["issue", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,labels,updatedAt,url"],
     repo: (r) => ({ name: r.nameWithOwner, url: r.url }),
     toPr: (p) => ({
-      ref: `#${p.number}`, title: clean(p.title), body: plain(p.body), author: p.author?.login, branch: p.headRefName,
+      ref: `#${p.number}`, number: p.number, title: clean(p.title), body: plain(p.body), author: p.author?.login, branch: p.headRefName,
       draft: Boolean(p.isDraft), review: REVIEW[p.reviewDecision] ?? null, checks: checks(p.statusCheckRollup),
       updatedAt: p.updatedAt, url: p.url,
     }),
     toIssue: (i) => ({
-      ref: `#${i.number}`, title: clean(i.title), body: plain(i.body), author: i.author?.login,
+      ref: `#${i.number}`, number: i.number, title: clean(i.title), body: plain(i.body), author: i.author?.login,
       labels: (i.labels ?? []).map((l) => ({ name: l.name, color: hex(l.color) })), updatedAt: i.updatedAt, url: i.url,
     }),
   },
@@ -168,12 +169,12 @@ const FORGES = {
     labelArgs: ["label", "list", "--per-page", "100", "--output", "json"],
     repo: (r) => ({ name: r.path_with_namespace, url: r.web_url }),
     toPr: (m) => ({
-      ref: `!${m.iid}`, title: clean(m.title), body: plain(m.description), author: m.author?.username, branch: m.source_branch,
+      ref: `!${m.iid}`, number: m.iid, title: clean(m.title), body: plain(m.description), author: m.author?.username, branch: m.source_branch,
       draft: Boolean(m.draft ?? m.work_in_progress), review: MERGE_REVIEW[m.detailed_merge_status] ?? null, checks: null,
       updatedAt: m.updated_at, url: m.web_url,
     }),
     toIssue: (i, colors = {}) => ({
-      ref: `#${i.iid}`, title: clean(i.title), body: plain(i.description), author: i.author?.username,
+      ref: `#${i.iid}`, number: i.iid, title: clean(i.title), body: plain(i.description), author: i.author?.username,
       labels: (i.labels ?? []).map((l) => (typeof l === "string" ? { name: l, color: hex(colors[l]) } : { name: l.name, color: hex(l.color) })),
       updatedAt: i.updated_at, url: i.web_url,
     }),
@@ -221,6 +222,7 @@ const ui = {
   loading: false, fetched: false, fetchedAt: 0, context: null,
   sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, frame: 0,
   rows: [], buttons: [], visible: true, notice: null,
+  root: null, tab: null, acting: null,
 };
 let cwd = process.env.HERDR_GITHUB_CWD || process.cwd();
 let target = process.env.HERDR_GITHUB_PANE || null;
@@ -236,6 +238,7 @@ async function locate() {
     const snap = JSON.parse(r.stdout).result.snapshot;
     const me = snap.panes.find((p) => p.pane_id === SELF);
     if (!me) return;
+    ui.tab = me.tab_id;
     const focused = snap.panes.find((p) => p.pane_id === snap.focused_pane_id);
     if (focused && focused.pane_id !== SELF && focused.tab_id === me.tab_id) target = focused.pane_id;
     const pane = snap.panes.find((p) => p.pane_id === target && p.tab_id === me.tab_id);
@@ -249,7 +252,7 @@ async function refresh() {
   if (ui.loading) return;
   const context = cwd;
   if (context !== ui.context) {
-    Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 } });
+    Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 } });
   }
   ui.fetchedAt = Date.now();
   if (!fs.existsSync(context)) { ui.error = "Folder not found"; draw(); return; }
@@ -260,6 +263,7 @@ async function refresh() {
     if (cwd !== context) return;
     if (top.code !== 0) { ui.repo = null; ui.error = "Not a git repository"; return; }
     const root = top.stdout.trim();
+    ui.root = root;
     const host = pickHost((await run("git", ["remote", "-v"], { cwd: root })).stdout);
     if (cwd !== context) return;
     if (!host) { Object.assign(ui, { repo: null, forge: null, prs: [], issues: [], error: "No GitHub or GitLab remote" }); return; }
@@ -327,6 +331,130 @@ function openUrl(url) {
   } catch (e) { fail(e.message); }
 }
 
+// ── Agent actions ───────────────────────────────────────────────────────────
+// The selected issue can be handed to the issue-resolver skill, the selected pull
+// request to issue-pr-review: a new pane below your agent runs the same kind of
+// agent, prompted with the skill and the bare number, nothing else from the row.
+
+const IDD = "https://luongnv.com/idd";
+const ACTIONS = {
+  issues: { label: "Resolve", key: "resolve", skill: "issue-resolver", noun: "issue" },
+  prs: { label: "Review", key: "review", skill: "issue-pr-review", noun: "pull request" },
+};
+const isNumber = (n) => Number.isSafeInteger(n) && n > 0;
+
+// Both skills drive `gh`, so the action is offered on GitHub only.
+function actionFor(view) {
+  if (ui.forge !== FORGES.github) return null;
+  const item = ui[view]?.[ui.sel[view]];
+  return item && isNumber(item.number) ? { ...ACTIONS[view], number: item.number } : null;
+}
+
+const readable = (file) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
+const dirs = (dir) => { try { return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(dir, d.name)); } catch { return []; } };
+const json = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; } };
+const safeName = (n) => typeof n === "string" && /^[\w.-]+$/.test(n) ? n : null;
+const pluginName = (dir) => safeName(json(path.join(dir, ".claude-plugin", "plugin.json"))?.name);
+
+// How to call `skill` for an agent of `kind` working in `root`: its name, or
+// "plugin:name" when Claude has it only from a plugin; null when it isn't found.
+// Folders are checked for every kind, since a wrong "not installed" is the worse mistake.
+function findSkill(kind, skill, root) {
+  const home = os.homedir();
+  const folders = [".claude", ".agents", ".codex", `.${kind}`].flatMap((d) => [path.join(home, d, "skills"), ...(root ? [path.join(root, d, "skills")] : [])]);
+  if (folders.some((f) => readable(path.join(f, skill, "SKILL.md")))) return skill;
+  if (kind !== "claude") return null;
+  // Claude plugins: the installed ones (installed_plugins.json) that settings.json
+  // doesn't disable, each with <installPath>/skills/<skill>, and synced ones, laid
+  // out as plugins/synced/<account>/<plugin>/<skill>. A cached copy alone doesn't count.
+  const plugins = path.join(home, ".claude", "plugins");
+  const enabled = { ...json(path.join(home, ".claude", "settings.json"))?.enabledPlugins };
+  if (root) for (const f of ["settings.json", "settings.local.json"]) Object.assign(enabled, json(path.join(root, ".claude", f))?.enabledPlugins);
+  const installed = Object.entries(json(path.join(plugins, "installed_plugins.json"))?.plugins ?? {})
+    .filter(([key, list]) => enabled[key] !== false && Array.isArray(list))
+    .flatMap(([key, list]) => list
+      .filter((i) => typeof i?.installPath === "string" && (i.scope !== "project" && i.scope !== "local" || i.projectPath === root))
+      .map((i) => [i.installPath, safeName(key.split("@")[0])]));
+  const roots = [...installed, ...dirs(path.join(plugins, "synced")).flatMap(dirs).map((p) => [p, null])];
+  for (const [dir, fallback] of roots) {
+    if (![path.join(dir, "skills", skill), path.join(dir, skill)].some((d) => readable(path.join(d, "SKILL.md")))) continue;
+    const name = pluginName(dir) ?? fallback;
+    return name ? `${name}:${skill}` : skill;
+  }
+  return null;
+}
+
+// Built from the skill name and an integer only: never from a title or body.
+function promptFor(kind, skill, action) {
+  if (!isNumber(action.number)) throw new Error("not a number");
+  return kind === "claude" ? `/${skill} ${action.number}` : `Use the ${skill} skill on ${action.noun} #${action.number}.`;
+}
+
+// herdr reports a failure as {"error":{"code","message"}}.
+function herdrError(r, what) {
+  for (const text of [r.stderr, r.stdout]) {
+    try { const e = JSON.parse(text).error; if (e?.message) return { code: e.code, message: e.message }; } catch {}
+  }
+  return { code: null, message: firstLine(r.stderr) || firstLine(r.stdout) || `${what} exited ${r.code}` };
+}
+
+function say(tone, text, url = null) {
+  ui.notice = { tone, text: clean(text), url };
+  ui.follow = true;
+  draw();
+}
+
+// The Resolve or Review button and the a key. One launch at a time.
+function act() {
+  const action = actionFor(ui.view);
+  if (!action || ui.acting) return ui.acting;
+  ui.acting = launch(action, ui.root || cwd)
+    .catch((e) => say("error", `Can't start an agent: ${e.message}`))
+    .finally(() => { ui.acting = null; });
+  return ui.acting;
+}
+
+async function launch(action, root) {
+  const what = `${action.noun} #${action.number}`;
+  const herdr = (args, timeout) => run(HERDR, args, { timeout }).catch((e) =>
+    ({ code: -1, stdout: "", stderr: e.code === "ENOENT" ? "herdr isn't installed" : e.message }));
+  if (!target && !ui.tab) return say("error", `Open this panel in herdr to ${action.key} ${what} with your agent.`);
+  say("info", `Finding your agent to ${action.key} ${what}…`);
+  const list = await herdr(["agent", "list"], 10000);
+  if (list.code !== 0) return say("error", `Can't list agents: ${herdrError(list, "herdr").message}`);
+  let agents;
+  try { agents = JSON.parse(list.stdout).result.agents ?? []; } catch { return say("error", "Can't read herdr's agent list"); }
+  // Your agent: the one in the pane the panel follows, else one in the panel's tab.
+  const agent = agents.find((a) => a.pane_id === target) ?? agents.find((a) => ui.tab && a.tab_id === ui.tab && a.pane_id !== SELF);
+  if (!agent) return say("error", `No agent in this tab. Start yours (claude, codex, …) in a pane here, then ${action.label} again.`);
+  const kind = agent.agent;
+  if (typeof kind !== "string" || !/^[a-z][\w-]*$/.test(kind)) return say("error", "herdr doesn't say which agent runs in this tab");
+  const skill = findSkill(kind, action.skill, root);
+  if (!skill) return say("error", `The ${action.skill} skill isn't installed for ${kind}. Install the skills from:`, IDD);
+  const text = promptFor(kind, skill, action);
+
+  say("info", `Starting ${kind} to ${action.key} ${what}…`);
+  const split = await herdr(["pane", "split", agent.pane_id, "--direction", "down", "--cwd", root, "--no-focus"], 10000);
+  let pane = null;
+  try { const r = JSON.parse(split.stdout).result; pane = r?.pane?.pane_id ?? r?.pane_id ?? null; } catch {}
+  if (split.code !== 0 || !pane) return say("error", `Can't open a pane for ${kind}: ${herdrError(split, "herdr").message}`);
+  const names = new Set(agents.map((a) => a.name).filter(Boolean));
+  let name = `${action.key}-${action.number}`;
+  for (let k = 2; names.has(name); k++) name = `${action.key}-${action.number}-${k}`;
+  // herdr's own timeout first, so a slow start reads as herdr's reason.
+  const start = await herdr(["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "55000"], 60000);
+  if (start.code !== 0) {
+    const e = herdrError(start, "herdr");
+    // Not ready usually means the agent is asking you something: leave it open.
+    if (e.code === "agent_not_ready") return say("error", `${kind} is waiting for you in the new pane. Then send it: ${text}`);
+    await herdr(["pane", "close", pane], 5000);
+    return say("error", `${kind} didn't start: ${e.message}`);
+  }
+  const sent = await herdr(["agent", "prompt", pane, text], 10000);
+  if (sent.code !== 0) return say("error", `${kind} started, but the prompt failed. Send it yourself: ${text} (${herdrError(sent, "herdr").message})`);
+  say("ok", `Started ${kind} in a new pane: ${text}`);
+}
+
 // ── Rendering ───────────────────────────────────────────────────────────────
 
 // One row: the selection bar, a 1-cell icon, the title (2 lines), the description
@@ -387,10 +515,15 @@ function issueRow(i, selected, cols) {
 const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const HINT = "Ctrl- or Cmd-click the URL to open it on your machine";
 
+const TONES = { info: yellow, ok: green, error: red };
+
 // A failed open, at most `room` lines: why, what to do instead, and the whole URL.
-function noticeLines({ url, reason }, cols, room) {
-  const lines = [dim("─".repeat(cols)), " " + red(fit(reason, cols - 2)), " " + dim(fit(HINT, cols - 2))];
-  for (const l of urlLines(url, cols - 2)) lines.push(" " + link(url, accent(l)));
+// An agent action's notice is its message, in the tone's color, and maybe a URL.
+function noticeLines(notice, cols, room) {
+  const { url } = notice, lines = [dim("─".repeat(cols))];
+  if (notice.tone) for (const l of wrap(notice.text, cols - 2, 3)) lines.push(" " + TONES[notice.tone](l));
+  else lines.push(" " + red(fit(notice.reason, cols - 2)), " " + dim(fit(HINT, cols - 2)));
+  if (url) for (const l of urlLines(url, cols - 2)) lines.push(" " + link(url, accent(l)));
   return lines.slice(0, Math.max(0, room));
 }
 
@@ -399,13 +532,17 @@ function draw() {
   const out = [];
   ui.buttons = [];
 
-  // Header: repo, spinner, then the refresh and open-on-the-forge buttons.
+  // Header: repo, spinner, then the Resolve or Review button for the selected row,
+  // and the refresh and open-on-the-forge buttons.
   const right = ui.repo?.url ? " ↻  ↗ " : " ↻ ";
+  const action = actionFor(ui.view);
+  const button = action ? ` ${action.label} #${action.number} ` : "";
   const spin = ui.loading ? yellow(SPIN[ui.frame % SPIN.length]) + " " : "";
-  const title = fit(ui.repo?.name ?? ui.forge?.name ?? "Pull requests and issues", cols - width(right) - 3 - (spin ? 2 : 0));
-  const gap = " ".repeat(Math.max(0, cols - 1 - width(title) - (spin ? 2 : 0) - width(right)));
-  out.push(` ${link(ui.repo?.url, bold(title))}${gap}${spin}${dim(right)}`);
+  const title = fit(ui.repo?.name ?? ui.forge?.name ?? "Pull requests and issues", cols - width(right) - 3 - (button ? width(button) + 1 : 0) - (spin ? 2 : 0));
+  const gap = " ".repeat(Math.max(0, cols - 1 - width(title) - (spin ? 2 : 0) - width(button) - width(right)));
+  out.push(` ${link(ui.repo?.url, bold(title))}${gap}${spin}${button ? invert(button) : ""}${dim(right)}`);
   const at = cols - width(right);
+  if (button) ui.buttons.push({ row: 0, from: at - width(button), to: at, action: () => act() });
   ui.buttons.push({ row: 0, from: at, to: at + 3, action: () => refresh() });
   if (ui.repo?.url) ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => openUrl(ui.repo.url) });
   out.push(dim("─".repeat(cols)));
@@ -453,7 +590,7 @@ function draw() {
   }
   out.push(...notice);
 
-  out.push(dim(fit(" ↑↓ select · ⏎ open · ⇥ switch · r refresh · o repo · q close", cols)));
+  out.push(dim(fit(` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · r refresh · o repo · q close`, cols)));
 
   let frame = `${ESC}?2026h`;
   out.slice(0, rows).forEach((l, i) => { frame += `${ESC}${i + 1};1H${l}${ESC}0m${ESC}K`; });
@@ -505,7 +642,8 @@ function onInput(data) {
       continue;
     }
     if (k === "q" || k === "\x03" || (k === "\x1b" && data.length === 1)) return quit();
-    if (ui.notice) { ui.notice = null; draw(); }
+    // Any key clears a notice, except the progress of a launch still under way.
+    if (ui.notice && !(ui.acting && ui.notice.tone === "info")) { ui.notice = null; draw(); }
     if (k === "\x1b[A" || k === "\x1bOA" || k === "k") move(-1);
     else if (k === "\x1b[B" || k === "\x1bOB" || k === "j") move(1);
     else if (k === "\x1b[5~") move(-5);
@@ -517,6 +655,7 @@ function onInput(data) {
     else if (k === "2") pick("issues");
     else if (k === "\r" || k === "\n") openUrl(ui[ui.view][ui.sel[ui.view]]?.url);
     else if (k === "o") openUrl(ui.repo?.url);
+    else if (k === "a") act();
     else if (k === "r") refresh();
   }
 }
@@ -557,4 +696,4 @@ function main() {
 }
 
 if (require.main === module) main();
-else module.exports = { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput };
+else module.exports = { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, findSkill, promptFor, IDD };
