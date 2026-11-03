@@ -3,11 +3,25 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 // Record what the panel would open instead of starting a browser. panel.js reads
 // spawn when it loads, so this has to come before the require below.
+// The last child is kept so a test can fire its "error" or "exit" events.
 const opened = [];
-require("node:child_process").spawn = (cmd, args) => { opened.push(args[0]); return { on() { return this; }, unref() {} }; };
+let lastChild = null, spawnThrows = null;
+require("node:child_process").spawn = (cmd, args) => {
+  if (spawnThrows) throw spawnThrows;
+  opened.push(args[0]);
+  const handlers = {};
+  lastChild = {
+    cmd,
+    on(event, fn) { (handlers[event] ??= []).push(fn); return this; },
+    unref() {},
+    emit(event, ...rest) { for (const fn of handlers[event] ?? []) fn(...rest); },
+  };
+  return lastChild;
+};
 const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput } = require("../panel.js");
 
-const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
+// Drops colors and OSC 8 hyperlinks, leaving the text a terminal shows.
+const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;[^\x07\x1b]*(?:\x1b\\|\x07)/g, "");
 const iso = (secondsAgo) => new Date(Date.now() - secondsAgo * 1000).toISOString();
 
 test("width counts display cells", () => {
@@ -176,13 +190,18 @@ test("firstLine skips blank lines and glab's ERROR heading", () => {
 // Run fn against a 60x24 screen, returning the last frame's lines as plain text.
 // stdout is node --test's channel, so it is only borrowed for the call.
 function screen(fn) {
+  return rawScreen(fn).map((l) => l === undefined ? l : strip(l));
+}
+
+// The same, with each line's escape sequences left in.
+function rawScreen(fn) {
   const { write } = process.stdout, cols = process.stdout.columns, rows = process.stdout.rows;
   let frame = "";
   process.stdout.write = (s) => { frame = s; return true; };
   process.stdout.columns = 60; process.stdout.rows = 24;
   try { fn(); } finally { Object.assign(process.stdout, { write, columns: cols, rows }); }
   const lines = [];
-  for (const m of frame.matchAll(/\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K/g)) lines[m[1] - 1] = strip(m[2]);
+  for (const m of frame.matchAll(/\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K/g)) lines[m[1] - 1] = m[2];
   return lines;
 }
 
@@ -193,7 +212,7 @@ const items = (kind) => Array.from({ length: 10 }, (_, i) => ({
 function setup(view) {
   Object.assign(ui, {
     view, prs: items("pull"), issues: items("issues"), errors: {}, error: null, repo: { name: "o/p", url: "https://x/o/p" },
-    loading: false, fetched: true, follow: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 },
+    loading: false, fetched: true, follow: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, notice: null,
   });
   opened.length = 0;
   return screen(draw);
@@ -246,6 +265,8 @@ test("after scrolling, each row opens the item drawn on it and gaps open nothing
 
 test("a click leaves the lists and the scroll position as they were", () => {
   setup("prs");
+  // The selected row's URL line goes below the view, so the rows above it stay put.
+  ui.sel.prs = ui.prs.length - 1;
   const lines = screen(() => onInput(Buffer.from(wheelDown + wheelDown)));
   const top = { ...ui.top }, prs = JSON.stringify(ui.prs), issues = JSON.stringify(ui.issues);
   // The bottom row is cut off: a click must not scroll to show the rest of it.
@@ -257,4 +278,199 @@ test("a click leaves the lists and the scroll position as they were", () => {
   assert.equal(JSON.stringify(ui.prs), prs);
   assert.equal(JSON.stringify(ui.issues), issues);
   assert.equal(ui.view, "prs");
+});
+
+// ── When a row can't be opened ──────────────────────────────────────────────
+
+const HINT = "Ctrl- or Cmd-click the URL to open it on your machine";
+const enoent = () => Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" });
+
+test("when the opener isn't installed, a click shows the URL and the hint", () => {
+  const lines = setup("prs");
+  const y = lines.findIndex((l) => l?.includes("Title 3"));
+  const after = screen(() => { onInput(Buffer.from(press(y))); lastChild.emit("error", enoent()); });
+  assert.deepEqual(opened, ["https://x/pull/3"]);
+  assert.equal(noticeOf(after)?.url, "https://x/pull/3", "URL not shown after ENOENT");
+  assert.ok(after.some((l) => l?.includes(HINT)), "hint not shown after ENOENT");
+  assert.ok(after.some((l) => l?.includes(`${lastChild.cmd} not found`)));
+});
+
+const noticeOf = (lines) => {
+  const at = lines.findIndex((l) => l?.includes(HINT));
+  return at < 0 ? null : { reason: lines[at - 1].trim(), url: lines.slice(at + 1, FOOTER).map((l) => l.trim()).join(""), from: at - 2 };
+};
+
+test("when the opener exits with an error, enter shows the URL and the hint", () => {
+  setup("prs");
+  const lines = screen(() => { onInput(Buffer.from("\r")); lastChild.emit("exit", 3, null); });
+  assert.deepEqual(opened, ["https://x/pull/0"]);
+  assert.deepEqual(noticeOf(lines) && { ...noticeOf(lines), from: 0 }, { reason: `${lastChild.cmd} exited 3`, url: "https://x/pull/0", from: 0 });
+  assert.match(lines[FOOTER], /select · ⏎ open/);
+});
+
+test("the notice never covers the row that failed to open", () => {
+  setup("prs");
+  // Moving down leaves the selected row on the list's bottom edge.
+  const before = screen(() => onInput(Buffer.from("j".repeat(6))));
+  const bottom = before.findIndex((l) => l?.includes("#6 ·"));
+  assert.ok(bottom > LIST.to - 2, `#6 isn't at the bottom: ${bottom}`);
+  const lines = screen(() => { onInput(Buffer.from("\r")); lastChild.emit("exit", 3, null); });
+  assert.deepEqual(opened, ["https://x/pull/6"]);
+  const notice = noticeOf(lines);
+  assert.equal(notice?.url, "https://x/pull/6");
+  for (const t of ["Title 6", "Body 6", "#6 ·"]) {
+    const y = lines.findIndex((l) => l?.includes(t));
+    assert.ok(y >= LIST.from && y < notice.from, `${t} is at ${y}, the notice starts at ${notice.from}`);
+  }
+});
+
+test("o and the header's ↗ show the repo URL when it can't be opened", () => {
+  setup("issues");
+  let lines = screen(() => { onInput(Buffer.from("o")); lastChild.emit("exit", 3, null); });
+  assert.equal(noticeOf(lines)?.url, "https://x/o/p");
+  const x = setup("issues")[0].indexOf("↗");
+  assert.ok(x > 0);
+  lines = screen(() => { onInput(Buffer.from("j")); click(x, 0); lastChild.emit("error", enoent()); });
+  assert.deepEqual(opened, ["https://x/o/p"]);
+  assert.equal(noticeOf(lines)?.url, "https://x/o/p");
+  assert.equal(noticeOf(lines)?.reason, `${lastChild.cmd} not found`);
+});
+
+test("a successful open shows nothing and leaves the frame as it was", () => {
+  const before = setup("prs");
+  const lines = screen(() => { onInput(Buffer.from("\r")); lastChild.emit("exit", 0, null); draw(); });
+  assert.equal(opened.length, 1);
+  assert.equal(ui.notice, null);
+  assert.deepEqual(lines, before);
+});
+
+test("the notice goes away on the next open or key, and a stale failure is ignored", () => {
+  const before = setup("prs");
+  const y = before.findIndex((l) => l?.includes("Title 2"));
+  screen(() => { onInput(Buffer.from("\r")); lastChild.emit("exit", 3, null); });
+  assert.ok(ui.notice);
+  let lines = screen(() => onInput(Buffer.from(press(y))));
+  assert.deepEqual(opened, ["https://x/pull/0", "https://x/pull/2"]);
+  assert.equal(noticeOf(lines), null);
+  const stale = lastChild;
+  screen(() => onInput(Buffer.from("o")));
+  screen(() => stale.emit("exit", 3, null));
+  assert.equal(ui.notice, null, "a failure from an earlier open was shown");
+  lines = screen(() => lastChild.emit("exit", 3, null));
+  assert.equal(noticeOf(lines)?.url, "https://x/o/p");
+  lines = screen(() => onInput(Buffer.from("x")));
+  assert.equal(ui.notice, null);
+  assert.equal(noticeOf(lines), null);
+});
+
+test("an opener that can't even start shows the URL", () => {
+  setup("prs");
+  spawnThrows = new Error("bad argument");
+  let lines;
+  try { lines = screen(() => onInput(Buffer.from("\r"))); } finally { spawnThrows = null; }
+  assert.deepEqual(noticeOf(lines) && [noticeOf(lines).reason, noticeOf(lines).url], ["bad argument", "https://x/pull/0"]);
+});
+
+test("a long URL is shown whole, wrapped, linked, and its lines open nothing", () => {
+  setup("prs");
+  const url = "https://github.example.com/some-organisation/a-repository-with-a-long-name/pull/12345?notification_referrer_id=abcdefghijklmnop";
+  ui.prs[0].url = url;
+  const raw = rawScreen(() => { onInput(Buffer.from("\r")); lastChild.emit("exit", 3, null); });
+  const lines = raw.map(strip);
+  const notice = noticeOf(lines);
+  assert.equal(notice.url, url);
+  assert.ok(lines.slice(notice.from + 3, FOOTER).length >= 2);
+  for (const l of lines) assert.ok(width(l) <= 60, l);
+  for (let y = notice.from + 3; y < FOOTER; y++) assert.ok(raw[y].includes(`\x1b]8;;${url}\x1b\\`), `line ${y} isn't linked`);
+  for (let y = notice.from; y <= FOOTER; y++) {
+    opened.length = 0;
+    screen(() => click(5, y));
+    assert.deepEqual(opened, [], `notice line ${y} opened something`);
+  }
+});
+
+test("a notice never carries control characters from the URL or the error", () => {
+  setup("prs");
+  ui.prs[0].url = "https://x/\x1b]8;;https://evil\x07/\x9b2J";
+  const raw = rawScreen(() => { onInput(Buffer.from("\r")); lastChild.emit("error", new Error("boom\x1b[2J\x07")); });
+  const at = raw.findIndex((l) => l?.includes(HINT));
+  assert.ok(at > 0);
+  for (const l of raw.slice(at - 2, FOOTER)) {
+    assert.doesNotMatch(l, /\x1b\]|\x07|\x9b|\x1b\[2J/, JSON.stringify(l));
+  }
+  assert.match(strip(raw[at - 1]), /boom/);
+});
+
+// ── Hyperlinks ──────────────────────────────────────────────────────────────
+
+test("each title line is its own OSC 8 link to the row", () => {
+  const url = "https://github.com/o/p/pull/12";
+  const lines = prRow({ ...pr, url }, true, 40);
+  const titles = lines.filter((l) => l.includes("\x1b]8;"));
+  assert.equal(titles.length, 2);
+  for (const l of titles) {
+    const open = l.indexOf(`\x1b]8;;${url}\x1b\\`), close = l.lastIndexOf("\x1b]8;;\x1b\\");
+    assert.ok(open >= 0 && close > open, JSON.stringify(l));
+    assert.equal(l.split("\x1b]8;").length, 3);
+  }
+  // Same text as an unlinked row, plus the selected row's URL line.
+  assert.deepEqual(lines.map(strip), [...prRow(pr, true, 40).map(strip), `▌   ${url}`]);
+});
+
+// herdr 0.9.5 skips OSC 8 links, but Ctrl-click opens a plain URL that sits whole on one line.
+test("the selected row shows its URL as plain text on one line", () => {
+  const url = "https://github.com/o/p/pull/12";
+  const lines = prRow({ ...pr, url }, true, 40);
+  assert.equal(strip(lines.at(-1)), `▌   ${url}`);
+  assert.doesNotMatch(lines.at(-1), /\x1b\]8/);
+  assert.equal(prRow({ ...pr, url }, false, 40).length, lines.length - 1, "only the selected row has a URL line");
+  for (const bad of ["javascript:alert(1)", "https://x/\x1b]8;;https://evil\x1b\\", undefined]) {
+    assert.equal(prRow({ ...pr, url: bad }, true, 40).length, lines.length - 1, JSON.stringify(bad));
+  }
+});
+
+test("a URL too long for one line breaks after its scheme, so no line is a cut-off URL", () => {
+  const url = "https://github.example.com/some-organisation/a-repository-with-a-long-name/pull/12345";
+  const lines = prRow({ ...pr, url }, true, 40).map(strip);
+  const at = lines.findIndex((l) => l.endsWith("https://"));
+  assert.equal(lines[at], "▌   https://");
+  const rest = lines.slice(at + 1);
+  assert.ok(rest.length >= 2);
+  for (const l of lines) assert.ok(width(l) <= 40, l);
+  for (const l of rest) assert.doesNotMatch(l, /https?:\/\//, l);
+  assert.equal(lines.slice(at).map((l) => l.slice(4)).join(""), url);
+});
+
+test("links leave the visible frame as it was", () => {
+  setup("prs");
+  const raw = rawScreen(draw);
+  const linked = raw.map((l) => l === undefined ? l : strip(l));
+  assert.ok(raw[0].includes("\x1b]8;;https://x/o/p\x1b\\"), "the repo name isn't linked");
+  const y = linked.findIndex((l) => l?.includes("Title 3"));
+  assert.ok(raw[y].includes("\x1b]8;;https://x/pull/3\x1b\\") && raw[y].endsWith("\x1b]8;;\x1b\\"), JSON.stringify(raw[y]));
+  for (const p of ui.prs) p.url = p.url.replace("https:", "ftp:");
+  ui.repo.url = "ftp://x/o/p";
+  const plainRaw = rawScreen(draw);
+  assert.ok(plainRaw.every((l) => !l?.includes("\x1b]8")));
+  // An ftp URL gets no URL line under the selected row, so its list runs one line longer.
+  const plainLines = plainRaw.map((l) => l === undefined ? l : strip(l));
+  const urlLine = linked.indexOf("▌   https://x/pull/0");
+  assert.ok(urlLine > 0, "the selected row's URL isn't shown");
+  assert.deepEqual(linked.filter((_, i) => i !== urlLine), plainLines.filter((_, i) => i !== LIST.to));
+  for (const l of linked) assert.ok(width(l ?? "") <= 60, l);
+});
+
+test("only plain http(s) URLs become links", () => {
+  for (const url of ["https://x/\x1b]8;;https://evil\x1b\\", "https://x/\x07", "https://x/\x9b", "javascript:alert(1)", "file:///etc/passwd", "ftp://x/p", undefined, 42]) {
+    for (const l of prRow({ ...pr, url }, true, 60)) assert.doesNotMatch(l, /\x1b\]8/, JSON.stringify(url));
+  }
+  assert.match(prRow({ ...pr, url: "HTTP://x/p" }, false, 60)[0], /\x1b\]8;;HTTP:\/\/x\/p\x1b\\/);
+});
+
+test("a Ctrl-click on a title is left to the terminal", () => {
+  const lines = setup("prs");
+  const y = lines.findIndex((l) => l?.includes("Title 3"));
+  screen(() => onInput(Buffer.from(`\x1b[<16;5;${y + 1}M\x1b[<16;5;${y + 1}m`)));
+  assert.deepEqual(opened, []);
+  assert.equal(ui.sel.prs, 0);
 });

@@ -25,6 +25,11 @@ const rgb = (hex) => {
   const n = parseInt(hex, 16);
   return /^[0-9a-f]{6}$/i.test(hex) ? sgr(`38;2;${n >> 16};${(n >> 8) & 255};${n & 255}`) : dim;
 };
+// An OSC 8 hyperlink: the terminal opens it on the machine you're sitting at, so
+// Ctrl-click (or Cmd-click) works even when the panel runs on a remote host. Only a
+// plain http(s) URL becomes a link; added after fit and wrap, it takes no cells.
+const linkable = (u) => typeof u === "string" && /^https?:\/\//i.test(u) && !/[\x00-\x1f\x7f-\x9f]/.test(u);
+const link = (u, text) => linkable(u) ? `\x1b]8;;${u}\x1b\\${text}\x1b]8;;\x1b\\` : text;
 
 // Display width of one code point: 0 for combining marks, 2 for wide CJK and emoji.
 function cellWidth(cp) {
@@ -215,7 +220,7 @@ const ui = {
   view: "prs", prs: [], issues: [], errors: {}, repo: null, forge: null, error: null,
   loading: false, fetched: false, fetchedAt: 0, context: null,
   sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, frame: 0,
-  rows: [], buttons: [], visible: true,
+  rows: [], buttons: [], visible: true, notice: null,
 };
 let cwd = process.env.HERDR_GITHUB_CWD || process.cwd();
 let target = process.env.HERDR_GITHUB_PANE || null;
@@ -297,10 +302,29 @@ async function load(forge, root) {
   return result;
 }
 
+// A failed open shows the URL, so a panel without a browser (on a remote machine,
+// say) never just does nothing. A success draws nothing.
+let opens = 0;
 function openUrl(url) {
   if (!url) return;
+  if (ui.notice) { ui.notice = null; draw(); }
   const cmd = process.platform === "darwin" ? "open" : "xdg-open";
-  try { spawn(cmd, [url], { stdio: "ignore" }).on("error", () => {}).unref(); } catch {}
+  const seq = ++opens;
+  let done = false;
+  const fail = (reason) => {
+    if (done || seq !== opens) return;
+    done = true;
+    ui.notice = { url, reason: clean(reason) };
+    // Keep the selected row, and the URL under it, in view above the notice.
+    ui.follow = true;
+    draw();
+  };
+  try {
+    spawn(cmd, [url], { stdio: "ignore" })
+      .on("error", (e) => fail(e.code === "ENOENT" ? `${cmd} not found` : e.message))
+      .on("exit", (code, signal) => { if (code !== 0) fail(code == null ? `${cmd} stopped by ${signal}` : `${cmd} exited ${code}`); })
+      .unref();
+  } catch (e) { fail(e.message); }
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────────
@@ -311,7 +335,7 @@ function rowLines(item, selected, cols, icon, meta, trailing) {
   const inner = Math.max(10, cols - 5);
   const bar = selected ? accent("▌") : " ";
   const lines = [];
-  wrap(item.title || "", inner, 2).forEach((t, i) => lines.push(`${bar} ${i ? " " : icon} ${selected ? bold(t) : t}`));
+  wrap(item.title || "", inner, 2).forEach((t, i) => lines.push(`${bar} ${i ? " " : icon} ${link(item.url, selected ? bold(t) : t)}`));
   const body = item.body ? wrap(item.body, inner, 3).map(muted) : [dim("No description")];
   for (const b of body) lines.push(`${bar}   ${b}`);
   let parts = trailing.slice();
@@ -320,7 +344,20 @@ function rowLines(item, selected, cols, icon, meta, trailing) {
   const left = fit(meta, Math.max(0, room()));
   const pad = " ".repeat(Math.max(0, room() - width(left)));
   lines.push(`${bar}   ${dim(left)}${pad}${parts.map((p) => " " + p.s).join("")}`);
+  // The selected row also shows its URL as plain text: herdr ignores OSC 8 links,
+  // but Ctrl-click on a visible http(s) URL opens it on the machine you sit at.
+  if (selected && linkable(item.url)) for (const l of urlLines(item.url, cols - 4)) lines.push(`${bar}   ${accent(l)}`);
   return lines;
+}
+
+// A URL as lines of at most `max` cells. herdr finds a plain URL only when it sits
+// whole on one line, so a URL that has to wrap breaks right after its scheme: no
+// line is then a cut-off URL that a Ctrl-click would open.
+function urlLines(url, max) {
+  const u = clean(url);
+  if (width(u) <= max) return [u];
+  const at = u.indexOf("://") + 3;
+  return at > 2 && at <= max ? [u.slice(0, at), ...wrap(u.slice(at), max, Infinity)] : wrap(u, max, Infinity);
 }
 
 const part = (text, style = dim) => ({ w: width(text), s: style(text) });
@@ -348,6 +385,14 @@ function issueRow(i, selected, cols) {
 }
 
 const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+const HINT = "Ctrl- or Cmd-click the URL to open it on your machine";
+
+// A failed open, at most `room` lines: why, what to do instead, and the whole URL.
+function noticeLines({ url, reason }, cols, room) {
+  const lines = [dim("─".repeat(cols)), " " + red(fit(reason, cols - 2)), " " + dim(fit(HINT, cols - 2))];
+  for (const l of urlLines(url, cols - 2)) lines.push(" " + link(url, accent(l)));
+  return lines.slice(0, Math.max(0, room));
+}
 
 function draw() {
   const cols = process.stdout.columns || 60, rows = process.stdout.rows || 24;
@@ -359,7 +404,7 @@ function draw() {
   const spin = ui.loading ? yellow(SPIN[ui.frame % SPIN.length]) + " " : "";
   const title = fit(ui.repo?.name ?? ui.forge?.name ?? "Pull requests and issues", cols - width(right) - 3 - (spin ? 2 : 0));
   const gap = " ".repeat(Math.max(0, cols - 1 - width(title) - (spin ? 2 : 0) - width(right)));
-  out.push(` ${bold(title)}${gap}${spin}${dim(right)}`);
+  out.push(` ${link(ui.repo?.url, bold(title))}${gap}${spin}${dim(right)}`);
   const at = cols - width(right);
   ui.buttons.push({ row: 0, from: at, to: at + 3, action: () => refresh() });
   if (ui.repo?.url) ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => openUrl(ui.repo.url) });
@@ -378,8 +423,9 @@ function draw() {
   ui.buttons.push({ row: 2, from: half, to: cols, action: () => pick("issues") });
   out.push(dim("─".repeat(cols)));
 
-  // The list, scrolled so the selected row is in full view.
-  const view = ui.view, items = ui[view], listTop = out.length, height = Math.max(1, rows - listTop - 1);
+  // The list, scrolled so the selected row is in full view, above any notice.
+  const notice = ui.notice ? noticeLines(ui.notice, cols, rows - out.length - 2) : [];
+  const view = ui.view, items = ui[view], listTop = out.length, height = Math.max(1, rows - listTop - 1 - notice.length);
   const lines = [], owner = [];
   let selStart = 0, selEnd = 0;
   items.forEach((x, i) => {
@@ -405,6 +451,7 @@ function draw() {
     out.push(lines[ui.top[view] + r] ?? "");
     ui.rows[listTop + r] = owner[ui.top[view] + r] ?? -1;
   }
+  out.push(...notice);
 
   out.push(dim(fit(" ↑↓ select · ⏎ open · ⇥ switch · r refresh · o repo · q close", cols)));
 
@@ -458,6 +505,7 @@ function onInput(data) {
       continue;
     }
     if (k === "q" || k === "\x03" || (k === "\x1b" && data.length === 1)) return quit();
+    if (ui.notice) { ui.notice = null; draw(); }
     if (k === "\x1b[A" || k === "\x1bOA" || k === "k") move(-1);
     else if (k === "\x1b[B" || k === "\x1bOB" || k === "j") move(1);
     else if (k === "\x1b[5~") move(-5);
