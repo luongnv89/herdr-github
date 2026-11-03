@@ -78,6 +78,43 @@ function runWith(extra, xdg, ...args) {
 }
 const haveHerdr = (() => { try { execFileSync(process.env.HERDR_BIN_PATH || "herdr", ["--version"], { stdio: "ignore" }); return true; } catch { return false; } })();
 
+// A stand-in for herdr on HERDR_BIN_PATH, so the paths below run without herdr (CI has
+// none). Its `config check` reads the file bind-key names in HERDR_CONFIG_PATH and
+// fails when that file contains `rejects`, a fixed string; without one it passes.
+// `--default-config` lists one default key, prefix+c. `calls()` lists each run as
+// "<args> <HERDR_CONFIG_PATH>", so a test can tell the stub ran: bind-key treats a
+// herdr it can't start as a passing check.
+function stubHerdr(t, rejects = "") {
+  const dir = tmpDir(t, "bind-key-herdr-");
+  const bin = path.join(dir, "herdr");
+  const log = path.join(dir, "calls.log");
+  const check = rejects
+    ? `if grep -qF '${rejects}' "$HERDR_CONFIG_PATH" 2>/dev/null; then printf 'config: issues found\\nstub: rejected\\n'; exit 1; fi`
+    : ":";
+  fs.writeFileSync(bin, `#!/bin/sh
+printf '%s %s\\n' "$*" "$HERDR_CONFIG_PATH" >> '${log}'
+case "$1" in
+  --version) echo "herdr stub" ;;
+  --default-config) echo '# new_tab = "prefix+c"' ;;
+  config) ${check}; echo "config: ok" ;;
+esac
+`, { mode: 0o755 });
+  const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
+  return { bin, calls };
+}
+function tmpDir(t, prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+// A throwaway XDG_CONFIG_HOME, with `config` as herdr/config.toml when given.
+function xdgWith(t, config) {
+  const xdg = tmpDir(t, "bind-key-");
+  const file = path.join(xdg, "herdr", "config.toml");
+  if (config != null) { fs.mkdirSync(path.dirname(file)); fs.writeFileSync(file, config); }
+  return { xdg, file };
+}
+
 test("binds prefix+i once, keeps a backup, and leaves the rest of the config alone", { skip: !haveHerdr && "herdr not installed" }, () => {
   const xdg = fs.mkdtempSync(path.join(os.tmpdir(), "bind-key-"));
   const file = path.join(xdg, "herdr", "config.toml");
@@ -166,4 +203,62 @@ test("skips keys a CRLF config already uses", { skip: !haveHerdr && "herdr not i
   const r = run(xdg);
   assert.equal(r.code, 0, r.out);
   assert.doesNotMatch(r.out, /on prefix\+i\b/);
+});
+
+test("block adds a binding boundKey and usedKeys read back", () => {
+  const text = CONFIG + b.block("prefix+x", "herdr-github.toggle", "PR and issue panel");
+  assert.equal(b.boundKey(text, "herdr-github.toggle"), "prefix+x");
+  assert.equal(b.boundKey(text, "mcc-usage.toggle"), "prefix+u", "the other bindings still read the same");
+  assert.ok(b.usedKeys(text).has("prefix+x"));
+});
+
+test("binds the key it's given (stub herdr)", (t) => {
+  const { xdg, file } = xdgWith(t, CONFIG);
+  const herdr = stubHerdr(t);
+  const r = runWith({ HERDR_BIN_PATH: herdr.bin }, xdg, "prefix+x");
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /on prefix\+x: added to /);
+  assert.ok(r.out.includes(file), r.out);
+  const text = fs.readFileSync(file, "utf8");
+  assert.ok(text.startsWith(CONFIG));
+  assert.equal(b.boundKey(text, "herdr-github.toggle"), "prefix+x");
+  assert.equal(fs.readFileSync(`${file}.bak-herdr-github`, "utf8"), CONFIG);
+  // Checked before and after the edit, both times on the file it edits.
+  assert.deepEqual(herdr.calls().filter((c) => c.startsWith("config check")), [`config check ${file}`, `config check ${file}`]);
+});
+
+test("refuses a key herdr's defaults use (stub herdr)", (t) => {
+  const { xdg, file } = xdgWith(t);
+  const r = runWith({ HERDR_BIN_PATH: stubHerdr(t).bin }, xdg, "prefix+c");
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /prefix\+c is taken/);
+  assert.ok(!fs.existsSync(file));
+});
+
+test("puts the config back when herdr config check rejects the binding (stub herdr)", (t) => {
+  const { xdg, file } = xdgWith(t, CONFIG);
+  const herdr = stubHerdr(t, "herdr-github.toggle");
+  const r = runWith({ HERDR_BIN_PATH: herdr.bin }, xdg);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /not bound: Herdr rejected it: stub: rejected/);
+  assert.equal(fs.readFileSync(file, "utf8"), CONFIG);
+  assert.deepEqual(herdr.calls().filter((c) => c.startsWith("config check")), [`config check ${file}`, `config check ${file}`]);
+});
+
+test("removes the config it created when herdr config check rejects the binding (stub herdr)", (t) => {
+  const { xdg, file } = xdgWith(t);
+  const r = runWith({ HERDR_BIN_PATH: stubHerdr(t, "herdr-github.toggle").bin }, xdg, "prefix+x");
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /not bound: Herdr rejected it: stub: rejected/);
+  assert.ok(!fs.existsSync(file), "no config is left behind");
+});
+
+test("changes nothing when the config already fails herdr config check (stub herdr)", (t) => {
+  const broken = "this is [ not toml\n";
+  const { xdg, file } = xdgWith(t, broken);
+  const r = runWith({ HERDR_BIN_PATH: stubHerdr(t, "not toml").bin }, xdg);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /not bound: .* already has problems: stub: rejected/);
+  assert.equal(fs.readFileSync(file, "utf8"), broken);
+  assert.ok(!fs.existsSync(`${file}.bak-herdr-github`), "no backup when nothing changed");
 });

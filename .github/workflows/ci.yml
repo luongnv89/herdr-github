@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Syntax
-        run: node --check panel.js && node --check toggle.js
+        run: node --check panel.js && node --check toggle.js && node --check bind-key.js
       - name: Manifest
         run: |
           python3 - <<'PY'
