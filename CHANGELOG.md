@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- A `bind-key` action that binds a key to the panel: `herdr plugin action invoke herdr-github.bind-key`. It adds `prefix+i` to herdr's `config.toml`, or the first free `prefix+` letter when `prefix+i` is taken, then reloads the config. It never rebinds a key that's in use, does nothing when the panel already has a key, and keeps a backup of the old config. Herdr's plugin manifest can't declare keys, so this is a one-time step after installing.
+
 ## 0.3.0 (2026-11-03)
 
 ### Added

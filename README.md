@@ -23,7 +23,13 @@ It is the terminal twin of the GitHub panel in [Whole Herdr](https://github.com/
 herdr plugin install luongnv89/herdr-github
 ```
 
-Then bind a key to it in `~/.config/herdr/config.toml`. `prefix+i` is free in herdr's default keys:
+Then bind a key to it:
+
+```sh
+herdr plugin action invoke herdr-github.bind-key
+```
+
+This adds `prefix+i` to `~/.config/herdr/config.toml` and reloads the config. If `prefix+i` is taken, it uses the first free `prefix+` letter instead, and it says which key it picked. If the panel already has a key, it changes nothing. It saves the old config as `config.toml.bak-herdr-github`. To choose the key yourself, run `node bind-key.js prefix+x` in the plugin folder (`herdr plugin list` shows where that is), or add the binding by hand:
 
 ```toml
 [[keys.command]]
@@ -33,7 +39,7 @@ command = "herdr-github.toggle"
 description = "PR and issue panel"
 ```
 
-Run `herdr server reload-config` to load the key. Without a key, run `herdr plugin action invoke herdr-github.toggle`.
+Then run `herdr server reload-config`. Herdr plugins can't declare keys in their manifest, so installing the plugin doesn't bind one. Without a key, run `herdr plugin action invoke herdr-github.toggle`.
 
 To update, run `herdr plugin update herdr-github`. To remove it, run `herdr plugin uninstall herdr-github`.
 
@@ -125,10 +131,11 @@ node --test
 
 A linked plugin runs straight from your folder, so a change shows the next time the panel opens. `node panel.js` also runs the panel in any terminal, for the current folder.
 
-- `herdr-plugin.toml`: the manifest, with one action (`toggle`) and one pane (`panel`).
+- `herdr-plugin.toml`: the manifest, with two actions (`toggle`, `bind-key`) and one pane (`panel`).
 - `toggle.js`: opens the panel beside the focused pane, or closes it.
+- `bind-key.js`: binds a key to `toggle` in herdr's config.
 - `panel.js`: the panel itself. Plain Node, no npm packages.
-- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, and for what Resolve and Review run, with a stand-in for `herdr`.
+- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, for what Resolve and Review run, with a stand-in for `herdr`, and for which key `bind-key` picks and how it edits the config.
 
 ## License
 
