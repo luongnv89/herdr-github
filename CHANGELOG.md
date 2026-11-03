@@ -6,6 +6,10 @@
 
 - **Resolve** and **Review** buttons in the header, for the selected issue or pull request on GitHub (#5, #6). A click, or `a`, opens a new pane below your agent, starts the same kind of agent there and sends it `/issue-resolver N` or `/issue-pr-review N`. Only the number goes into the prompt. If the skill isn't installed, nothing starts and the panel points you to https://luongnv.com/idd. The panel says when the agent starts, and why when it can't.
 
+### Fixed
+
+- A click on **Resolve** or **Review** now sends the command to the new agent, instead of leaving you to type `/issue-resolver N` or `/issue-pr-review N` yourself. When the agent first asks something, such as whether you trust the folder, the panel waits for your answer, then sends the prompt. When Claude leaves the typed prompt in its input box, the panel presses Enter once more. The panel reports the agent started only once herdr sees it working on the prompt.
+
 ## 0.2.2 (2026-11-03)
 
 ### Fixed

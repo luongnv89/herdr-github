@@ -445,14 +445,37 @@ async function launch(action, root) {
   const start = await herdr(["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "55000"], 60000);
   if (start.code !== 0) {
     const e = herdrError(start, "herdr");
-    // Not ready usually means the agent is asking you something: leave it open.
-    if (e.code === "agent_not_ready") return say("error", `${kind} is waiting for you in the new pane. Then send it: ${text}`);
-    await herdr(["pane", "close", pane], 5000);
-    return say("error", `${kind} didn't start: ${e.message}`);
+    if (e.code !== "agent_not_ready") {
+      await herdr(["pane", "close", pane], 5000);
+      return say("error", `${kind} didn't start: ${e.message}`);
+    }
+    // Not ready means the agent is asking you something, such as whether you
+    // trust the folder: keep the pane, wait for your answer, then send the prompt.
+    say("info", `${kind} is asking you something in the new pane. Answer it, and the panel sends: ${text}`);
+    const ready = await herdr(["agent", "wait", pane, "--until", "idle", "--timeout", String(ANSWER_MS)], ANSWER_MS + 5000);
+    if (ready.code !== 0) return say("error", `${kind} isn't ready in the new pane. When it is, send it: ${text}`);
   }
-  const sent = await herdr(["agent", "prompt", pane, text], 10000);
-  if (sent.code !== 0) return say("error", `${kind} started, but the prompt failed. Send it yourself: ${text} (${herdrError(sent, "herdr").message})`);
+  const sent = await submit(herdr, pane, text);
+  if (sent) return say("error", `${kind} started, but ${sent} Send it yourself in the new pane: ${text}`);
   say("ok", `Started ${kind} in a new pane: ${text}`);
+}
+
+// How long the panel waits for you to answer an agent's startup question.
+const ANSWER_MS = 300000;
+const BUSY = ["--until", "working", "--until", "blocked", "--until", "done"];
+
+// Types the prompt and checks that the agent took it. An agent can leave a typed
+// prompt in its input box without acting on the Enter, most often right after a
+// startup question; herdr then reports agent_prompt_stalled, and one more Enter
+// sends it. Returns null once the agent is on it, else why not.
+async function submit(herdr, pane, text) {
+  const sent = await herdr(["agent", "prompt", pane, text, "--wait", ...BUSY, "--timeout", "15000"], 20000);
+  if (sent.code === 0) return null;
+  const e = herdrError(sent, "herdr");
+  if (e.code !== "agent_prompt_stalled") return `the prompt failed (${e.message}).`;
+  await herdr(["agent", "send-keys", pane, "enter"], 5000);
+  const again = await herdr(["agent", "wait", pane, ...BUSY, "--timeout", "10000"], 15000);
+  return again.code === 0 ? null : "it didn't act on the prompt.";
 }
 
 // ── Rendering ───────────────────────────────────────────────────────────────

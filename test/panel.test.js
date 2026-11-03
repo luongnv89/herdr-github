@@ -575,7 +575,7 @@ test("Resolve starts your agent's kind in a new pane, prompted with the skill an
     "agent list",
     "pane split w1:p1 --direction down --cwd /repo --no-focus",
     "agent start resolve-12 --kind claude --pane w1:p7 --timeout 55000",
-    "agent prompt w1:p7 /issue-resolver 12",
+    "agent prompt w1:p7 /issue-resolver 12 --wait --until working --until blocked --until done --timeout 15000",
   ]);
   assert.ok(calls.every((c) => c[0] === "herdr"));
   assert.deepEqual(opened, [], "the button opened the browser");
@@ -595,7 +595,7 @@ test("a on a pull request starts a review with the tab's agent and a free name",
     "agent list",
     "pane split w1:p3 --direction down --cwd /repo --no-focus",
     "agent start review-12-2 --kind codex --pane w1:p7 --timeout 55000",
-    "agent prompt w1:p7 Use the issue-pr-review skill on pull request #12.",
+    "agent prompt w1:p7 Use the issue-pr-review skill on pull request #12. --wait --until working --until blocked --until done --timeout 15000",
   ]);
   assert.ok(after.some((l) => l?.includes("Started codex")));
 });
@@ -643,17 +643,52 @@ test("a failed start shows herdr's reason and closes the new pane", async (t) =>
   assert.ok(after.some((l) => l?.includes("claude didn't start: claude exited before it was ready")), after.join("\n"));
 });
 
-test("an agent that asks something on start keeps its pane; a failed prompt says what to send", async (t) => {
+test("an agent that asks something on start keeps its pane, waits for your answer, then gets the prompt", async (t) => {
   home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent start": herdrFail("agent_not_ready", "trust dialog") });
+  // What the panel shows while herdr waits for your answer.
+  let during;
+  const answer = herdr;
+  herdr = (args) => { if (args[1] === "wait") during = ui.notice; return answer(args); };
   let after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.ok(!herdrCalls().some((c) => c.startsWith("pane close")));
-  assert.ok(after.some((l) => l?.includes("claude is waiting for you in the new pane")), after.join("\n"));
+  assert.deepEqual(herdrCalls().slice(3), [
+    "agent wait w1:p7 --until idle --timeout 300000",
+    "agent prompt w1:p7 /issue-resolver 12 --wait --until working --until blocked --until done --timeout 15000",
+  ]);
+  assert.equal(during?.tone, "info");
+  assert.equal(during?.text, "claude is asking you something in the new pane. Answer it, and the panel sends: /issue-resolver 12");
+  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-resolver 12")), after.join("\n"));
+  // No answer in time: the pane stays, and the notice says what to send.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent start": herdrFail("agent_not_ready", "trust dialog"), "agent wait": herdrFail("timeout", "timed out") });
+  after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(!herdrCalls().some((c) => c.startsWith("pane close") || c.startsWith("agent prompt")));
+  assert.match(after.map((l) => l?.trim()).join(" "), /isn't ready in the new pane\. When it is, send it: \/issue-resolver 12/, after.join("\n"));
+});
+
+test("a prompt left in the input box gets one more Enter; a failed prompt says what to send", async (t) => {
+  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent prompt": herdrFail("agent_prompt_stalled", "no working state within 5000 ms") });
+  let after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(herdrCalls().slice(4), [
+    "agent send-keys w1:p7 enter",
+    "agent wait w1:p7 --until working --until blocked --until done --timeout 10000",
+  ]);
+  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-resolver 12")), after.join("\n"));
+  // Still idle after the Enter.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent prompt": herdrFail("agent_prompt_stalled", "stalled"), "agent wait": herdrFail("timeout", "timed out") });
+  after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.match(after.map((l) => l?.trim()).join(" "), /didn't act on the prompt\. Send it yourself in the new pane: \/issue-resolver 12/, after.join("\n"));
+  // Any other failure sends no Enter.
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent prompt": herdrFail("agent_blocked", "agent is blocked") });
   after = await screenAsync(() => onInput(Buffer.from("a")));
-  assert.match(after.map((l) => l?.trim()).join(" "), /Send it yourself: \/issue-resolver 12 /, after.join("\n"));
+  assert.ok(!herdrCalls().some((c) => c.startsWith("agent send-keys")));
+  assert.match(after.map((l) => l?.trim()).join(" "), /the prompt failed \(agent is blocked\)\. Send it yourself in the new pane: \/issue-resolver 12/, after.join("\n"));
 });
 
 test("herdr missing or failing shows a red reason and starts nothing", async (t) => {
@@ -708,7 +743,7 @@ test("a skill Claude has only from a plugin is found, under its plugin's name", 
   setupGitHub("issues");
   fakeHerdr(claudeHere);
   await screenAsync(() => onInput(Buffer.from("a")));
-  assert.equal(herdrCalls().at(-1), "agent prompt w1:p7 /idd:issue-resolver 12");
+  assert.equal(herdrCalls().at(-1), "agent prompt w1:p7 /idd:issue-resolver 12 --wait --until working --until blocked --until done --timeout 15000");
 });
 
 test("a skill from a disabled Claude plugin counts as missing: nothing starts", async (t) => {
