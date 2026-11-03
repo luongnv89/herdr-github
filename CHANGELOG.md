@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Resolve** and **Review** buttons in the header, for the selected issue or pull request on GitHub (#5, #6). A click, or `a`, opens a new pane below your agent, starts the same kind of agent there and sends it `/issue-resolver N` or `/issue-pr-review N`. Only the number goes into the prompt. If the skill isn't installed, nothing starts and the panel points you to https://luongnv.com/idd. The panel says when the agent starts, and why when it can't.
+
 ## 0.2.2 (2026-11-03)
 
 ### Fixed
