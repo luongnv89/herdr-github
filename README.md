@@ -64,7 +64,9 @@ On GitHub, the header shows a button for the selected row: **Resolve #N** on the
 3. opens a new pane below your agent, in the repo's folder, and starts the same kind of agent there (`herdr pane split`, then `herdr agent start`);
 4. sends it the skill and the number, for Claude `/issue-resolver 12` or `/issue-pr-review 34`; other agents get "Use the issue-resolver skill on issue #12." Nothing from the title or description goes into the prompt.
 
-Your own agent and its conversation are left alone. The panel shows what it is doing above the key hints, in yellow while it starts the agent, green once the prompt is sent, and red with the reason when something fails. A pane whose agent failed to start is closed again, unless the agent is waiting for an answer from you, such as a folder trust question.
+Your own agent and its conversation are left alone. The panel shows what it is doing above the key hints, in yellow while it starts the agent, green once the agent is working on the prompt, and red with the reason when something fails. A pane whose agent failed to start is closed again.
+
+If the new agent asks you something first, such as whether you trust the folder, the pane stays open and the panel waits up to 5 minutes for your answer, then sends the prompt. If the prompt is typed but the agent doesn't act on it, the panel presses Enter once more.
 
 If the skill isn't installed, nothing starts and the panel points you to [luongnv.com/idd](https://luongnv.com/idd) to install the skills. It looks for `<skill>/SKILL.md` in the `skills` folder of `~/.claude`, `~/.agents`, `~/.codex` and `~/.<agent>`, and of the same folders in the repo. For Claude it also looks in the plugins you have installed and not disabled (`~/.claude/plugins/installed_plugins.json`, `enabledPlugins` in `~/.claude/settings.json` and the repo's `.claude/settings*.json`), and in synced plugins, and sends a plugin's skill under the plugin's name, such as `/idd:issue-resolver 12`.
 
@@ -108,6 +110,7 @@ It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
 - **Grey label dots on GitLab:** the label colors come from `glab label list`, which failed. Check `glab auth status`.
 - **A row doesn't open, and the panel shows its URL with a red reason:** `open` or `xdg-open` is missing or failed, most often because the panel runs on a remote machine. See [Remote machines](#remote-machines).
 - **"The issue-resolver skill isn't installed" or "The issue-pr-review skill isn't installed":** install the skills from [luongnv.com/idd](https://luongnv.com/idd) for the agent named in the message, then try again.
+- **"claude isn't ready in the new pane" or "Send it yourself in the new pane":** the agent didn't take the prompt, for example because its startup question went unanswered for 5 minutes. Answer it, then type the command the notice shows, such as `/issue-resolver 12`.
 - **"No agent in this tab":** Resolve and Review start the same kind of agent as yours. Start your agent (for example `claude`) in a pane of the panel's tab, focus it, and try again.
 - **Saved SSH machines and `herdr --remote`:** the panel runs `git`, `gh` and `glab` on the computer where its herdr server runs. Ctrl-clicking the selected row's URL there to open it on your own computer hasn't been tested live yet.
 
