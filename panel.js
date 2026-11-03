@@ -352,10 +352,9 @@ function actionFor(view) {
 
 const readable = (file) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
 const dirs = (dir) => { try { return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(dir, d.name)); } catch { return []; } };
-const pluginName = (dir) => {
-  try { const n = JSON.parse(fs.readFileSync(path.join(dir, ".claude-plugin", "plugin.json"), "utf8")).name; if (typeof n === "string" && /^[\w.-]+$/.test(n)) return n; } catch {}
-  return null;
-};
+const json = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; } };
+const safeName = (n) => typeof n === "string" && /^[\w.-]+$/.test(n) ? n : null;
+const pluginName = (dir) => safeName(json(path.join(dir, ".claude-plugin", "plugin.json"))?.name);
 
 // How to call `skill` for an agent of `kind` working in `root`: its name, or
 // "plugin:name" when Claude has it only from a plugin; null when it isn't found.
@@ -365,13 +364,18 @@ function findSkill(kind, skill, root) {
   const folders = [".claude", ".agents", ".codex", `.${kind}`].flatMap((d) => [path.join(home, d, "skills"), ...(root ? [path.join(root, d, "skills")] : [])]);
   if (folders.some((f) => readable(path.join(f, skill, "SKILL.md")))) return skill;
   if (kind !== "claude") return null;
-  // Claude plugins: plugins/cache/<marketplace>/<plugin>/<version>/skills/<skill>
-  // and plugins/synced/<account>/<plugin>/<skill>.
+  // Claude plugins: the installed ones (installed_plugins.json) that settings.json
+  // doesn't disable, each with <installPath>/skills/<skill>, and synced ones, laid
+  // out as plugins/synced/<account>/<plugin>/<skill>. A cached copy alone doesn't count.
   const plugins = path.join(home, ".claude", "plugins");
-  const roots = [
-    ...dirs(path.join(plugins, "cache")).flatMap(dirs).flatMap((p) => dirs(p).map((v) => [v, path.basename(p)])),
-    ...dirs(path.join(plugins, "synced")).flatMap(dirs).map((p) => [p, null]),
-  ];
+  const enabled = { ...json(path.join(home, ".claude", "settings.json"))?.enabledPlugins };
+  if (root) for (const f of ["settings.json", "settings.local.json"]) Object.assign(enabled, json(path.join(root, ".claude", f))?.enabledPlugins);
+  const installed = Object.entries(json(path.join(plugins, "installed_plugins.json"))?.plugins ?? {})
+    .filter(([key, list]) => enabled[key] !== false && Array.isArray(list))
+    .flatMap(([key, list]) => list
+      .filter((i) => typeof i?.installPath === "string" && (i.scope !== "project" && i.scope !== "local" || i.projectPath === root))
+      .map((i) => [i.installPath, safeName(key.split("@")[0])]));
+  const roots = [...installed, ...dirs(path.join(plugins, "synced")).flatMap(dirs).map((p) => [p, null])];
   for (const [dir, fallback] of roots) {
     if (![path.join(dir, "skills", skill), path.join(dir, skill)].some((d) => readable(path.join(d, "SKILL.md")))) continue;
     const name = pluginName(dir) ?? fallback;
@@ -437,7 +441,8 @@ async function launch(action, root) {
   const names = new Set(agents.map((a) => a.name).filter(Boolean));
   let name = `${action.key}-${action.number}`;
   for (let k = 2; names.has(name); k++) name = `${action.key}-${action.number}-${k}`;
-  const start = await herdr(["agent", "start", name, "--kind", kind, "--pane", pane], 60000);
+  // herdr's own timeout first, so a slow start reads as herdr's reason.
+  const start = await herdr(["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "55000"], 60000);
   if (start.code !== 0) {
     const e = herdrError(start, "herdr");
     // Not ready usually means the agent is asking you something: leave it open.
@@ -446,7 +451,7 @@ async function launch(action, root) {
     return say("error", `${kind} didn't start: ${e.message}`);
   }
   const sent = await herdr(["agent", "prompt", pane, text], 10000);
-  if (sent.code !== 0) return say("error", `${kind} started, but the prompt failed (${herdrError(sent, "herdr").message}). Send it yourself: ${text}`);
+  if (sent.code !== 0) return say("error", `${kind} started, but the prompt failed. Send it yourself: ${text} (${herdrError(sent, "herdr").message})`);
   say("ok", `Started ${kind} in a new pane: ${text}`);
 }
 
@@ -637,7 +642,8 @@ function onInput(data) {
       continue;
     }
     if (k === "q" || k === "\x03" || (k === "\x1b" && data.length === 1)) return quit();
-    if (ui.notice) { ui.notice = null; draw(); }
+    // Any key clears a notice, except the progress of a launch still under way.
+    if (ui.notice && !(ui.acting && ui.notice.tone === "info")) { ui.notice = null; draw(); }
     if (k === "\x1b[A" || k === "\x1bOA" || k === "k") move(-1);
     else if (k === "\x1b[B" || k === "\x1bOB" || k === "j") move(1);
     else if (k === "\x1b[5~") move(-5);

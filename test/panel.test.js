@@ -25,7 +25,7 @@ let herdr = () => ({ code: 1, stderr: "no herdr in tests" });
 require("node:child_process").execFile = (cmd, args, opts, cb) => {
   calls.push([cmd, ...args]);
   const r = herdr(args);
-  setImmediate(() => cb(r.code ? Object.assign(new Error("exit"), { code: r.code }) : null, r.stdout ?? "", r.stderr ?? ""));
+  setImmediate(() => cb(r.error ?? (r.code ? Object.assign(new Error("exit"), { code: r.code }) : null), r.stdout ?? "", r.stderr ?? ""));
 };
 Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1" });
 const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, findSkill, promptFor, IDD } = require("../panel.js");
@@ -574,7 +574,7 @@ test("Resolve starts your agent's kind in a new pane, prompted with the skill an
   assert.deepEqual(herdrCalls(), [
     "agent list",
     "pane split w1:p1 --direction down --cwd /repo --no-focus",
-    "agent start resolve-12 --kind claude --pane w1:p7",
+    "agent start resolve-12 --kind claude --pane w1:p7 --timeout 55000",
     "agent prompt w1:p7 /issue-resolver 12",
   ]);
   assert.ok(calls.every((c) => c[0] === "herdr"));
@@ -594,7 +594,7 @@ test("a on a pull request starts a review with the tab's agent and a free name",
   assert.deepEqual(herdrCalls(), [
     "agent list",
     "pane split w1:p3 --direction down --cwd /repo --no-focus",
-    "agent start review-12-2 --kind codex --pane w1:p7",
+    "agent start review-12-2 --kind codex --pane w1:p7 --timeout 55000",
     "agent prompt w1:p7 Use the issue-pr-review skill on pull request #12.",
   ]);
   assert.ok(after.some((l) => l?.includes("Started codex")));
@@ -639,7 +639,7 @@ test("a failed start shows herdr's reason and closes the new pane", async (t) =>
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent start": herdrFail("agent_exited", "claude exited before it was ready") });
   const after = await screenAsync(() => onInput(Buffer.from("a")));
-  assert.deepEqual(herdrCalls().slice(2), ["agent start resolve-12 --kind claude --pane w1:p7", "pane close w1:p7"]);
+  assert.deepEqual(herdrCalls().slice(2), ["agent start resolve-12 --kind claude --pane w1:p7 --timeout 55000", "pane close w1:p7"]);
   assert.ok(after.some((l) => l?.includes("claude didn't start: claude exited before it was ready")), after.join("\n"));
 });
 
@@ -653,7 +653,7 @@ test("an agent that asks something on start keeps its pane; a failed prompt says
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent prompt": herdrFail("agent_blocked", "agent is blocked") });
   after = await screenAsync(() => onInput(Buffer.from("a")));
-  assert.ok(after.join(" ").includes("Send it yourself: /issue-resolver 12"), after.join("\n"));
+  assert.match(after.map((l) => l?.trim()).join(" "), /Send it yourself: \/issue-resolver 12 /, after.join("\n"));
 });
 
 test("herdr missing or failing shows a red reason and starts nothing", async (t) => {
@@ -668,24 +668,36 @@ test("herdr missing or failing shows a red reason and starts nothing", async (t)
   after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.equal(herdrCalls().length, 2);
   assert.ok(after.some((l) => l?.includes("Can't open a pane for claude: pane not found")), after.join("\n"));
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent list": { error: Object.assign(new Error("spawn herdr ENOENT"), { code: "ENOENT" }) } });
+  after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(herdrCalls(), ["agent list"]);
+  assert.ok(after.some((l) => l?.includes("Can't list agents: herdr isn't installed")), after.join("\n"));
 });
 
 test("one launch at a time: a second press while starting does nothing", async (t) => {
   home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere);
-  await screenAsync(() => { onInput(Buffer.from("a")); onInput(Buffer.from("a")); act(); });
+  let during;
+  await screenAsync(() => { onInput(Buffer.from("a")); onInput(Buffer.from("a")); act(); onInput(Buffer.from("j")); during = ui.notice; });
+  assert.equal(during?.tone, "info", "a key hid the launch's progress");
   assert.equal(herdrCalls().filter((c) => c === "agent list").length, 1);
   assert.equal(herdrCalls().filter((c) => c.startsWith("agent start")).length, 1);
 });
 
 test("a skill Claude has only from a plugin is found, under its plugin's name", async (t) => {
+  const cache = ".claude/plugins/cache/market/idd/0.20.1";
   const dir = home(t, {
-    ".claude/plugins/cache/market/idd/0.20.1/skills/issue-resolver/SKILL.md": "x",
-    ".claude/plugins/cache/market/idd/0.20.1/.claude-plugin/plugin.json": JSON.stringify({ name: "idd" }),
+    [`${cache}/skills/issue-resolver/SKILL.md`]: "x",
+    [`${cache}/.claude-plugin/plugin.json`]: JSON.stringify({ name: "idd" }),
     ".claude/plugins/synced/acct/abc123/issue-pr-review/SKILL.md": "x",
     ".claude/plugins/synced/acct/abc123/.claude-plugin/plugin.json": JSON.stringify({ name: "idd" }),
   });
+  // Cached but not installed: not found.
+  assert.equal(findSkill("claude", "issue-resolver", "/repo"), null);
+  const installed = { version: 2, plugins: { "idd@market": [{ scope: "user", installPath: path.join(dir, cache) }] } };
+  fs.writeFileSync(path.join(dir, ".claude/plugins/installed_plugins.json"), JSON.stringify(installed));
   assert.equal(findSkill("claude", "issue-resolver", "/repo"), "idd:issue-resolver");
   assert.equal(findSkill("claude", "issue-pr-review", "/repo"), "idd:issue-pr-review");
   // Claude plugins aren't another agent's skills; a repo's own skills folder is.
@@ -697,4 +709,23 @@ test("a skill Claude has only from a plugin is found, under its plugin's name", 
   fakeHerdr(claudeHere);
   await screenAsync(() => onInput(Buffer.from("a")));
   assert.equal(herdrCalls().at(-1), "agent prompt w1:p7 /idd:issue-resolver 12");
+});
+
+test("a skill from a disabled Claude plugin counts as missing: nothing starts", async (t) => {
+  const cache = ".claude/plugins/cache/market/idd/0.20.1";
+  const dir = home(t, {
+    [`${cache}/skills/issue-resolver/SKILL.md`]: "x",
+    ".claude/settings.json": JSON.stringify({ enabledPlugins: { "idd@market": false } }),
+  });
+  const installed = { version: 2, plugins: { "idd@market": [{ scope: "user", installPath: path.join(dir, cache) }] } };
+  fs.writeFileSync(path.join(dir, ".claude/plugins/installed_plugins.json"), JSON.stringify(installed));
+  assert.equal(findSkill("claude", "issue-resolver", "/repo"), null);
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(herdrCalls(), ["agent list"]);
+  assert.ok(after.some((l) => l?.trim() === IDD), after.join("\n"));
+  // Enabled again, under the plugin's key name when it has no plugin.json.
+  fs.writeFileSync(path.join(dir, ".claude/settings.json"), JSON.stringify({ enabledPlugins: { "idd@market": true } }));
+  assert.equal(findSkill("claude", "issue-resolver", "/repo"), "idd:issue-resolver");
 });

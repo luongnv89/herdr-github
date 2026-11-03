@@ -66,7 +66,7 @@ On GitHub, the header shows a button for the selected row: **Resolve #N** on the
 
 Your own agent and its conversation are left alone. The panel shows what it is doing above the key hints, in yellow while it starts the agent, green once the prompt is sent, and red with the reason when something fails. A pane whose agent failed to start is closed again, unless the agent is waiting for an answer from you, such as a folder trust question.
 
-If the skill isn't installed, nothing starts and the panel points you to [luongnv.com/idd](https://luongnv.com/idd) to install the skills. It looks for `<skill>/SKILL.md` in the `skills` folder of `~/.claude`, `~/.agents`, `~/.codex` and `~/.<agent>`, and of the same folders in the repo. For Claude it also looks in installed plugins and sends a plugin's skill under the plugin's name, such as `/idd:issue-resolver 12`.
+If the skill isn't installed, nothing starts and the panel points you to [luongnv.com/idd](https://luongnv.com/idd) to install the skills. It looks for `<skill>/SKILL.md` in the `skills` folder of `~/.claude`, `~/.agents`, `~/.codex` and `~/.<agent>`, and of the same folders in the repo. For Claude it also looks in the plugins you have installed and not disabled (`~/.claude/plugins/installed_plugins.json`, `enabledPlugins` in `~/.claude/settings.json` and the repo's `.claude/settings*.json`), and in synced plugins, and sends a plugin's skill under the plugin's name, such as `/idd:issue-resolver 12`.
 
 The button doesn't show on GitLab, because both skills work through `gh`.
 
