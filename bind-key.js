@@ -61,11 +61,14 @@ function pickKey(used, preferred) {
 const block = (key, action, description) =>
   `\n[[keys.command]]\nkey = "${key}"\ntype = "plugin_action"\ncommand = "${action}"\ndescription = "${description}"\n`;
 
-// `herdr config check`: exit 0 and "config: ok", or exit 1 and the issues it found.
+// `herdr config check` on `file`: exit 0 and "config: ok", or exit 1 and the issues it
+// found. It names the file, so the check reads the one this action edits even when
+// HERDR_CONFIG_PATH is set but empty, which herdr would treat as a path of its own.
 // A herdr that can't run the check counts as ok.
-function checkConfig() {
+function checkConfig(file) {
+  const env = { ...process.env, HERDR_CONFIG_PATH: file };
   try {
-    return { ok: true, text: execFileSync(HERDR, ["config", "check"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) };
+    return { ok: true, text: execFileSync(HERDR, ["config", "check"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) };
   } catch (e) {
     if (e.status == null) return { ok: true, text: "" };
     return { ok: false, text: `${e.stdout || ""}${e.stderr || ""}` };
@@ -89,7 +92,7 @@ function main() {
 
   // Herdr may not load a config that already fails the check, so a key added to it
   // could do nothing. Leave it alone and say what's wrong.
-  const before = checkConfig();
+  const before = checkConfig(file);
   if (!before.ok) {
     process.exitCode = 1;
     return tell(`${DESCRIPTION}: not bound`, `${file} already has problems: ${firstIssue(before.text)}`);
@@ -113,7 +116,7 @@ function main() {
 
   // The config passed the check before the edit, so a failure now is the binding's:
   // it goes back out.
-  const after = checkConfig();
+  const after = checkConfig(file);
   if (!after.ok) {
     if (config) fs.writeFileSync(file, config); else fs.rmSync(file, { force: true });
     process.exitCode = 1;

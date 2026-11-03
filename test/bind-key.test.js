@@ -141,6 +141,18 @@ test("changes nothing when the config already fails herdr config check", { skip:
   assert.ok(!fs.existsSync(`${file}.bak-herdr-github`), "no backup when nothing changed");
 });
 
+test("checks the XDG config it edits when HERDR_CONFIG_PATH is set but empty", { skip: !haveHerdr && "herdr not installed" }, () => {
+  const xdg = fs.mkdtempSync(path.join(os.tmpdir(), "bind-key-"));
+  const file = path.join(xdg, "herdr", "config.toml");
+  fs.mkdirSync(path.dirname(file));
+  const broken = "this is [ not toml\n";
+  fs.writeFileSync(file, broken);
+  const r = runWith({ HERDR_CONFIG_PATH: "" }, xdg);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /already has problems/);
+  assert.equal(fs.readFileSync(file, "utf8"), broken);
+});
+
 test("skips keys a CRLF config already uses", { skip: !haveHerdr && "herdr not installed" }, () => {
   const xdg = fs.mkdtempSync(path.join(os.tmpdir(), "bind-key-"));
   const file = path.join(xdg, "herdr", "config.toml");
