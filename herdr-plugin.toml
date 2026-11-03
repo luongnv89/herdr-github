@@ -1,6 +1,6 @@
 id = "herdr-github"
 name = "Herdr GitHub"
-version = "0.2.2"
+version = "0.3.0"
 min_herdr_version = "0.9.5"
 description = "The current repo's open pull requests and issues from GitHub or GitLab, in a side pane."
 platforms = ["linux", "macos"]
