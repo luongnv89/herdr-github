@@ -16,3 +16,9 @@ id = "panel"
 title = "PRs & issues"
 placement = "split"
 command = ["node", "panel.js"]
+
+[[actions]]
+id = "bind-key"
+title = "Bind a key to the PR and issue panel"
+contexts = ["workspace"]
+command = ["node", "bind-key.js"]
