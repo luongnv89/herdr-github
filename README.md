@@ -106,7 +106,7 @@ A linked plugin runs straight from your folder, so a change shows the next time 
 - `herdr-plugin.toml`: the manifest, with one action (`toggle`) and one pane (`panel`).
 - `toggle.js`: opens the panel beside the focused pane, or closes it.
 - `panel.js`: the panel itself. Plain Node, no npm packages.
-- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, and for which row a click opens.
+- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, and for what a failed open shows and how URLs and links are drawn.
 
 ## License
 
