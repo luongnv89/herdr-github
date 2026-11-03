@@ -29,7 +29,7 @@ Then bind a key to it:
 herdr plugin action invoke herdr-github.bind-key
 ```
 
-This adds `prefix+i` to `~/.config/herdr/config.toml` and reloads the config. If `prefix+i` is taken, it uses the first free `prefix+` letter instead, and it says which key it picked. If the panel already has a key, it changes nothing. It saves the old config as `config.toml.bak-herdr-github`. To choose the key yourself, run `node bind-key.js prefix+x` in the plugin folder (`herdr plugin list` shows where that is), or add the binding by hand:
+This adds `prefix+i` to herdr's `config.toml` and reloads the config. The file is the one herdr reads: `HERDR_CONFIG_PATH` when that's set, else `$XDG_CONFIG_HOME/herdr/config.toml`, else `~/.config/herdr/config.toml`. If `prefix+i` is taken, it uses the first free `prefix+` letter instead, and it says which key it picked. If the panel already has a key, it changes nothing. If `herdr config check` already reports problems with the config, it changes nothing, exits 1 and quotes the first problem: fix the config, then run it again. It saves the old config next to it, as `config.toml.bak-herdr-github`. To choose the key yourself, run `node bind-key.js prefix+x` in the plugin folder (`herdr plugin list` shows where that is), or add the binding by hand:
 
 ```toml
 [[keys.command]]

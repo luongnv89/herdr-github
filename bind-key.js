@@ -2,7 +2,8 @@
 // Binds a key to this plugin's toggle action in Herdr's config.toml, then reloads the
 // config. Herdr's plugin manifest can't declare keybindings, so this action does it
 // once, when you ask: it never rebinds a key that's taken and does nothing when the
-// toggle already has a key. `node bind-key.js prefix+x` asks for a specific key.
+// toggle already has a key, or when the config already fails `herdr config check`.
+// `node bind-key.js prefix+x` asks for a specific key.
 "use strict";
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
@@ -15,8 +16,9 @@ const ACTION = `${PLUGIN}.toggle`;
 const PREFERRED = "prefix+i";
 const DESCRIPTION = "PR and issue panel";
 
+// The config file Herdr reads: HERDR_CONFIG_PATH when it's set, else the XDG one.
 const configPath = (env = process.env) =>
-  path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "herdr", "config.toml");
+  env.HERDR_CONFIG_PATH || path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "herdr", "config.toml");
 
 // The key bound to `action` in a config, or null.
 function boundKey(config, action) {
@@ -35,7 +37,7 @@ function boundKey(config, action) {
 function usedKeys(text, commented = false) {
   const keys = new Set();
   const line = commented ? /^\s*#?\s*[\w.]+\s*=\s*(.+)$/ : /^\s*[\w.]+\s*=\s*(.+)$/;
-  for (const raw of text.split("\n")) {
+  for (const raw of text.split(/\r?\n/)) {
     const m = line.exec(raw);
     if (!m) continue;
     for (const [, key] of m[1].replace(/#.*$/, "").matchAll(/"([^"]+)"/g)) {
@@ -59,16 +61,22 @@ function pickKey(used, preferred) {
 const block = (key, action, description) =>
   `\n[[keys.command]]\nkey = "${key}"\ntype = "plugin_action"\ncommand = "${action}"\ndescription = "${description}"\n`;
 
-// `herdr config check`: exit 0 and "config: ok", or exit 1 and the issues it found.
+// `herdr config check` on `file`: exit 0 and "config: ok", or exit 1 and the issues it
+// found. It names the file, so the check reads the one this action edits even when
+// HERDR_CONFIG_PATH is set but empty, which herdr would treat as a path of its own.
 // A herdr that can't run the check counts as ok.
-function checkConfig() {
+function checkConfig(file) {
+  const env = { ...process.env, HERDR_CONFIG_PATH: file };
   try {
-    return { ok: true, text: execFileSync(HERDR, ["config", "check"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) };
+    return { ok: true, text: execFileSync(HERDR, ["config", "check"], { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) };
   } catch (e) {
     if (e.status == null) return { ok: true, text: "" };
     return { ok: false, text: `${e.stdout || ""}${e.stderr || ""}` };
   }
 }
+
+// The first problem `herdr config check` reported, without its "config: ..." header.
+const firstIssue = (text) => (text.split(/\r?\n/).find((l) => l.trim() && !/^config:/.test(l)) ?? text).trim();
 
 function tell(title, body) {
   process.stdout.write(`${title}${body ? `: ${body}` : ""}\n`);
@@ -82,6 +90,14 @@ function main() {
   const existing = boundKey(config, ACTION);
   if (existing) return tell(`${DESCRIPTION}: already on ${existing}`, `set in ${file}`);
 
+  // Herdr may not load a config that already fails the check, so a key added to it
+  // could do nothing. Leave it alone and say what's wrong.
+  const before = checkConfig(file);
+  if (!before.ok) {
+    process.exitCode = 1;
+    return tell(`${DESCRIPTION}: not bound`, `${file} already has problems: ${firstIssue(before.text)}`);
+  }
+
   let defaults = "";
   try { defaults = execFileSync(HERDR, ["--default-config"], { encoding: "utf8" }); } catch {}
   const used = new Set([...usedKeys(defaults, true), ...usedKeys(config)]);
@@ -93,20 +109,18 @@ function main() {
   const key = asked || pickKey(used, PREFERRED);
   if (!key) { process.exitCode = 1; return tell(`${DESCRIPTION}: no free key`, `add one to ${file} yourself`); }
 
-  const before = checkConfig();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const backup = `${file}.bak-${PLUGIN}`;
   if (config) fs.writeFileSync(backup, config);
   fs.writeFileSync(file, config + block(key, ACTION, DESCRIPTION));
 
-  // A binding that gives the config a new problem goes back out. Problems the config
-  // already had aren't this action's to fix.
-  const after = checkConfig();
-  if (!after.ok && after.text !== before.text) {
+  // The config passed the check before the edit, so a failure now is the binding's:
+  // it goes back out.
+  const after = checkConfig(file);
+  if (!after.ok) {
     if (config) fs.writeFileSync(file, config); else fs.rmSync(file, { force: true });
     process.exitCode = 1;
-    const issue = after.text.split("\n").find((l) => l.trim() && !/^config:/.test(l)) ?? after.text;
-    return tell(`${DESCRIPTION}: not bound`, `Herdr rejected it: ${issue.trim()}`);
+    return tell(`${DESCRIPTION}: not bound`, `Herdr rejected it: ${firstIssue(after.text)}`);
   }
 
   // HERDR_BIND_KEY_NO_RELOAD=1 (the tests) leaves the running server alone.
@@ -115,4 +129,4 @@ function main() {
 }
 
 if (require.main === module) main();
-else module.exports = { boundKey, usedKeys, pickKey, block, configPath, checkConfig };
+else module.exports = { boundKey, usedKeys, pickKey, block, configPath, checkConfig, firstIssue };
