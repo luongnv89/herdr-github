@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- On a remote machine, a click or enter on a pull request or issue no longer does nothing (#3). When `open` or `xdg-open` is missing or fails, the panel shows the reason and the whole URL, ready to copy. Each title, and the repo name in the header, is now a terminal hyperlink (OSC 8), so under `herdr --remote` or a saved SSH machine a Ctrl-click should open it on your own computer when herdr and your terminal pass hyperlinks through. That isn't tested live yet. A plain click on a remote machine still can't open a browser on your computer. Opening locally works as before.
+- On a remote machine, a click or enter on a pull request or issue no longer does nothing (#3). When `open` or `xdg-open` is missing or fails, the panel shows the reason and the whole URL, ready to copy. The selected row also shows its URL as plain text, so under `herdr --remote` or a saved SSH machine a Ctrl-click on it opens the row on your own computer (herdr 0.9.5 ignores terminal hyperlinks, so the titles' OSC 8 links don't do this). A URL too long for one line breaks after `https://`, so a Ctrl-click never opens a cut-off address. A plain click on a remote machine still can't open a browser on your computer. Opening locally works as before.
 
 ### Changed
 

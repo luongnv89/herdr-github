@@ -315,7 +315,7 @@ function openUrl(url) {
     if (done || seq !== opens) return;
     done = true;
     ui.notice = { url, reason: clean(reason) };
-    // The notice takes rows from the list: keep the selected row in view above it.
+    // Keep the selected row, and the URL under it, in view above the notice.
     ui.follow = true;
     draw();
   };
@@ -344,7 +344,20 @@ function rowLines(item, selected, cols, icon, meta, trailing) {
   const left = fit(meta, Math.max(0, room()));
   const pad = " ".repeat(Math.max(0, room() - width(left)));
   lines.push(`${bar}   ${dim(left)}${pad}${parts.map((p) => " " + p.s).join("")}`);
+  // The selected row also shows its URL as plain text: herdr ignores OSC 8 links,
+  // but Ctrl-click on a visible http(s) URL opens it on the machine you sit at.
+  if (selected && linkable(item.url)) for (const l of urlLines(item.url, cols - 4)) lines.push(`${bar}   ${accent(l)}`);
   return lines;
+}
+
+// A URL as lines of at most `max` cells. herdr finds a plain URL only when it sits
+// whole on one line, so a URL that has to wrap breaks right after its scheme: no
+// line is then a cut-off URL that a Ctrl-click would open.
+function urlLines(url, max) {
+  const u = clean(url);
+  if (width(u) <= max) return [u];
+  const at = u.indexOf("://") + 3;
+  return at > 2 && at <= max ? [u.slice(0, at), ...wrap(u.slice(at), max, Infinity)] : wrap(u, max, Infinity);
 }
 
 const part = (text, style = dim) => ({ w: width(text), s: style(text) });
@@ -377,7 +390,7 @@ const HINT = "Ctrl- or Cmd-click the URL to open it on your machine";
 // A failed open, at most `room` lines: why, what to do instead, and the whole URL.
 function noticeLines({ url, reason }, cols, room) {
   const lines = [dim("─".repeat(cols)), " " + red(fit(reason, cols - 2)), " " + dim(fit(HINT, cols - 2))];
-  for (const l of wrap(clean(url), cols - 2, Infinity)) lines.push(" " + link(url, accent(l)));
+  for (const l of urlLines(url, cols - 2)) lines.push(" " + link(url, accent(l)));
   return lines.slice(0, Math.max(0, room));
 }
 

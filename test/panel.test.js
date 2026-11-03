@@ -265,6 +265,8 @@ test("after scrolling, each row opens the item drawn on it and gaps open nothing
 
 test("a click leaves the lists and the scroll position as they were", () => {
   setup("prs");
+  // The selected row's URL line goes below the view, so the rows above it stay put.
+  ui.sel.prs = ui.prs.length - 1;
   const lines = screen(() => onInput(Buffer.from(wheelDown + wheelDown)));
   const top = { ...ui.top }, prs = JSON.stringify(ui.prs), issues = JSON.stringify(ui.issues);
   // The bottom row is cut off: a click must not scroll to show the rest of it.
@@ -288,7 +290,7 @@ test("when the opener isn't installed, a click shows the URL and the hint", () =
   const y = lines.findIndex((l) => l?.includes("Title 3"));
   const after = screen(() => { onInput(Buffer.from(press(y))); lastChild.emit("error", enoent()); });
   assert.deepEqual(opened, ["https://x/pull/3"]);
-  assert.ok(after.some((l) => l?.includes("https://x/pull/3")), "URL not shown after ENOENT");
+  assert.equal(noticeOf(after)?.url, "https://x/pull/3", "URL not shown after ENOENT");
   assert.ok(after.some((l) => l?.includes(HINT)), "hint not shown after ENOENT");
   assert.ok(after.some((l) => l?.includes(`${lastChild.cmd} not found`)));
 });
@@ -411,7 +413,32 @@ test("each title line is its own OSC 8 link to the row", () => {
     assert.ok(open >= 0 && close > open, JSON.stringify(l));
     assert.equal(l.split("\x1b]8;").length, 3);
   }
-  assert.deepEqual(lines.map(strip), prRow(pr, true, 40).map(strip));
+  // Same text as an unlinked row, plus the selected row's URL line.
+  assert.deepEqual(lines.map(strip), [...prRow(pr, true, 40).map(strip), `▌   ${url}`]);
+});
+
+// herdr 0.9.5 skips OSC 8 links, but Ctrl-click opens a plain URL that sits whole on one line.
+test("the selected row shows its URL as plain text on one line", () => {
+  const url = "https://github.com/o/p/pull/12";
+  const lines = prRow({ ...pr, url }, true, 40);
+  assert.equal(strip(lines.at(-1)), `▌   ${url}`);
+  assert.doesNotMatch(lines.at(-1), /\x1b\]8/);
+  assert.equal(prRow({ ...pr, url }, false, 40).length, lines.length - 1, "only the selected row has a URL line");
+  for (const bad of ["javascript:alert(1)", "https://x/\x1b]8;;https://evil\x1b\\", undefined]) {
+    assert.equal(prRow({ ...pr, url: bad }, true, 40).length, lines.length - 1, JSON.stringify(bad));
+  }
+});
+
+test("a URL too long for one line breaks after its scheme, so no line is a cut-off URL", () => {
+  const url = "https://github.example.com/some-organisation/a-repository-with-a-long-name/pull/12345";
+  const lines = prRow({ ...pr, url }, true, 40).map(strip);
+  const at = lines.findIndex((l) => l.endsWith("https://"));
+  assert.equal(lines[at], "▌   https://");
+  const rest = lines.slice(at + 1);
+  assert.ok(rest.length >= 2);
+  for (const l of lines) assert.ok(width(l) <= 40, l);
+  for (const l of rest) assert.doesNotMatch(l, /https?:\/\//, l);
+  assert.equal(lines.slice(at).map((l) => l.slice(4)).join(""), url);
 });
 
 test("links leave the visible frame as it was", () => {
@@ -425,7 +452,11 @@ test("links leave the visible frame as it was", () => {
   ui.repo.url = "ftp://x/o/p";
   const plainRaw = rawScreen(draw);
   assert.ok(plainRaw.every((l) => !l?.includes("\x1b]8")));
-  assert.deepEqual(linked, plainRaw.map((l) => l === undefined ? l : strip(l)));
+  // An ftp URL gets no URL line under the selected row, so its list runs one line longer.
+  const plainLines = plainRaw.map((l) => l === undefined ? l : strip(l));
+  const urlLine = linked.indexOf("▌   https://x/pull/0");
+  assert.ok(urlLine > 0, "the selected row's URL isn't shown");
+  assert.deepEqual(linked.filter((_, i) => i !== urlLine), plainLines.filter((_, i) => i !== LIST.to));
   for (const l of linked) assert.ok(width(l ?? "") <= 60, l);
 });
 
