@@ -29,7 +29,7 @@ Then bind a key to it:
 herdr plugin action invoke herdr-github.bind-key
 ```
 
-This adds `prefix+i` to herdr's `config.toml` and reloads the config. The file is the one herdr reads: `HERDR_CONFIG_PATH` when that's set, else `$XDG_CONFIG_HOME/herdr/config.toml`, else `~/.config/herdr/config.toml`. If `prefix+i` is taken, it uses the first free `prefix+` letter instead, and it says which key it picked. If the panel already has a key, it changes nothing. If `herdr config check` already reports problems with the config, it changes nothing, exits 1 and quotes the first problem: fix the config, then run it again. It saves the old config next to it, as `config.toml.bak-herdr-github`. To choose the key yourself, run `node bind-key.js prefix+x` in the plugin folder (`herdr plugin list` shows where that is), or add the binding by hand:
+This adds `prefix+i` to herdr's `config.toml` and reloads the config. The file is the one herdr reads: `HERDR_CONFIG_PATH` when that's set, else `$XDG_CONFIG_HOME/herdr/config.toml`, else `~/.config/herdr/config.toml`. If `prefix+i` is taken, it uses the first free `prefix+` letter instead, and it says which key it picked. If the panel already has a key, it changes nothing. If `herdr config check` already reports problems with the config, it changes nothing, exits 1 and quotes the first problem: fix the config, then run it again. If the check rejects the new binding, it leaves the config as it was and exits 1. It saves the old config next to it, as `config.toml.bak-herdr-github`. To choose the key yourself, run `node bind-key.js prefix+x` in the plugin folder (`herdr plugin list` shows where that is); it refuses a key that's already in use. Or add the binding by hand:
 
 ```toml
 [[keys.command]]
@@ -103,7 +103,8 @@ A herdr plugin runs as your user, with no sandbox. This one:
 - runs `herdr` to find the focused pane, and to open, resize and close its own pane;
 - when you click Resolve or Review, or press `a`: runs `herdr` to list the agents, split a new pane below yours, start the same kind of agent in it and send it the skill and the number, and reads the skill folders listed under [Resolve and review with your agent](#resolve-and-review-with-your-agent);
 - runs `open` (macOS) or `xdg-open` (Linux) when you open a row or the repo, on the computer where its herdr server runs (see [Remote machines](#remote-machines));
-- writes only under its herdr state folder (`~/.local/state/herdr/plugins/herdr-github/` on macOS): which list you chose, and the ids of its open panes.
+- when you run `bind-key`: runs `herdr --default-config` and `herdr config check` to find a free key and check the config, adds one `[[keys.command]]` binding to herdr's `config.toml` (see [Install](#install)), saves the old config next to it as `config.toml.bak-herdr-github`, runs `herdr server reload-config`, and shows the result as a herdr notification;
+- otherwise writes only under its herdr state folder (`~/.local/state/herdr/plugins/herdr-github/` on macOS): which list you chose, and the ids of its open panes.
 
 It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
 
