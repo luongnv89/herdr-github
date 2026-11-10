@@ -15,7 +15,7 @@ On GitLab, merge requests show as `!123` and have no checks mark: the list doesn
 
 Click a pull request or issue, or select it and press enter, to open it in your browser. Clicking needs `ui.mouse_capture = true` in your herdr config. On a remote machine, see [Remote machines](#remote-machines).
 
-On GitHub, each issue has a **Resolve** button and each pull request a **Review** button, which start an agent on it. Which agent, model and thinking level is up to you: see [Agent profiles](#agent-profiles).
+On GitHub, each issue has a **Resolve** button and each pull request a **Review** button, which start an agent on it. Which agent, model and thinking level is up to you: see [Agent profiles](#agent-profiles). So is the prompt it gets: see [Custom prompts](#custom-prompts).
 
 The repo also holds the same panel for the Herdr desktop app, in `mods/herdr-github` (see [Herdr app](#herdr-app)). The terminal panel is the twin of the GitHub panel in [Whole Herdr](https://github.com/luongnv89/whole-herdr), a layout for the Herdr desktop app.
 
@@ -66,14 +66,14 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
 
 ## Resolve and review with an agent
 
-On GitHub, every issue row ends with a **Resolve #N** button and every pull request row with a **Review #N** button. The header shows the same button for the selected row, and `a` presses it. Resolve hands the issue to the `issue-resolver` skill, Review hands the pull request to `issue-pr-review`. The agent that starts is the one in the action's profile; with no profile assigned, it's Claude Code started through `mcc run` (see [Agent profiles](#agent-profiles)).
+On GitHub, every issue row ends with a **Resolve #N** button and every pull request row with a **Review #N** button. The header shows the same button for the selected row, and `a` presses it. Resolve hands the issue to the `issue-resolver` skill, Review hands the pull request to `issue-pr-review`, unless you wrote your own prompt for the action (see [Custom prompts](#custom-prompts)). The agent that starts is the one in the action's profile; with no profile assigned, it's Claude Code started through `mcc run` (see [Agent profiles](#agent-profiles)).
 
 A click, or `a`, and the panel:
 
-1. reads the profiles file and picks the profile assigned to the action;
-2. checks that the skill is installed for that agent: `issue-resolver` for an issue, `issue-pr-review` for a pull request;
+1. reads the profiles file and picks the profile assigned to the action, and its custom prompt if it has one;
+2. checks that the skill is installed for that agent: `issue-resolver` for an issue, `issue-pr-review` for a pull request (not with a custom prompt);
 3. opens a new pane below your agent, in the repo's folder: below the agent in the pane the panel follows, else one in the panel's tab, else below the pane the panel follows (`herdr agent list`, then `herdr pane split`);
-4. starts the profile's agent there, with its model and thinking level, and sends it the skill and the number: for Claude `/issue-resolver 12` or `/issue-pr-review 34`; other agents get "Use the issue-resolver skill on issue #12." Nothing from the title or description goes into the prompt.
+4. starts the profile's agent there, with its model and thinking level, and sends it the skill and the number: for Claude `/issue-resolver 12` or `/issue-pr-review 34`; other agents get "Use the issue-resolver skill on issue #12." With a custom prompt, it sends that prompt with the number filled in. Nothing from the title or description goes into the prompt.
 
 Claude Code, Codex, Pi and OpenCode start with `herdr agent start`, with the profile's flags after `--`. Through mcc, the panel types `mcc run -- [flags] /issue-resolver 12` into the new pane's shell (with mcc's full path), every word quoted, and Claude Code takes the prompt as its first message.
 
@@ -86,6 +86,30 @@ mcc can ask something before Claude Code starts, such as what to do about a usag
 If the skill isn't installed, nothing starts and the panel points you to [luongnv.com/idd](https://luongnv.com/idd) to install the skills. It looks for `<skill>/SKILL.md` in the `skills` folder of `~/.claude`, `~/.agents`, `~/.codex` and `~/.<agent>`, and of the same folders in the repo. For Claude it also looks in the plugins you have installed and not disabled (`~/.claude/plugins/installed_plugins.json`, `enabledPlugins` in `~/.claude/settings.json` and the repo's `.claude/settings*.json`), and in synced plugins, and sends a plugin's skill under the plugin's name, such as `/idd:issue-resolver 12`. For mcc, it runs `mcc env -q --shell bash` in the repo to find the Claude Code folder `mcc run` would use there, such as `~/.mcc/profiles/work`, and looks in that folder instead of `~/.claude`.
 
 The buttons don't show on GitLab, because both skills work through `gh`.
+
+## Custom prompts
+
+Resolve and Review can each send a prompt you write instead of the IDD skill's. Write it with `{number}` where the issue's or pull request's number goes, such as:
+
+```
+Fix issue #{number} on a new branch, add a test, and open a pull request that closes it. Don't merge it.
+```
+
+`{number}` is required, can appear more than once, and is the only placeholder: the row's title and description never go into the prompt. The prompt is sent as written, as one argument, to every harness: through mcc it is the last word of the `mcc run` line (quoted, so `$`, quotes and backticks are just text), and other agents get it as their first message. A custom prompt is trimmed and has to:
+
+- contain `{number}`;
+- not start with `-`, `!` or `#`, which a harness would read as a flag, a shell command or a note;
+- not hold a backslash, a line break, or a control, invisible (zero-width, bidi), private-use or unassigned character;
+- be at most 500 characters with the longest number filled in.
+
+A custom prompt needs no skill, so the panels don't look for one: the agent starts even when the IDD skills aren't installed. With mcc, `mcc` still has to be on your `PATH`. Since the prompt goes as written to every harness, `/issue-resolver {number}` runs the skill only on Claude Code (directly or through mcc); another agent reads it as plain text. A skill Claude Code has from a plugin needs the plugin's name, such as `/idd:issue-resolver {number}`.
+
+Leave the prompt empty to send the default again: the skill and the number, as above.
+
+- **Terminal panel:** in the profiles view (`s`), the **Resolve prompt** and **Review prompt** rows under the profiles show the prompt each action sends (dim: the default). `↓` past the last profile selects them; `e` or enter (or the selected row's **Edit** button) edits one. Type the prompt, then enter (or **Save**) saves it and esc (or **Cancel**) goes back. A prompt that can't be saved shows why under it. Empty it, or click **Use default**, to send the default again.
+- **Herdr app:** in the profiles view (the gear, or `s`), the **Resolve prompt** and **Review prompt** boxes under the profiles hold each action's prompt, empty for the default. Type into one, then enter or its **Save** saves it; a prompt that can't be saved shows why under the box. Keys typed into a box stay in it; esc leaves the box. The Resolve and Review buttons' tooltips say when they send your prompt.
+
+The prompts are kept in the profiles file (see [Where they're kept](#where-theyre-kept)), so both panels send the same ones. A file with a custom prompt is version 2; without one, it stays version 1. A version of this panel from before custom prompts shows a version 2 file read only: it still starts the assigned profiles, but sends the default prompts, and never overwrites yours.
 
 ## Agent profiles
 
@@ -129,7 +153,7 @@ Both panels read and write the same file:
 
 The file is per machine: it lives on the machine where the panel runs. The terminal panel uses the file on the machine where its herdr server runs, so under `herdr --remote` or over ssh that's the remote machine's file. The app always uses the file on your own computer, even for a space on another machine. On one computer, a profile you make in one panel is there in the other.
 
-The panels read the file when the profiles view opens and on every Resolve or Review click, and write it only while it still holds what they read. If the other panel changed it in the meantime, nothing is written, the view reads it again and asks you to make your change again. A file that isn't valid JSON, or is from another version of the panel, is shown read only and never overwritten; until you fix or delete it, the actions use the default. A file with a profile that can't be used (one edited by hand with a bad model, say) is read only too, so saving doesn't erase that profile or what it's assigned to: the view says which profile and why, the actions assigned to it use the default, and the other profiles still work. Fix or remove it in the file to save again.
+The panels read the file when the profiles view opens and on every Resolve or Review click, and write it only while it still holds what they read. If the other panel changed it in the meantime, nothing is written, the view reads it again and asks you to make your change again. A file that isn't valid JSON, or is from a newer version of the panel, is shown read only and never overwritten; until you fix or delete it, the actions use the default. A file with a profile that can't be used (one edited by hand with a bad model, say) is read only too, so saving doesn't erase that profile or what it's assigned to: the view says which profile and why, the actions assigned to it use the default, and the other profiles still work. Fix or remove it in the file to save again. The same goes for a custom prompt that can't be used: the file is read only, and that action sends the default prompt until you fix it in the file.
 
 ## Herdr app
 
@@ -144,7 +168,7 @@ ln -s "$PWD/herdr-github/mods/herdr-github" "${HERDR_APP_HOME:-$HOME/.config/her
 
 Or copy the folder there instead of linking it. The first time the app sees the folder, it docks the panel on the right; saving a file in it reloads the panel. To update, `git pull` in the clone (copy the folder again if you copied it).
 
-In the app, a Resolve or Review click opens a new tab in the space you're in, in the repo's folder. Claude Code, Codex, Pi and OpenCode start with the `run` the app's `programs.json` gives them, followed by the profile's flags, and get the prompt as their first message. mcc starts as `mcc run -- [flags] /issue-resolver 12`. For a space on another machine, the agent, `mcc env` and the skill lookup run on that machine, while the profiles come from your computer. The app doesn't say when mcc is ready, so for mcc the panel says it opened the tab, not that Claude Code started: if mcc asks something first, such as about a usage limit, answer it in the new tab.
+In the app, a Resolve or Review click opens a new tab in the space you're in, in the repo's folder. Claude Code, Codex, Pi and OpenCode start with the `run` the app's `programs.json` gives them, followed by the profile's flags, and get the prompt as their first message. mcc starts as `mcc run -- [flags] /issue-resolver 12`. With a custom prompt, that prompt takes the place of `/issue-resolver 12`, and `mcc env` runs only to check that mcc is there. For a space on another machine, the agent, `mcc env` and the skill lookup run on that machine, while the profiles and prompts come from your computer. The app doesn't say when mcc is ready, so for mcc the panel says it opened the tab, not that Claude Code started: if mcc asks something first, such as about a usage limit, answer it in the new tab.
 
 Besides its own `localStorage` (which list you chose), the app mod writes only the profiles file, and runs `mkdir -p` for its folder the first time it saves one.
 
@@ -174,7 +198,7 @@ A herdr plugin runs as your user, with no sandbox. This one:
 
 - runs `git` in the repo's folder to find its remote, then `gh` or `glab` there to read the repo and its open pull requests (or merge requests) and issues;
 - runs `herdr` to find the focused pane, and to open, resize and close its own pane;
-- when you click Resolve or Review, or press `a`: reads the profiles file, runs `herdr` to list the agents and split a new pane, then either starts the profile's agent in it (`herdr agent start`) and sends it the skill and the number, or, for mcc, runs `mcc env` in the repo and types `mcc run -- … <prompt>` into the new pane (`herdr pane run`); it reads the skill folders listed under [Resolve and review with an agent](#resolve-and-review-with-an-agent);
+- when you click Resolve or Review, or press `a`: reads the profiles file, runs `herdr` to list the agents and split a new pane, then either starts the profile's agent in it (`herdr agent start`) and sends it the skill and the number, or your custom prompt, or, for mcc, runs `mcc env` in the repo and types `mcc run -- … <prompt>` into the new pane (`herdr pane run`); it reads the skill folders listed under [Resolve and review with an agent](#resolve-and-review-with-an-agent). With a custom prompt it doesn't run `mcc env` or read the skill folders;
 - runs `open` (macOS) or `xdg-open` (Linux) when you open a row or the repo, on the computer where its herdr server runs (see [Remote machines](#remote-machines));
 - when you run `bind-key`: runs `herdr --default-config` and `herdr config check` to find a free key and check the config, adds one `[[keys.command]]` binding to herdr's `config.toml` (see [Install](#install)), saves the old config next to it as `config.toml.bak-herdr-github`, runs `herdr server reload-config`, and shows the result as a herdr notification;
 - when you save in the profiles view: writes `~/.config/herdr/plugins/config/herdr-github/profiles.json` (see [Where they're kept](#where-theyre-kept));
@@ -197,7 +221,10 @@ It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
 - **"The issue-resolver skill isn't found for mcc":** `mcc env -q --shell bash`, run in the repo, didn't name a Claude Code folder. Run it there yourself to see why.
 - **"Answer mcc in the new pane":** mcc asked something before starting Claude Code, most often about a usage limit. Answer it in the new pane; Claude Code then works on the prompt.
 - **"The profiles changed elsewhere and were read again":** the other panel saved the profiles file after this one read it. Make your change again.
-- **"The profiles file isn't valid JSON" or "is version N":** the file is read only until you fix or delete it, and the actions use the default meanwhile.
+- **"The profiles file isn't valid JSON" or "is version N":** the file is read only until you fix or delete it, and the actions use the default meanwhile. An older version of the panel says "is version 2" once a custom prompt is saved: update it, or clear both prompts in an up-to-date panel.
+- **"Resolve prompt: must contain {number}" (or another reason under a prompt):** a custom prompt needs `{number}` where the number goes, and has to fit the rules under [Custom prompts](#custom-prompts). Nothing is saved until it does.
+- **"A prompt in the file can't be used":** a prompt edited by hand in the profiles file breaks those rules. Its action sends the default meanwhile, and the file is read only: fix or remove the prompt in the file.
+- **A custom prompt like `/issue-resolver {number}` does nothing on Codex, Pi or OpenCode:** a custom prompt is sent as written, and only Claude Code runs a `/skill` as a command. Write it as prose for other agents, such as `Use the issue-resolver skill on issue #{number}.`, or leave it empty for the default.
 - **Saved SSH machines and `herdr --remote`:** the panel runs `git`, `gh` and `glab` on the computer where its herdr server runs. Ctrl-clicking the selected row's URL there to open it on your own computer hasn't been tested live yet.
 
 ## Develop
