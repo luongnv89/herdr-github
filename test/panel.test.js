@@ -1433,3 +1433,76 @@ test("at 28 and 30 cells the notice of a started OpenCode keeps its note whole",
     assert.match(lines[23], /^ ↑↓ select/);
   }
 });
+
+// A frame of `rows` lines, none wider than `cols`, whose last lines are `footer`'s
+// key hints in full: paint drops lines from the bottom, so they come last.
+function fitsWithHints(lines, cols, rows, first, last) {
+  const shown = `${cols}x${rows}:\n${lines.join("\n")}`;
+  assert.equal(lines.length, rows, shown);
+  for (const l of lines) assert.ok(width(l ?? "") <= cols, `${shown}\n${l}`);
+  assert.ok(lines.at(-1).trimEnd().endsWith(last), shown);
+  assert.ok(lines.slice(-3).some((l) => l.startsWith(` ${first}`)), shown);
+}
+// The status line right above the key hints.
+const aboveHints = (lines, first) => lines[lines.findIndex((l) => l?.startsWith(` ${first}`)) - 1];
+
+test("the profiles keep their key hints however much there is to say, and cut it with …", (t) => {
+  const dir = home(t);
+  const notSaved = "Not saved: Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save";
+  // Three profiles it can't use, Resolve on one: their warnings fill a 24-row pane.
+  const bad = [0, 1, 2].map((i) => ({ id: `bad${i}`, name: `Bad ${i}`, harness: "claude", model: "opus[1m]" }));
+  for (const cols of [28, 30]) {
+    useProfiles(dir, bad, { resolve: "bad0" });
+    setupGitHub("issues");
+    let lines = screenAt(cols, 24, () => onInput(Buffer.from("s")));
+    fitsWithHints(lines, cols, 24, "↑↓ select", "esc back");
+    assert.ok(text(lines).includes('Skipped profile "bad0"'), lines.join("\n"));
+    assert.ok(aboveHints(lines, "↑↓ select").endsWith("…"), lines.join("\n"));
+    // Why R saved nothing comes first, whole; the warnings under it are cut.
+    lines = screenAt(cols, 24, () => onInput(Buffer.from("R")));
+    fitsWithHints(lines, cols, 24, "↑↓ select", "esc back");
+    assert.ok(shows(lines, notSaved), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(text(lines).includes('Skipped profile "bad0"'), lines.join("\n"));
+    assert.ok(aboveHints(lines, "↑↓ select").endsWith("…"), lines.join("\n"));
+    screenAt(cols, 24, () => onInput(Buffer.from("\x1b")));
+  }
+  // One it can't use, on a short pane: the key hints whole, why R saved nothing
+  // first, and the warnings after it cut where the room ends.
+  for (const [cols, rows] of [[30, 16], [40, 12]]) {
+    useProfiles(dir, [bad[0]], { resolve: "bad0" });
+    setupGitHub("issues");
+    screenAt(cols, rows, () => onInput(Buffer.from("s")));
+    const lines = screenAt(cols, rows, () => onInput(Buffer.from("R")));
+    fitsWithHints(lines, cols, rows, "↑↓ select", "esc back");
+    assert.ok(shows(lines, notSaved), `${cols}x${rows}:\n${lines.join("\n")}`);
+    assert.ok(aboveHints(lines, "↑↓ select").endsWith("…"), `${cols}x${rows}:\n${lines.join("\n")}`);
+    screenAt(cols, rows, () => onInput(Buffer.from("\x1b")));
+  }
+  // The OpenCode form on a 28x10 pane: the field, the note cut, the key hints whole.
+  useProfiles(dir, []);
+  setupGitHub("issues");
+  const lines = screenAt(28, 10, () => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[Bx")));
+  assert.equal(ui.settings.form.harness, "opencode");
+  fitsWithHints(lines, 28, 10, "↑↓ field", "esc back");
+  assert.ok(lines.some((l) => l?.startsWith("▌ Model")), lines.join("\n"));
+  assert.ok(text(lines).includes("OpenCode ignores"), lines.join("\n"));
+  assert.ok(aboveHints(lines, "↑↓ field").endsWith("…"), lines.join("\n"));
+  screenAt(28, 10, () => onInput(Buffer.from("\x1b\x1b")));
+});
+
+test("on a short pane a failed open keeps the whole URL, before its reason", () => {
+  setup("prs");
+  const url = "https://github.com/luongnv89/herdr-github/issues/12";
+  ui.prs[0].url = url;
+  // 30x9: three lines for the notice, all the URL's.
+  let lines = screenAt(30, 9, () => { onInput(Buffer.from("\r")); lastChild.emit("exit", 3, null); });
+  assert.deepEqual(opened, [url]);
+  fitsWithHints(lines, 30, 9, "↑↓ select", "…");
+  assert.ok(shows(lines, url), lines.join("\n"));
+  assert.ok(!text(lines).includes(`${lastChild.cmd} exited 3`), lines.join("\n"));
+  // With room for the reason too, it sits above the URL.
+  lines = screenAt(30, 11, draw);
+  assert.ok(shows(lines, url), lines.join("\n"));
+  assert.ok(text(lines).includes(`${lastChild.cmd} exited 3`), lines.join("\n"));
+  assert.match(lines[10], /^ ↑↓ select/);
+});

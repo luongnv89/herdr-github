@@ -642,20 +642,24 @@ const TONES = { info: yellow, ok: green, error: red };
 
 // A failed open, at most `room` lines: why, what to do instead, and the whole URL.
 // An agent action's notice is its message, in the tone's color, and maybe a URL.
-// The message is whole when the room allows, and the URL under it always gets its
-// lines first: only a message too long for the room is cut, ending in "…".
+// The URL, what a Ctrl-click opens, gets its lines first, then the rule above the
+// notice, then the message: whole when the room allows, cut ending in "…" when it
+// doesn't, and left out when the room holds only the rule and the URL. Without a
+// URL the message keeps at least a line.
 function noticeLines(notice, cols, room) {
+  room = Math.max(0, room);
   const { url } = notice, lines = [dim("─".repeat(cols))];
   const under = url ? urlLines(url, cols - 2).map((l) => " " + link(url, accent(l))) : [];
-  const most = Math.max(1, room - 1 - under.length);
-  if (notice.tone) for (const l of wrap(notice.text, cols - 2, most)) lines.push(" " + TONES[notice.tone](l));
-  else {
+  if (under.length >= room) return under.slice(0, room);
+  const most = url ? room - 1 - under.length : Math.max(1, room - 1);
+  if (most > 0 && notice.tone) for (const l of wrap(notice.text, cols - 2, most)) lines.push(" " + TONES[notice.tone](l));
+  else if (most > 0) {
     const why = wrap(notice.reason, cols - 2, most).map((l) => " " + red(l));
     const hint = most > why.length ? wrap(HINT, cols - 2, most - why.length) : [];
     lines.push(...why, ...hint.map((l) => " " + dim(l)));
   }
   lines.push(...under);
-  return lines.slice(0, Math.max(0, room));
+  return lines.slice(0, room);
 }
 
 function draw() {
@@ -965,18 +969,26 @@ function settingsLines(cols, rows) {
   for (const [t, action] of tools) { ui.buttons.push({ row: 0, from: x, to: x + width(t), action }); x += width(t); }
   out.push(dim("─".repeat(cols)));
 
-  // What to know or do, each message whole however narrow the pane: the body
-  // above scrolls into the lines that are left.
+  // What to know or do, most pressing first: the delete question, what a change did
+  // or why it failed, then the store's warnings and the OpenCode note. The header,
+  // the key hints and a line of the body come first; each message is whole while
+  // the room left allows, and a status too long for it is cut there, ending in "…".
   const notes = [];
   if (st.mode === "confirm") notes.push([yellow, `Delete ${p.name}? y deletes it, any other key keeps it`]);
-  for (const w of st.warnings) notes.push([yellow, w]);
-  if (st.mode === "edit" && st.form.harness === "opencode" && (st.form.model || st.form.thinking)) notes.push([yellow, OPENCODE_NOTE]);
   if (st.error) notes.push([red, st.error]);
   if (st.info) notes.push([green, st.info]);
-  const status = notes.flatMap(([tone, text]) => wrap(text, cols - 2, Infinity).map((l) => " " + tone(l)));
+  for (const w of st.warnings) notes.push([yellow, w]);
+  if (st.mode === "edit" && st.form.harness === "opencode" && (st.form.model || st.form.thinking)) notes.push([yellow, OPENCODE_NOTE]);
   const footer = hintLines(st.mode === "edit" ? ["↑↓ field", "←→ choose", "type to edit", "⏎ save", "esc back"]
     : st.mode === "confirm" ? ["y delete", "any other key keeps it"]
       : ["↑↓ select", "n new", "e edit", "d delete", "R/V assign", "esc back"], cols);
+  const room = Math.max(0, rows - out.length - footer.length - 1);
+  const said = notes.flatMap(([tone, text]) => wrap(text, cols - 2, Infinity).map((l) => [tone, l]));
+  if (said.length > room) {
+    said.length = room;
+    if (room) said[room - 1] = [said[room - 1][0], fit(said[room - 1][1] + "…", cols - 2)];
+  }
+  const status = said.map(([tone, l]) => " " + tone(l));
   const height = Math.max(1, rows - out.length - status.length - footer.length);
 
   // Each line's click: the whole line's, and its buttons' first.
