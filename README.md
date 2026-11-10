@@ -15,7 +15,9 @@ On GitLab, merge requests show as `!123` and have no checks mark: the list doesn
 
 Click a pull request or issue, or select it and press enter, to open it in your browser. Clicking needs `ui.mouse_capture = true` in your herdr config. On a remote machine, see [Remote machines](#remote-machines).
 
-It is the terminal twin of the GitHub panel in [Whole Herdr](https://github.com/luongnv89/whole-herdr), a layout for the Herdr desktop app.
+On GitHub, each issue has a **Resolve** button and each pull request a **Review** button, which start an agent on it. Which agent, model and thinking level is up to you: see [Agent profiles](#agent-profiles).
+
+The repo also holds the same panel for the Herdr desktop app, in `mods/herdr-github` (see [Herdr app](#herdr-app)). The terminal panel is the twin of the GitHub panel in [Whole Herdr](https://github.com/luongnv89/whole-herdr), a layout for the Herdr desktop app.
 
 ## Install
 
@@ -54,29 +56,99 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
   - enter opens the selected row in your browser;
   - tab or `←`/`→` switches between pull requests and issues, `1` and `2` choose one;
   - `r` refreshes, `o` opens the repo on GitHub or GitLab;
-  - `a` resolves the selected issue, or reviews the selected pull request, with your agent (see [Resolve and review with your agent](#resolve-and-review-with-your-agent));
+  - `a` resolves the selected issue, or reviews the selected pull request, with an agent (see [Resolve and review with an agent](#resolve-and-review-with-an-agent));
+  - `s` opens the agent profiles (see [Agent profiles](#agent-profiles));
   - `q` or esc closes the panel.
-- **Mouse:** click a row to open it, click the switch to change lists, click `Resolve #N` or `Review #N`, `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. On a remote machine, Ctrl-click the selected row's URL instead (see [Remote machines](#remote-machines)).
+- **Mouse:** click a row to open it, click the switch to change lists, click a row's `Resolve #N` or `Review #N` button, the same button in the header (for the selected row), `⚙`, `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. On a remote machine, Ctrl-click the selected row's URL instead (see [Remote machines](#remote-machines)).
 - **When a row can't be opened:** the panel shows why in red, a hint to Ctrl- or Cmd-click the URL, and the whole URL above the key hints. The URL is a terminal hyperlink too. Any key, or the next open, clears it.
 - **Fetching:** when the repo changes, every 2 minutes while the panel's tab is on screen, and on `r`. A panel in a tab you aren't looking at doesn't fetch.
 - **Lists:** the 50 most recently opened of each on GitHub, and the 50 most recently updated on GitLab. The panel remembers which list you chose.
 
-## Resolve and review with your agent
+## Resolve and review with an agent
 
-On GitHub, the header shows a button for the selected row: **Resolve #N** on the issues list, **Review #N** on the pull requests list. Click it, or press `a`, and the panel:
+On GitHub, every issue row ends with a **Resolve #N** button and every pull request row with a **Review #N** button. The header shows the same button for the selected row, and `a` presses it. Resolve hands the issue to the `issue-resolver` skill, Review hands the pull request to `issue-pr-review`. The agent that starts is the one in the action's profile; with no profile assigned, it's Claude Code started through `mcc run` (see [Agent profiles](#agent-profiles)).
 
-1. finds your agent: the one in the pane the panel follows, else one in the panel's tab (`herdr agent list`);
-2. checks that the skill is installed for that kind of agent: `issue-resolver` for an issue, `issue-pr-review` for a pull request;
-3. opens a new pane below your agent, in the repo's folder, and starts the same kind of agent there (`herdr pane split`, then `herdr agent start`);
-4. sends it the skill and the number, for Claude `/issue-resolver 12` or `/issue-pr-review 34`; other agents get "Use the issue-resolver skill on issue #12." Nothing from the title or description goes into the prompt.
+A click, or `a`, and the panel:
+
+1. reads the profiles file and picks the profile assigned to the action;
+2. checks that the skill is installed for that agent: `issue-resolver` for an issue, `issue-pr-review` for a pull request;
+3. opens a new pane below your agent, in the repo's folder: below the agent in the pane the panel follows, else one in the panel's tab, else below the pane the panel follows (`herdr agent list`, then `herdr pane split`);
+4. starts the profile's agent there, with its model and thinking level, and sends it the skill and the number: for Claude `/issue-resolver 12` or `/issue-pr-review 34`; other agents get "Use the issue-resolver skill on issue #12." Nothing from the title or description goes into the prompt.
+
+Claude Code, Codex, Pi and OpenCode start with `herdr agent start`, with the profile's flags after `--`. Through mcc, the panel types `mcc run -- [flags] /issue-resolver 12` into the new pane's shell (with mcc's full path), every word quoted, and Claude Code takes the prompt as its first message.
 
 Your own agent and its conversation are left alone. The panel shows what it is doing above the key hints, in yellow while it starts the agent, green once the agent is working on the prompt, and red with the reason when something fails. A pane whose agent failed to start is closed again.
 
 If the new agent asks you something first, such as whether you trust the folder, the pane stays open and the panel waits up to 5 minutes for your answer, then sends the prompt. If the prompt is typed but the agent doesn't act on it, the panel presses Enter once more.
 
-If the skill isn't installed, nothing starts and the panel points you to [luongnv.com/idd](https://luongnv.com/idd) to install the skills. It looks for `<skill>/SKILL.md` in the `skills` folder of `~/.claude`, `~/.agents`, `~/.codex` and `~/.<agent>`, and of the same folders in the repo. For Claude it also looks in the plugins you have installed and not disabled (`~/.claude/plugins/installed_plugins.json`, `enabledPlugins` in `~/.claude/settings.json` and the repo's `.claude/settings*.json`), and in synced plugins, and sends a plugin's skill under the plugin's name, such as `/idd:issue-resolver 12`.
+mcc can ask something before Claude Code starts, such as what to do about a usage limit. The panel waits up to a minute for herdr to see Claude Code in the new pane, then up to 30 seconds for it to settle. It says "Started" only when Claude Code is idle or working; otherwise it says **mcc is waiting in the new pane (it may be asking about a usage limit)**. Answer mcc there, and Claude Code then works on the prompt.
 
-The button doesn't show on GitLab, because both skills work through `gh`.
+If the skill isn't installed, nothing starts and the panel points you to [luongnv.com/idd](https://luongnv.com/idd) to install the skills. It looks for `<skill>/SKILL.md` in the `skills` folder of `~/.claude`, `~/.agents`, `~/.codex` and `~/.<agent>`, and of the same folders in the repo. For Claude it also looks in the plugins you have installed and not disabled (`~/.claude/plugins/installed_plugins.json`, `enabledPlugins` in `~/.claude/settings.json` and the repo's `.claude/settings*.json`), and in synced plugins, and sends a plugin's skill under the plugin's name, such as `/idd:issue-resolver 12`. For mcc, it runs `mcc env -q --shell bash` in the repo to find the Claude Code folder `mcc run` would use there, such as `~/.mcc/profiles/work`, and looks in that folder instead of `~/.claude`.
+
+The buttons don't show on GitLab, because both skills work through `gh`.
+
+## Agent profiles
+
+A profile says which agent Resolve or Review starts:
+
+- **Name** and **id**: the id is 1 to 32 lowercase letters, digits or `-`. `default` is taken.
+- **Harness**: Claude Code via `mcc run`, Claude Code, Codex, Pi or OpenCode.
+- **Model** (optional): left empty, the harness uses its own default.
+- **Thinking** (optional): only the levels the harness takes. Left empty, the harness uses its own default.
+
+Resolve and Review each have their own profile. With none assigned, or when the assigned profile is deleted, an action uses the built-in **Claude Code via mcc run** profile, with no model or thinking flag. The built-in profile can be assigned but not changed or deleted.
+
+How the fields become flags:
+
+| Harness | Model | Thinking | Levels |
+|---|---|---|---|
+| Claude Code via `mcc run` | `--model M` | `--effort L` | low, medium, high, xhigh, max |
+| Claude Code | `--model M` | `--effort L` | low, medium, high, xhigh, max |
+| Codex | `-m M` | `-c model_reasoning_effort="L"` | low, medium, high, xhigh |
+| Pi | `--model M` | `--thinking L` | off, minimal, low, medium, high, xhigh, max |
+| OpenCode | none | none | none |
+
+OpenCode has no model or thinking flag when it starts interactively, so a model set on an OpenCode profile is ignored. The profile form says so, and so does the notice when the agent starts.
+
+A model is letters, digits and `. _ : / @ + -`, starting with a letter or digit. Spaces, quotes and other shell characters are refused, and so are aliases with brackets such as `opus[1m]`: use the full model name instead.
+
+### Edit them
+
+- **Terminal panel:** press `s`, or click `⚙` in the header. `↑`/`↓` select a profile, `n` adds one, `e` or enter edits it, `d` deletes it (`y` confirms), `R` assigns it to Resolve and `V` to Review. In the form, `↑`/`↓` or tab move between fields, `←`/`→` or space step through the harness and thinking choices, typing edits a text field, enter saves and esc goes back. Keys typed into a field stay in the field: `q` doesn't close the panel. Esc in the list goes back to the rows.
+- **Herdr app:** click the gear in the header, or press `s`. Each profile has **Use for Resolve**, **Use for Review**, **Edit** and **Delete** buttons; **New profile** adds one. The form has text fields for the name, id and model, and buttons for the harness and thinking level that offer only the allowed values. Enter in a text field saves. Esc goes from the form back to the list, and from the list back to the rows.
+
+A profile that can't be saved shows why, in red, and nothing is written.
+
+### Where they're kept
+
+Both panels read and write the same file:
+
+```
+~/.config/herdr/plugins/config/herdr-github/profiles.json
+```
+
+The file is per machine: it lives on the machine where the panel runs. The terminal panel uses the file on the machine where its herdr server runs, so under `herdr --remote` or over ssh that's the remote machine's file. The app always uses the file on your own computer, even for a space on another machine. On one computer, a profile you make in one panel is there in the other.
+
+The panels read the file when the profiles view opens and on every Resolve or Review click, and write it only while it still holds what they read. If the other panel changed it in the meantime, nothing is written, the view reads it again and asks you to make your change again. A file that isn't valid JSON, or is from another version of the panel, is shown read only and never overwritten; until you fix or delete it, the actions use the default.
+
+## Herdr app
+
+`mods/herdr-github` is the same panel as a Herdr app mod: the same rows, the same per-row Resolve and Review buttons, the same profiles and the same default. It reads the repo with `gh` or `glab` on the space's machine.
+
+To install it, link the folder into the app's mods folder (`~/.config/herdr-app`, or `$HERDR_APP_HOME` when that's set):
+
+```sh
+git clone https://github.com/luongnv89/herdr-github
+ln -s "$PWD/herdr-github/mods/herdr-github" "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/herdr-github"
+```
+
+Or copy the folder there instead of linking it. The first time the app sees the folder, it docks the panel on the right; saving a file in it reloads the panel. To update, `git pull` in the clone (copy the folder again if you copied it).
+
+In the app, a Resolve or Review click opens a new tab in the space you're in, in the repo's folder. Claude Code, Codex, Pi and OpenCode start with the `run` the app's `programs.json` gives them, followed by the profile's flags, and get the prompt as their first message. mcc starts as `mcc run -- [flags] /issue-resolver 12`. For a space on another machine, the agent, `mcc env` and the skill lookup run on that machine, while the profiles come from your computer. The app doesn't say when mcc is ready, so for mcc the panel says it opened the tab, not that Claude Code started: if mcc asks something first, such as about a usage limit, answer it in the new tab.
+
+Besides its own `localStorage` (which list you chose), the app mod writes only the profiles file, and runs `mkdir -p` for its folder the first time it saves one.
+
+`keys.json` can send the panel `herdr-github:focus`, `herdr-github:refresh`, `herdr-github:resolve` (or `review`, `act`) and `herdr-github:settings`.
 
 ## Remote machines
 
@@ -92,6 +164,7 @@ A plain click on a remote machine still can't open a browser on your computer.
 
 - herdr 0.9.5 or later, on macOS or Linux.
 - Node 18 or later, as `node` on the `PATH` of the herdr server.
+- For Resolve and Review with the default profile, `mcc` on that `PATH`, with the skills installed for the Claude Code profile it starts. Other profiles need their own agent installed instead.
 - For GitHub repos, [`gh`](https://cli.github.com), logged in (`gh auth login`; add `--hostname` for GitHub Enterprise).
 - For GitLab repos, [`glab`](https://gitlab.com/gitlab-org/cli), logged in (`glab auth login`; add `--hostname` for a self-hosted GitLab).
 
@@ -101,9 +174,10 @@ A herdr plugin runs as your user, with no sandbox. This one:
 
 - runs `git` in the repo's folder to find its remote, then `gh` or `glab` there to read the repo and its open pull requests (or merge requests) and issues;
 - runs `herdr` to find the focused pane, and to open, resize and close its own pane;
-- when you click Resolve or Review, or press `a`: runs `herdr` to list the agents, split a new pane below yours, start the same kind of agent in it and send it the skill and the number, and reads the skill folders listed under [Resolve and review with your agent](#resolve-and-review-with-your-agent);
+- when you click Resolve or Review, or press `a`: reads the profiles file, runs `herdr` to list the agents and split a new pane, then either starts the profile's agent in it (`herdr agent start`) and sends it the skill and the number, or, for mcc, runs `mcc env` in the repo and types `mcc run -- … <prompt>` into the new pane (`herdr pane run`); it reads the skill folders listed under [Resolve and review with an agent](#resolve-and-review-with-an-agent);
 - runs `open` (macOS) or `xdg-open` (Linux) when you open a row or the repo, on the computer where its herdr server runs (see [Remote machines](#remote-machines));
 - when you run `bind-key`: runs `herdr --default-config` and `herdr config check` to find a free key and check the config, adds one `[[keys.command]]` binding to herdr's `config.toml` (see [Install](#install)), saves the old config next to it as `config.toml.bak-herdr-github`, runs `herdr server reload-config`, and shows the result as a herdr notification;
+- when you save in the profiles view: writes `~/.config/herdr/plugins/config/herdr-github/profiles.json` (see [Where they're kept](#where-theyre-kept));
 - otherwise writes only under its herdr state folder (`~/.local/state/herdr/plugins/herdr-github/` on macOS): which list you chose, and the ids of its open panes.
 
 It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
@@ -118,7 +192,12 @@ It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
 - **A row doesn't open, and the panel shows its URL with a red reason:** `open` or `xdg-open` is missing or failed, most often because the panel runs on a remote machine. See [Remote machines](#remote-machines).
 - **"The issue-resolver skill isn't installed" or "The issue-pr-review skill isn't installed":** install the skills from [luongnv.com/idd](https://luongnv.com/idd) for the agent named in the message, then try again.
 - **"claude isn't ready in the new pane" or "Send it yourself in the new pane":** the agent didn't take the prompt, for example because its startup question went unanswered for 5 minutes. Answer it, then type the command the notice shows, such as `/issue-resolver 12`.
-- **"No agent in this tab":** Resolve and Review start the same kind of agent as yours. Start your agent (for example `claude`) in a pane of the panel's tab, focus it, and try again.
+- **"No agent in this tab and no pane to start one next to":** the panel opens the new pane below your agent, or below the pane it follows. Click a pane in the panel's tab, then try again.
+- **"mcc isn't on your PATH":** the default profile starts Claude Code through `mcc run`. Install mcc on the machine where the panel runs, or assign another profile to Resolve or Review (`s`, or the gear in the app).
+- **"The issue-resolver skill isn't found for mcc":** `mcc env -q --shell bash`, run in the repo, didn't name a Claude Code folder. Run it there yourself to see why.
+- **"mcc is waiting in the new pane":** mcc asked something before starting Claude Code, most often about a usage limit. Answer it in the new pane; Claude Code then works on the prompt.
+- **"The profiles changed elsewhere and were read again":** the other panel saved the profiles file after this one read it. Make your change again.
+- **"The profiles file isn't valid JSON" or "is version N":** the file is read only until you fix or delete it, and the actions use the default meanwhile.
 - **Saved SSH machines and `herdr --remote`:** the panel runs `git`, `gh` and `glab` on the computer where its herdr server runs. Ctrl-clicking the selected row's URL there to open it on your own computer hasn't been tested live yet.
 
 ## Develop
@@ -136,7 +215,11 @@ A linked plugin runs straight from your folder, so a change shows the next time 
 - `toggle.js`: opens the panel beside the focused pane, or closes it.
 - `bind-key.js`: binds a key to `toggle` in herdr's config.
 - `panel.js`: the panel itself. Plain Node, no npm packages.
-- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, for what Resolve and Review run, with a stand-in for `herdr`, and for which key `bind-key` picks and how it edits the config.
+- `mods/herdr-github/`: the Herdr app mod. `main.js` is the panel, `forge.js` its rules for rows, forges and agent actions, and `profiles.js` the agent profiles, shared with `panel.js`.
+- `profiles.cjs`: the terminal panel's copy of `mods/herdr-github/profiles.js`, generated. Edit `profiles.js`, then run `node scripts/sync-profiles.mjs`. CI fails when the two differ (`node scripts/sync-profiles.mjs --check`).
+- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, for what Resolve and Review run for each harness, with stand-ins for `herdr` and `mcc`, for the profiles and their file, for the app mod's rules, and for which key `bind-key` picks and how it edits the config.
+
+`mods/herdr-github/gpui-kit.d.ts` is written by the app's runtime each time the mod runs, and is not in git.
 
 ## License
 
