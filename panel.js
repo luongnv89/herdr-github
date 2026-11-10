@@ -393,9 +393,11 @@ function findSkill(kind, skill, root, claudeDir = null) {
   return null;
 }
 
-// Built from the skill name and an integer only: never from a title or body.
-function promptFor(kind, skill, action) {
+// Built from the skill name and an integer only, or from your custom prompt
+// (`template`) with its {number} filled in: never from a title or body.
+function promptFor(kind, skill, action, template = null) {
   if (!isNumber(action.number)) throw new Error("not a number");
+  if (template !== null) return P.expandPrompt(template, action.number);
   return claudeStyle(kind) ? `/${skill} ${action.number}` : `Use the ${skill} skill on ${action.noun} #${action.number}.`;
 }
 
@@ -437,8 +439,8 @@ function readStore() {
 function act(view = ui.view, index = ui.sel[view]) {
   const action = actionFor(view, index);
   if (!action || ui.acting) return ui.acting;
-  const profile = P.resolveProfile(readStore().store, action.key);
-  ui.acting = launch(action, ui.root || cwd, profile)
+  const { store } = readStore();
+  ui.acting = launch(action, ui.root || cwd, P.resolveProfile(store, action.key), P.resolvePrompt(store, action.key))
     .catch((e) => say("error", `Can't start an agent: ${e.message}`))
     .finally(() => { ui.acting = null; });
   return ui.acting;
@@ -449,11 +451,17 @@ function act(view = ui.view, index = ui.sel[view]) {
 const TIMING = { pollMs: 500, appearMs: 60000, waitMs: 30000 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function launch(action, root, profile) {
+// `template` is the action's custom prompt, or null for the IDD skill's. A custom
+// prompt is sent as written, so it needs no skill: nothing looks for one.
+async function launch(action, root, profile, template = null) {
   // The profile is checked before anything runs: an unchecked one never reaches a command line.
   const invalid = P.validateProfile(profile);
   if (invalid.length) throw new Error(`Invalid profile: ${invalid.join("; ")}`);
   const harness = profile.harness, shown = P.HARNESS_NAMES[harness];
+  // So is a custom prompt, with the number in it.
+  const custom = template === null ? null : promptFor(harness, null, action, template);
+  const bad = custom === null ? [] : P.validatePrompt(custom);
+  if (bad.length) throw new Error(`Invalid prompt: ${bad.join("; ")}`);
   const what = `${action.noun} #${action.number}`;
   const herdr = (args, timeout) => run(HERDR, args, { timeout }).catch((e) =>
     ({ code: -1, stdout: "", stderr: e.code === "ENOENT" ? "herdr isn't installed" : e.message }));
@@ -474,7 +482,7 @@ async function launch(action, root, profile) {
   if (!anchor) return say("error", `No agent in this tab and no pane to start one next to. Click a pane here, then ${action.label} again.`);
 
   let claudeDir = null;
-  if (harness === "mcc") {
+  if (harness === "mcc" && custom === null) {
     // The Claude Code profile `mcc run` would start in this repo, and its folder.
     const env = await run(mcc, ["env", "-q", "--shell", "bash"], { cwd: root, timeout: 10000 })
       .catch((e) => ({ code: -1, stdout: "", stderr: e.message }));
@@ -484,9 +492,9 @@ async function launch(action, root, profile) {
       return say("error", `The ${action.skill} skill isn't found for mcc (${why}). Install the skills from:`, IDD);
     }
   }
-  const skill = findSkill(harness, action.skill, root, claudeDir);
-  if (!skill) return say("error", `The ${action.skill} skill isn't installed for ${shown}. Install the skills from:`, IDD);
-  const text = promptFor(harness, skill, action);
+  const skill = custom === null ? findSkill(harness, action.skill, root, claudeDir) : null;
+  if (custom === null && !skill) return say("error", `The ${action.skill} skill isn't installed for ${shown}. Install the skills from:`, IDD);
+  const text = custom ?? promptFor(harness, skill, action);
   const plan = P.buildLaunch(profile, text);
   const note = plan.warnings.length ? ` (${plan.warnings.join("; ")})` : "";
 
@@ -744,8 +752,9 @@ function paint(out, rows) {
 
 // ── Profiles ────────────────────────────────────────────────────────────────
 // s or the header's ⚙: the agent profiles, which one Resolve and Review start, and
-// a form to add or change one. The store is read when the view opens, and written
-// only while the file still holds what was read.
+// a form to add or change one; under them, the prompt each action sends. The store
+// is read when the view opens, and written only while the file still holds what
+// was read.
 
 // `word` is how the profiles module names the field in its reasons ("Model: …").
 const FIELDS = [
@@ -765,9 +774,15 @@ const OPENCODE_NOTE = P.buildLaunch({ id: "x", name: "x", harness: "opencode", m
 const entries = () => [P.DEFAULT_PROFILE, ...ui.settings.store.profiles];
 const describe = (p) => [P.HARNESS_NAMES[p.harness], p.model, p.thinking && `thinking ${p.thinking}`].filter(Boolean).join(" · ");
 const ACTION_LABELS = { resolve: "Resolve", review: "Review" };
+// What an action sends with no custom prompt, as Claude Code takes it.
+const DEFAULT_PROMPTS = Object.fromEntries(Object.values(ACTIONS).map((a) => [a.key, `/${a.skill} ${P.PROMPT_TOKEN}`]));
+// A prompt's reasons start with its field's name ("Resolve prompt: …").
+const PROMPT_FIELDS = P.ACTION_KEYS.map((a) => ({ key: "prompt", word: P.PROMPT_LABELS[a] }));
 
+// `promptSel` is the action whose prompt row is selected, under the profiles; null
+// while a profile is. `prompt` is the prompt being edited: { action, text }.
 function openSettings() {
-  ui.settings = { mode: "list", sel: 0, form: null, field: 0, error: null, fieldErrors: {}, info: null, ...readStore() };
+  ui.settings = { mode: "list", sel: 0, promptSel: null, form: null, prompt: null, field: 0, error: null, fieldErrors: {}, info: null, ...readStore() };
   draw();
 }
 
@@ -787,7 +802,7 @@ function selectedEntry(st) {
 function settingsBack() {
   const st = ui.settings;
   if (st.mode === "list") return closeSettings();
-  Object.assign(st, { mode: "list", form: null, error: null, fieldErrors: {} });
+  Object.assign(st, { mode: "list", form: null, prompt: null, error: null, fieldErrors: {} });
   draw();
 }
 
@@ -815,8 +830,8 @@ function saveStore(next) {
 function splitErrors(message, inForm) {
   const fieldErrors = {}, rest = [];
   for (const part of inForm ? message.split("; ") : [message]) {
-    const f = FIELDS.find((x) => part.startsWith(`${x.word}:`));
-    if (f && !fieldErrors[f.key]) fieldErrors[f.key] = part;
+    const f = [...FIELDS, ...PROMPT_FIELDS].find((x) => part.startsWith(`${x.word}:`));
+    if (f) fieldErrors[f.key] = fieldErrors[f.key] ? `${fieldErrors[f.key]}; ${part}` : part;
     else rest.push(part);
   }
   return { fieldErrors, error: rest.length ? rest.join("; ") : null };
@@ -826,7 +841,7 @@ function splitErrors(message, inForm) {
 function change(fn, info) {
   const st = ui.settings;
   try { fn(); Object.assign(st, { error: null, fieldErrors: {}, info }); }
-  catch (e) { Object.assign(st, { info: null }, splitErrors(e.message, st.mode === "edit")); }
+  catch (e) { Object.assign(st, { info: null }, splitErrors(e.message, st.mode === "edit" || st.mode === "prompt")); }
   selectedEntry(st);
   draw();
 }
@@ -843,9 +858,24 @@ function saveForm() {
   const profile = { id: f.id, name: f.name.trim(), harness: f.harness, model: f.model, thinking: f.thinking };
   change(() => {
     saveStore(P.upsertProfile(st.store, profile, f.prev));
-    Object.assign(st, { mode: "list", form: null });
+    Object.assign(st, { mode: "list", form: null, promptSel: null });
     st.sel = Math.max(0, entries().findIndex((p) => p.id === profile.id));
   }, `Saved ${profile.name}`);
+}
+
+// A prompt row's Edit, e or enter: its text, to change; empty sends the default.
+function editPrompt(action) {
+  const st = ui.settings;
+  Object.assign(st, { mode: "prompt", promptSel: action, prompt: { action, text: P.resolvePrompt(st.store, action) ?? "" }, error: null, fieldErrors: {}, info: null });
+  draw();
+}
+
+function savePrompt(text = ui.settings.prompt.text) {
+  const st = ui.settings, { action } = st.prompt, t = text.trim();
+  change(() => {
+    saveStore(P.setPrompt(st.store, action, t));
+    Object.assign(st, { mode: "list", prompt: null });
+  }, t ? `${ACTION_LABELS[action]} now sends: ${t}` : `${ACTION_LABELS[action]} now sends the default: ${DEFAULT_PROMPTS[action]}`);
 }
 
 // The selected profile's actions, from a key or its buttons.
@@ -888,15 +918,37 @@ function settingsKey(m) {
   if (k === "\x03") return quit();
   if (st.mode === "confirm") return confirmDelete(k === "y" || k === "Y");
   if (st.mode === "edit") return formKey(st, k);
+  if (st.mode === "prompt") return promptKey(st, k);
   selectedEntry(st);
   if (k === "\x1b" || k === "q" || k === "s") return closeSettings();
-  if (UP.includes(k) || k === "k") st.sel = Math.max(0, st.sel - 1);
-  else if (DOWN.includes(k) || k === "j") st.sel = Math.min(entries().length - 1, st.sel + 1);
-  else if (k === "n") return editProfile(null);
-  else if (k === "e" || k === "\r" || k === "\n") return editSelected();
-  else if (k === "d") return askDelete();
+  // ↑ and ↓ go from the last profile on to the prompt rows, and back.
+  const at = P.ACTION_KEYS.indexOf(st.promptSel);
+  if (UP.includes(k) || k === "k") {
+    if (at >= 0) st.promptSel = P.ACTION_KEYS[at - 1] ?? null;
+    else st.sel = Math.max(0, st.sel - 1);
+  } else if (DOWN.includes(k) || k === "j") {
+    if (at >= 0) st.promptSel = P.ACTION_KEYS[Math.min(at + 1, P.ACTION_KEYS.length - 1)];
+    else if (st.sel === entries().length - 1) st.promptSel = P.ACTION_KEYS[0];
+    else st.sel += 1;
+  } else if (k === "n") return editProfile(null);
+  else if (k === "e" || k === "\r" || k === "\n") return at >= 0 ? editPrompt(st.promptSel) : editSelected();
+  else if (at >= 0 && (k === "d" || k === "R" || k === "V")) {
+    Object.assign(st, { error: `The ${P.PROMPT_LABELS[st.promptSel]} isn't a profile: e or enter edits it`, info: null });
+  } else if (k === "d") return askDelete();
   else if (k === "R" || k === "V") return assignTo(k === "R" ? "resolve" : "review");
   else return;
+  draw();
+}
+
+// Keys while a prompt is edited: text, as in the form; enter saves, esc goes back.
+function promptKey(st, k) {
+  const pr = st.prompt;
+  if (k === "\x1b") return settingsBack();
+  if (k === "\r" || k === "\n") return savePrompt();
+  if (k === "\x7f" || k === "\b") pr.text = [...pr.text].slice(0, -1).join("");
+  else if (!k.startsWith("\x1b") && !/[\x00-\x1f\x7f-\x9f]/.test(k) && pr.text.length < P.PROMPT_MAX) pr.text += k;
+  else return;
+  delete st.fieldErrors.prompt;
   draw();
 }
 
@@ -958,12 +1010,14 @@ function settingsLines(cols, rows) {
   const st = ui.settings, out = [];
   ui.rows = [];
   ui.buttons = [];
-  const p = st.mode === "edit" ? null : selectedEntry(st);
+  const editing = st.mode === "edit" || st.mode === "prompt";
+  const p = editing ? null : selectedEntry(st);
   // Header: the view's name, + New in the list, and ✕ (back) at the right edge.
-  const tools = st.mode === "edit" ? [] : [[" + New ", () => editProfile(null)]];
+  const tools = editing ? [] : [[" + New ", () => editProfile(null)]];
   tools.push([" ✕ ", () => settingsBack()]);
   const right = tools.reduce((w, [t]) => w + width(t), 0);
-  const heading = fit(st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles", cols - right - 2);
+  const heading = fit(st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile")
+    : st.mode === "prompt" ? P.PROMPT_LABELS[st.prompt.action] : "Agent profiles", cols - right - 2);
   out.push(` ${bold(heading)}${" ".repeat(Math.max(0, cols - 1 - width(heading) - right))}${dim(tools.map(([t]) => t).join(""))}`);
   let x = cols - right;
   for (const [t, action] of tools) { ui.buttons.push({ row: 0, from: x, to: x + width(t), action }); x += width(t); }
@@ -980,6 +1034,7 @@ function settingsLines(cols, rows) {
   for (const w of st.warnings) notes.push([yellow, w]);
   if (st.mode === "edit" && st.form.harness === "opencode" && (st.form.model || st.form.thinking)) notes.push([yellow, OPENCODE_NOTE]);
   const footer = hintLines(st.mode === "edit" ? ["↑↓ field", "←→ choose", "type to edit", "⏎ save", "esc back"]
+    : st.mode === "prompt" ? ["type to edit", "⏎ save", "esc back"]
     : st.mode === "confirm" ? ["y delete", "any other key keeps it"]
       : ["↑↓ select", "n new", "e edit", "d delete", "R/V assign", "esc back"], cols);
   const room = Math.max(0, rows - out.length - footer.length - 1);
@@ -1024,11 +1079,38 @@ function settingsLines(cols, rows) {
     });
     body.push(""); owner.push(null);
     addButtons([["Save", () => saveForm()], ["Cancel", () => settingsBack()]], "  ", 2, null);
+  } else if (st.mode === "prompt") {
+    // The text, broken into lines of the pane's width, the cursor after it; empty,
+    // what the action sends instead. Then its reason, what to know, and the buttons.
+    const { action, text } = st.prompt, valueW = cols - 3, lines = [""];
+    for (const ch of text) {
+      if (width(lines[lines.length - 1] + ch) > valueW) lines.push("");
+      lines[lines.length - 1] += ch;
+    }
+    if (!text) lines[0] = invert(" ") + dim(fit(`default: ${DEFAULT_PROMPTS[action]}`, valueW - 1));
+    else if (width(lines[lines.length - 1]) < valueW) lines[lines.length - 1] += invert(" ");
+    else lines.push(invert(" "));
+    selStart = body.length;
+    for (const l of lines) { body.push(`${accent("▌")} ${l}`); owner.push(null); }
+    // Its reason, whole, under it.
+    const why = st.fieldErrors.prompt;
+    if (why) for (const l of wrap(why, cols - 4, Infinity)) { body.push("    " + red(l)); owner.push(null); }
+    selEnd = body.length;
+    body.push(""); owner.push(null);
+    const noun = Object.values(ACTIONS).find((a) => a.key === action).noun;
+    for (const note of [
+      `${P.PROMPT_TOKEN} becomes the ${noun}'s number; nothing else from it goes in.`,
+      "Sent as written to every harness, instead of the IDD skill. Empty sends the default.",
+    ]) for (const l of wrap(note, cols - 4, Infinity)) { body.push("  " + dim(l)); owner.push(null); }
+    body.push(""); owner.push(null);
+    const custom = P.resolvePrompt(st.store, action) !== null;
+    addButtons([["Save", () => savePrompt()], ...(custom ? [["Use default", () => savePrompt("")]] : []), ["Cancel", () => settingsBack()]], "  ", 2, null);
   } else {
     const using = (id) => P.ACTION_KEYS.filter((a) => (st.store.assign[a] ?? P.DEFAULT_PROFILE.id) === id);
     entries().forEach((q, i) => {
       if (i) { body.push(""); owner.push(null); }
-      const on = i === st.sel, bar = on ? accent("▌") : " ", select = () => { Object.assign(st, { sel: i, error: null, mode: "list" }); draw(); };
+      const on = i === st.sel && !st.promptSel, bar = on ? accent("▌") : " ";
+      const select = () => { Object.assign(st, { sel: i, promptSel: null, error: null, mode: "list" }); draw(); };
       // The name keeps at least 12 cells: the Resolve and Review tags move down to
       // the second line when they would squeeze it, and a long id is cut.
       const idTag = q.id === P.DEFAULT_PROFILE.id ? "default" : q.id, tags = using(q.id).map((a) => ACTION_LABELS[a]).join(" · ");
@@ -1053,6 +1135,24 @@ function settingsLines(cols, rows) {
         selEnd = body.length;
       }
     });
+    // Each action's prompt, under the profiles: your own, or the default it sends
+    // without one. The selected one's Edit sits at the right edge, so a click on the
+    // row only selects it.
+    for (const a of P.ACTION_KEYS) {
+      body.push(""); owner.push(null);
+      const on = st.promptSel === a && st.mode === "list", bar = on ? accent("▌") : " ", edit = " Edit ";
+      const select = () => { Object.assign(st, { promptSel: a, error: null, mode: "list" }); draw(); };
+      const custom = P.resolvePrompt(st.store, a), label = fit(P.PROMPT_LABELS[a], cols - 3 - (on ? width(edit) + 2 : 0));
+      if (on) {
+        selStart = body.length;
+        const x = cols - 1 - width(edit);
+        hits[body.length] = [{ from: x, to: x + width(edit), action: () => editPrompt(a) }];
+        body.push(`${bar} ${bold(label)}${" ".repeat(Math.max(1, x - 2 - width(label)))}${invert(edit)}`);
+      } else body.push(`${bar} ${label}`);
+      body.push(`${bar}   ${custom ? fit(custom, cols - 4) : dim(fit(`default: ${DEFAULT_PROMPTS[a]}`, cols - 4))}`);
+      owner.push(select, select);
+      if (on) selEnd = body.length;
+    }
   }
   // Keep the selected entry (or field) in view.
   const top = Math.min(selStart, Math.max(0, selEnd - height));
