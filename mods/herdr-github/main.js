@@ -124,14 +124,15 @@ export default class GitHub extends View {
   selected() { return this.items()[this.sel[this.view]] ?? null; }
   action() { return actionFor(this.forge, this.view, this.selected()); }
 
-  refresh(cx) {
+  // From render, cx.notify() isn't allowed: render reads the new state right after.
+  refresh(cx, fromRender = false) {
     if (this.loading) return;
     const loc = this.loc, context = keyOf(loc);
     if (context !== this.context) {
       Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 } });
     }
     this.fetchedAt = Date.now();
-    if (!loc?.cwd) { this.error = "No folder"; cx.notify(); return; }
+    if (!loc?.cwd) { this.error = "No folder"; if (!fromRender) cx.notify(); return; }
     const { cwd, on } = loc;
     const current = () => keyOf(this.loc) === context;
     this.loading = true;
@@ -161,7 +162,7 @@ export default class GitHub extends View {
         if (current()) this.error = on ? `Can't reach ${on}: ${e?.message ?? e}` : `Can't read the repository: ${e?.message ?? e}`;
       } finally { this.loading = false; cx.notify(); }
     });
-    cx.notify();
+    if (!fromRender) cx.notify();
   }
 
   // Runs on this computer, so the browser is yours even for a space on another machine.
@@ -752,7 +753,7 @@ export default class GitHub extends View {
   render(cx) {
     const loc = locate(this.loc);
     if (keyOf(loc) !== keyOf(this.loc) || loc?.tab !== this.loc?.tab || loc?.pane !== this.loc?.pane) this.loc = loc;
-    if (this.visible() && (keyOf(this.loc) !== this.context || Date.now() - this.fetchedAt > STALE)) this.refresh(cx);
+    if (this.visible() && (keyOf(this.loc) !== this.context || Date.now() - this.fetchedAt > STALE)) this.refresh(cx, true);
     const t = theme(), view = this.view, items = this.items(), focused = this.handle.is_focused() || this.inputFocus !== null;
     const st = this.settings, action = st ? null : this.action();
     const failed = this.error || this.errors[view];
