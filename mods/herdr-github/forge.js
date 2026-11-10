@@ -178,10 +178,13 @@ export function actionFor(forge, view, item) {
   return { ...ACTIONS[view], number: item.number };
 }
 
+// Claude Code, started directly or by `mcc run`, takes a skill as a slash command.
+export const claudeStyle = (kind) => kind === "claude" || kind === "mcc";
+
 // Built from the skill name and an integer only: never from a title or body.
 export function promptFor(kind, skill, action) {
   if (!isNumber(action.number)) throw new Error("not a number");
-  return kind === "claude" ? `/${skill} ${action.number}` : `Use the ${skill} skill on ${action.noun} #${action.number}.`;
+  return claudeStyle(kind) ? `/${skill} ${action.number}` : `Use the ${skill} skill on ${action.noun} #${action.number}.`;
 }
 
 const safeName = (n) => typeof n === "string" && /^[\w.-]+$/.test(n) ? n : null;
@@ -190,22 +193,25 @@ const join = (...parts) => parts.join("/").replace(/\/+/g, "/");
 // How to call `skill` for an agent of `kind` working in `root`: its name, or
 // "plugin:name" when Claude has it only from a plugin; null when it isn't found.
 // Folders are checked for every kind, since a wrong "not installed" is the worse mistake.
-// `io` reads the agent's machine: { home, read(path) → text | null, dirs(path) → [subfolder paths] }.
+// `io` reads the agent's machine: { home, read(path) → text | null, dirs(path) → [subfolder paths],
+// claudeDir? }. claudeDir is the Claude Code config folder to look in (for mcc, the
+// profile's folder that `mcc env` reports); ~/.claude when it isn't given.
 export async function findSkill(kind, skill, root, io) {
-  const { home } = io;
+  const { home } = io, claudeDir = io.claudeDir || join(home, ".claude");
   const read = (p) => Promise.resolve(io.read(p)).catch(() => null);
   const json = async (p) => { try { const t = await read(p); return t == null ? null : JSON.parse(t); } catch { return null; } };
   const has = async (dir) => (await read(join(dir, "SKILL.md"))) != null;
 
   const folders = [".claude", ".agents", ".codex", `.${kind}`].flatMap((d) => [join(home, d, "skills"), ...(root ? [join(root, d, "skills")] : [])]);
+  if (claudeStyle(kind)) folders.push(join(claudeDir, "skills"));
   if ((await Promise.all(folders.map((f) => has(join(f, skill))))).some(Boolean)) return skill;
-  if (kind !== "claude") return null;
+  if (!claudeStyle(kind)) return null;
 
   // Claude plugins: the installed ones (installed_plugins.json) that settings.json
   // doesn't disable, each with <installPath>/skills/<skill>, and synced ones, laid
   // out as plugins/synced/<account>/<plugin>/<skill>. A cached copy alone doesn't count.
-  const plugins = join(home, ".claude", "plugins");
-  const enabled = { ...(await json(join(home, ".claude", "settings.json")))?.enabledPlugins };
+  const plugins = join(claudeDir, "plugins");
+  const enabled = { ...(await json(join(claudeDir, "settings.json")))?.enabledPlugins };
   if (root) for (const f of ["settings.json", "settings.local.json"]) Object.assign(enabled, (await json(join(root, ".claude", f)))?.enabledPlugins);
   const installed = Object.entries((await json(join(plugins, "installed_plugins.json")))?.plugins ?? {})
     .filter(([key, list]) => enabled[key] !== false && Array.isArray(list))
