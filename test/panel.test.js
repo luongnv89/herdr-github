@@ -1976,7 +1976,8 @@ test("esc, q, the wheel and a click elsewhere close the menu and start nothing, 
     q: () => onInput(Buffer.from("q")),
     wheel: () => onInput(Buffer.from(wheelDown)),
     "a row": (lines) => onInput(Buffer.from(press(lines.findIndex((l) => l?.includes("Title 0"))))),
-    "the switch": () => onInput(Buffer.from(press(2).replace("<0;5;", "<0;50;"))),
+    // Its other half: a click that went on to the switch would change the list.
+    "the switch": () => onInput(Buffer.from(press(2))),
     "the header's ⚙": (lines) => click(lines[0].indexOf("⚙"), 0),
   };
   for (const [what, close] of Object.entries(closers)) {
@@ -2098,4 +2099,34 @@ test("at 28, 30, 40 and 60 cells the menu fits, with a 40-character name, and it
     assert.equal(herdrCalls()[2], "agent start resolve-12 --kind pi --pane w1:p7 --timeout 55000", where);
     for (const l of after) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
   }
+});
+
+test("a menu longer than the room shows a window of it that follows the highlight, arrows on its borders", async (t) => {
+  const dir = home(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  const profiles = Array.from({ length: 10 }, (_, i) => ({ id: `p${i}`, name: `Profile ${i}`, harness: "pi", model: `m${i}` }));
+  useProfiles(dir, profiles, { resolve: "p0" });
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  const rows = 14, lastList = rows - 2;
+  const at = (fn) => screenAt(60, rows, fn);
+  const inBox = (lines) => lines.map((l, y) => [l, y]).filter(([l]) => /│ [▸ ] /.test(l ?? ""));
+  let lines = at(() => onInput(Buffer.from("a")));
+  assert.equal(ui.menu.entries.length, 11);
+  let shown = inBox(lines);
+  assert.ok(shown.length < 11, lines.join("\n"));
+  // Inside the list, the key hints last, the highlighted profile in view.
+  for (const [, y] of shown) assert.ok(y >= 1 && y <= lastList, lines.join("\n"));
+  assert.match(lines[rows - 1], /^ ↑↓ choose/);
+  assert.ok(shown.some(([l]) => l.includes("▸ Profile 0")), lines.join("\n"));
+  assert.ok(lines.some((l) => /^ *└─*↓┘$/.test(l ?? "")), lines.join("\n"));
+  // Down past the window: it scrolls, keeping the highlight in view.
+  lines = at(() => onInput(Buffer.from("j".repeat(10))));
+  shown = inBox(lines);
+  assert.ok(shown.some(([l]) => l.includes("▸ Profile 9")), lines.join("\n"));
+  assert.ok(!shown.some(([l]) => l.includes("Claude Code via mcc run")), lines.join("\n"));
+  assert.ok(lines.some((l) => /┌ Resolve #12 with ─*↑┐$/.test(l ?? "")), lines.join("\n"));
+  // A click on a profile in view starts that one.
+  const [l, y] = shown.find(([x]) => x.includes("│   Profile 8"));
+  await screenAsync(() => click(l.indexOf("│") + 3, y));
+  assert.equal(herdrCalls()[2], "agent start resolve-12 --kind pi --pane w1:p7 --timeout 55000 -- --model m8");
 });
