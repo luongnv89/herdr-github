@@ -87,6 +87,10 @@ test("buildLaunch checks its own input and throws on a bad profile or prompt", (
     "a\u2066b": /no control/, "a\ue000b": /no control/, "a\ud800b": /no control/, "a\\b": /backslashes/,
     "-x 12": /can't start with/, "!id": /can't start with/, "# 12": /can't start with/, "  -x": /can't start with/,
     "": /can't be empty/, "   ": /can't be empty/, ["x".repeat(501)]: /at most 500/,
+    // At either end too: the text is sent as is, not trimmed.
+    "a\n": /no control/, "\tx": /no control/, "x\t": /no control/, "\ufeffx": /no control/, "x\u2028": /no control/,
+    "\rx": /no control/, "x\v": /no control/, "\fx": /no control/, "\u2029x": /no control/,
+    "x ": /no spaces at either end/, " x": /no spaces at either end/, "x\u00a0": /no spaces at either end/, "\u3000x": /no spaces at either end/,
   };
   for (const [prompt, why] of Object.entries(refused)) {
     assert.throws(() => P.buildLaunch(P.DEFAULT_PROFILE, prompt), (e) => /^Invalid prompt: /.test(e.message) && why.test(e.message), JSON.stringify(prompt));

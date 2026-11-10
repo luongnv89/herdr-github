@@ -96,12 +96,14 @@ function normalizeProfile(p) {
 // else from the row (its title, its description) ever goes into a prompt.
 
 // Why `text` can't be sent to an agent as its prompt, as a list of reasons; empty
-// when it can. It is checked as sent: trimmed, with the number filled in.
+// when it can. It is checked as sent, with the number filled in: the whole text,
+// so nothing at either end that trimming would hide gets through.
 function validatePrompt(text) {
   if (typeof text !== "string") return ["must be text"];
   const t = text.trim(), errors = [];
   if (!t) return ["can't be empty"];
-  if (PROMPT_BAD.test(t)) errors.push("no control, invisible or private-use characters, line breaks or backslashes");
+  if (PROMPT_BAD.test(text)) errors.push("no control, invisible or private-use characters, line breaks or backslashes");
+  else if (t !== text) errors.push("no spaces at either end");
   if (/^[-!#]/.test(t)) errors.push("can't start with -, ! or #");
   if ([...t].length > PROMPT_MAX) errors.push(`at most ${PROMPT_MAX} characters, with the number filled in`);
   return errors;
