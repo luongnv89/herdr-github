@@ -361,6 +361,8 @@ export default class GitHub extends View {
         if (st.text === null) await exec("mkdir", ["-p", parent(st.file)]).catch(() => null);
         await writeTextFile(st.file, text, st.text);
         Object.assign(st, { store: next, text, error: null, info });
+        // The buttons' tooltips say what is sent now.
+        this.prompts = { ...next.prompts };
         if (after) after();
       } catch (e) {
         const now = await this.readStore();
