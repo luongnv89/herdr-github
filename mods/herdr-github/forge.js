@@ -162,8 +162,8 @@ export function cantRun(cli, e) {
 
 // ── Agent actions ───────────────────────────────────────────────────────────
 // The selected issue can be handed to the issue-resolver skill, the selected pull
-// request to issue-pr-review: a new tab runs the same kind of agent as yours,
-// prompted with the skill and the bare number, nothing else from the row.
+// request to issue-pr-review: a new tab runs the agent of the action's profile
+// (profiles.js), prompted with the skill and the bare number, nothing else from the row.
 
 export const ACTIONS = {
   issues: { label: "Resolve", key: "resolve", skill: "issue-resolver", noun: "issue" },
@@ -185,6 +185,18 @@ export const claudeStyle = (kind) => kind === "claude" || kind === "mcc";
 export function promptFor(kind, skill, action) {
   if (!isNumber(action.number)) throw new Error("not a number");
   return claudeStyle(kind) ? `/${skill} ${action.number}` : `Use the ${skill} skill on ${action.noun} #${action.number}.`;
+}
+
+// What the app's new tab runs for a launch plan (profiles.js buildLaunch, which
+// checked the profile): mcc's own command line, prompt last, with no first message
+// to send; or an agent's programs.json `run` with the profile's flags after it,
+// the prompt sent as the tab's first message. Throws when herdr has no `run` for it.
+export function tabStart(plan, run, text) {
+  if (plan.mode === "command") return { argv: plan.argv.slice(), task: null };
+  if (!Array.isArray(run) || !run.length || !run.every((w) => typeof w === "string" && w)) {
+    throw new Error(`Herdr doesn't know how to start ${plan.kind}. Add it to programs.json with a "run".`);
+  }
+  return { argv: [...run, ...plan.extraArgs], task: text };
 }
 
 const safeName = (n) => typeof n === "string" && /^[\w.-]+$/.test(n) ? n : null;

@@ -59,3 +59,49 @@ test("findSkill for mcc looks in the mcc profile's folder: skills, then its plug
   // Plugins are Claude's only.
   assert.equal(await F.findSkill("codex", "issue-pr-review", "/repo", io), null);
 });
+
+// The app mod's launch path, built from a real plan: profiles.js buildLaunch.
+const profilesSource = readFileSync(new URL("../mods/herdr-github/profiles.js", import.meta.url));
+const P = await import(`data:text/javascript;base64,${profilesSource.toString("base64")}`);
+
+test("tabStart: an agent starts with its programs.json run, the profile's flags, and the prompt as its first message", () => {
+  const plan = P.buildLaunch({ id: "c", name: "C", harness: "codex", model: "gpt-5", thinking: "high" }, "Use the issue-resolver skill on issue #7.");
+  assert.deepEqual(F.tabStart(plan, ["codex", "--no-daemon"], "Use the issue-resolver skill on issue #7."), {
+    argv: ["codex", "--no-daemon", "-m", "gpt-5", "-c", 'model_reasoning_effort="high"'],
+    task: "Use the issue-resolver skill on issue #7.",
+  });
+  // An empty model and thinking level add nothing: the harness's own defaults hold.
+  const bare = P.buildLaunch({ id: "c", name: "C", harness: "claude" }, "/issue-resolver 7");
+  assert.deepEqual(F.tabStart(bare, ["claude"], "/issue-resolver 7"), { argv: ["claude"], task: "/issue-resolver 7" });
+  // The run is copied, not changed.
+  const run = ["pi"];
+  F.tabStart(P.buildLaunch({ id: "p", name: "P", harness: "pi", thinking: "low" }, "x"), run, "x");
+  assert.deepEqual(run, ["pi"]);
+});
+
+test("tabStart: mcc runs its own command line, prompt last, with no first message to send", () => {
+  const plan = P.buildLaunch({ id: "m", name: "M", harness: "mcc", model: "opus", thinking: "max" }, "/idd:issue-resolver 7");
+  const start = F.tabStart(plan, ["claude"], "/idd:issue-resolver 7");
+  assert.deepEqual(start, { argv: ["mcc", "run", "--", "--model", "opus", "--effort", "max", "/idd:issue-resolver 7"], task: null });
+  // The default profile, with nothing assigned.
+  assert.deepEqual(F.tabStart(P.buildLaunch(P.DEFAULT_PROFILE, "/issue-pr-review 3"), undefined, "/issue-pr-review 3"),
+    { argv: ["mcc", "run", "--", "/issue-pr-review 3"], task: null });
+});
+
+test("tabStart: an agent herdr has no run for is refused", () => {
+  const plan = P.buildLaunch({ id: "o", name: "O", harness: "opencode" }, "x");
+  for (const run of [undefined, null, [], [""], [3], "opencode"]) {
+    assert.throws(() => F.tabStart(plan, run, "x"), /doesn't know how to start opencode/, JSON.stringify(run));
+  }
+});
+
+test("main.js imports only what forge.js and profiles.js export", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  for (const [file, mod] of [["./forge.js", F], ["./profiles.js", P]]) {
+    const m = new RegExp(`import \\{([^}]*)\\} from "${file.replace(".", "\\.")}"`).exec(main);
+    assert.ok(m, `main.js imports ${file}`);
+    const names = m[1].split(",").map((n) => n.trim()).filter(Boolean);
+    assert.ok(names.length);
+    for (const n of names) assert.ok(n in mod, `${file} exports ${n}`);
+  }
+});
