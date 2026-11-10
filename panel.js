@@ -7,6 +7,8 @@ const { execFile, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+// Agent profiles, shared with the Herdr app mod: generated from mods/herdr-github/profiles.js.
+const P = require(path.join(__dirname, "profiles.cjs"));
 
 const HERDR = process.env.HERDR_BIN_PATH || "herdr";
 const SELF = process.env.HERDR_PANE_ID || null;
@@ -222,7 +224,7 @@ const ui = {
   loading: false, fetched: false, fetchedAt: 0, context: null,
   sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, frame: 0,
   rows: [], buttons: [], visible: true, notice: null,
-  root: null, tab: null, acting: null,
+  root: null, tab: null, acting: null, settings: null,
 };
 let cwd = process.env.HERDR_GITHUB_CWD || process.cwd();
 let target = process.env.HERDR_GITHUB_PANE || null;
@@ -332,9 +334,11 @@ function openUrl(url) {
 }
 
 // ── Agent actions ───────────────────────────────────────────────────────────
-// The selected issue can be handed to the issue-resolver skill, the selected pull
-// request to issue-pr-review: a new pane below your agent runs the same kind of
-// agent, prompted with the skill and the bare number, nothing else from the row.
+// An issue can be handed to the issue-resolver skill, a pull request to
+// issue-pr-review: a new pane below your agent (or the pane the panel follows)
+// runs the agent of the action's profile, prompted with the skill and the bare
+// number, nothing else from the row. With no profile assigned, Claude Code
+// starts through `mcc run`.
 
 const IDD = "https://luongnv.com/idd";
 const ACTIONS = {
@@ -344,9 +348,9 @@ const ACTIONS = {
 const isNumber = (n) => Number.isSafeInteger(n) && n > 0;
 
 // Both skills drive `gh`, so the action is offered on GitHub only.
-function actionFor(view) {
+function actionFor(view, index = ui.sel[view]) {
   if (ui.forge !== FORGES.github) return null;
-  const item = ui[view]?.[ui.sel[view]];
+  const item = ui[view]?.[index];
   return item && isNumber(item.number) ? { ...ACTIONS[view], number: item.number } : null;
 }
 
@@ -355,20 +359,25 @@ const dirs = (dir) => { try { return fs.readdirSync(dir, { withFileTypes: true }
 const json = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; } };
 const safeName = (n) => typeof n === "string" && /^[\w.-]+$/.test(n) ? n : null;
 const pluginName = (dir) => safeName(json(path.join(dir, ".claude-plugin", "plugin.json"))?.name);
+// Claude Code, started directly or by `mcc run`, takes a skill as a slash command.
+const claudeStyle = (kind) => kind === "claude" || kind === "mcc";
 
 // How to call `skill` for an agent of `kind` working in `root`: its name, or
 // "plugin:name" when Claude has it only from a plugin; null when it isn't found.
 // Folders are checked for every kind, since a wrong "not installed" is the worse mistake.
-function findSkill(kind, skill, root) {
-  const home = os.homedir();
+// `claudeDir` is the Claude Code config folder to look in: for mcc, the profile's
+// folder that `mcc env` reports; ~/.claude when it isn't given.
+function findSkill(kind, skill, root, claudeDir = null) {
+  const home = os.homedir(), claude = claudeDir || path.join(home, ".claude");
   const folders = [".claude", ".agents", ".codex", `.${kind}`].flatMap((d) => [path.join(home, d, "skills"), ...(root ? [path.join(root, d, "skills")] : [])]);
+  if (claudeStyle(kind)) folders.push(path.join(claude, "skills"));
   if (folders.some((f) => readable(path.join(f, skill, "SKILL.md")))) return skill;
-  if (kind !== "claude") return null;
+  if (!claudeStyle(kind)) return null;
   // Claude plugins: the installed ones (installed_plugins.json) that settings.json
   // doesn't disable, each with <installPath>/skills/<skill>, and synced ones, laid
   // out as plugins/synced/<account>/<plugin>/<skill>. A cached copy alone doesn't count.
-  const plugins = path.join(home, ".claude", "plugins");
-  const enabled = { ...json(path.join(home, ".claude", "settings.json"))?.enabledPlugins };
+  const plugins = path.join(claude, "plugins");
+  const enabled = { ...json(path.join(claude, "settings.json"))?.enabledPlugins };
   if (root) for (const f of ["settings.json", "settings.local.json"]) Object.assign(enabled, json(path.join(root, ".claude", f))?.enabledPlugins);
   const installed = Object.entries(json(path.join(plugins, "installed_plugins.json"))?.plugins ?? {})
     .filter(([key, list]) => enabled[key] !== false && Array.isArray(list))
@@ -387,7 +396,7 @@ function findSkill(kind, skill, root) {
 // Built from the skill name and an integer only: never from a title or body.
 function promptFor(kind, skill, action) {
   if (!isNumber(action.number)) throw new Error("not a number");
-  return kind === "claude" ? `/${skill} ${action.number}` : `Use the ${skill} skill on ${action.noun} #${action.number}.`;
+  return claudeStyle(kind) ? `/${skill} ${action.number}` : `Use the ${skill} skill on ${action.noun} #${action.number}.`;
 }
 
 // herdr reports a failure as {"error":{"code","message"}}.
@@ -404,45 +413,98 @@ function say(tone, text, url = null) {
   draw();
 }
 
-// The Resolve or Review button and the a key. One launch at a time.
-function act() {
-  const action = actionFor(ui.view);
+// An executable on PATH, found by looking at the folders: no shell runs.
+function which(name) {
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir || !path.isAbsolute(dir)) continue;
+    const file = path.join(dir, name);
+    try { if (fs.statSync(file).isFile()) { fs.accessSync(file, fs.constants.X_OK); return file; } } catch {}
+  }
+  return null;
+}
+
+// The profile store, read again on every use: the app may have changed it.
+function readStore() {
+  const file = P.storePath(os.homedir());
+  let text = null, failed = null;
+  try { text = fs.readFileSync(file, "utf8"); } catch (e) { if (e.code !== "ENOENT") failed = e.message; }
+  const parsed = P.parseStore(text);
+  if (failed) { parsed.warnings.unshift(`Can't read ${file}: ${failed}`); parsed.readOnly = true; }
+  return { file, text, ...parsed };
+}
+
+// A Resolve or Review button, the header's or a row's, and the a key. One launch at a time.
+function act(view = ui.view, index = ui.sel[view]) {
+  const action = actionFor(view, index);
   if (!action || ui.acting) return ui.acting;
-  ui.acting = launch(action, ui.root || cwd)
+  const profile = P.resolveProfile(readStore().store, action.key);
+  ui.acting = launch(action, ui.root || cwd, profile)
     .catch((e) => say("error", `Can't start an agent: ${e.message}`))
     .finally(() => { ui.acting = null; });
   return ui.acting;
 }
 
-async function launch(action, root) {
+// How long a launch through mcc waits: for Claude Code to show up in the new pane,
+// polling herdr's agent list, then for it to settle. Tests shorten these.
+const TIMING = { pollMs: 500, appearMs: 60000, waitMs: 30000 };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function launch(action, root, profile) {
+  // The profile is checked before anything runs: an unchecked one never reaches a command line.
+  const invalid = P.validateProfile(profile);
+  if (invalid.length) throw new Error(`Invalid profile: ${invalid.join("; ")}`);
+  const harness = profile.harness;
   const what = `${action.noun} #${action.number}`;
   const herdr = (args, timeout) => run(HERDR, args, { timeout }).catch((e) =>
     ({ code: -1, stdout: "", stderr: e.code === "ENOENT" ? "herdr isn't installed" : e.message }));
-  if (!target && !ui.tab) return say("error", `Open this panel in herdr to ${action.key} ${what} with your agent.`);
-  say("info", `Finding your agent to ${action.key} ${what}…`);
+  if (!target && !ui.tab) return say("error", `Open this panel in herdr to ${action.key} ${what} with an agent.`);
+  const mcc = harness === "mcc" ? which("mcc") : null;
+  if (harness === "mcc" && !mcc) {
+    return say("error", `mcc isn't on your PATH, so ${P.HARNESS_NAMES.mcc} can't start. Install mcc, or press s and assign another profile to ${action.label}.`);
+  }
+  say("info", `Finding where to ${action.key} ${what}…`);
   const list = await herdr(["agent", "list"], 10000);
   if (list.code !== 0) return say("error", `Can't list agents: ${herdrError(list, "herdr").message}`);
   let agents;
   try { agents = JSON.parse(list.stdout).result.agents ?? []; } catch { return say("error", "Can't read herdr's agent list"); }
-  // Your agent: the one in the pane the panel follows, else one in the panel's tab.
+  // The new pane goes below your agent: the one in the pane the panel follows, else
+  // one in the panel's tab; with no agent there, below the pane the panel follows.
   const agent = agents.find((a) => a.pane_id === target) ?? agents.find((a) => ui.tab && a.tab_id === ui.tab && a.pane_id !== SELF);
-  if (!agent) return say("error", `No agent in this tab. Start yours (claude, codex, …) in a pane here, then ${action.label} again.`);
-  const kind = agent.agent;
-  if (typeof kind !== "string" || !/^[a-z][\w-]*$/.test(kind)) return say("error", "herdr doesn't say which agent runs in this tab");
-  const skill = findSkill(kind, action.skill, root);
-  if (!skill) return say("error", `The ${action.skill} skill isn't installed for ${kind}. Install the skills from:`, IDD);
-  const text = promptFor(kind, skill, action);
+  const anchor = agent?.pane_id ?? target;
+  if (!anchor) return say("error", `No agent in this tab and no pane to start one next to. Click a pane here, then ${action.label} again.`);
 
-  say("info", `Starting ${kind} to ${action.key} ${what}…`);
-  const split = await herdr(["pane", "split", agent.pane_id, "--direction", "down", "--cwd", root, "--no-focus"], 10000);
+  let claudeDir = null;
+  if (harness === "mcc") {
+    // The Claude Code profile `mcc run` would start in this repo, and its folder.
+    const env = await run(mcc, ["env", "-q", "--shell", "bash"], { cwd: root, timeout: 10000 })
+      .catch((e) => ({ code: -1, stdout: "", stderr: e.message }));
+    claudeDir = env.code === 0 ? P.parseMccEnv(env.stdout, os.homedir()) : null;
+    if (!claudeDir) {
+      const why = env.code === 0 ? "mcc env didn't name a Claude Code folder" : `mcc env failed: ${firstLine(env.stderr) || `exit ${env.code}`}`;
+      return say("error", `The ${action.skill} skill isn't found for mcc (${why}). Install the skills from:`, IDD);
+    }
+  }
+  const skill = findSkill(harness, action.skill, root, claudeDir);
+  if (!skill) return say("error", `The ${action.skill} skill isn't installed for ${harness}. Install the skills from:`, IDD);
+  const text = promptFor(harness, skill, action);
+  const plan = P.buildLaunch(profile, text);
+  const note = plan.warnings.length ? ` (${plan.warnings.join("; ")})` : "";
+
+  say("info", `Starting ${harness} to ${action.key} ${what}…`);
+  const split = await herdr(["pane", "split", anchor, "--direction", "down", "--cwd", root, "--no-focus"], 10000);
   let pane = null;
   try { const r = JSON.parse(split.stdout).result; pane = r?.pane?.pane_id ?? r?.pane_id ?? null; } catch {}
-  if (split.code !== 0 || !pane) return say("error", `Can't open a pane for ${kind}: ${herdrError(split, "herdr").message}`);
+  if (split.code !== 0 || !pane) return say("error", `Can't open a pane for ${harness}: ${herdrError(split, "herdr").message}`);
+  if (plan.mode === "command") return runMcc(herdr, pane, [mcc, ...plan.argv.slice(1)], text);
+
+  const kind = plan.kind;
   const names = new Set(agents.map((a) => a.name).filter(Boolean));
   let name = `${action.key}-${action.number}`;
   for (let k = 2; names.has(name); k++) name = `${action.key}-${action.number}-${k}`;
-  // herdr's own timeout first, so a slow start reads as herdr's reason.
-  const start = await herdr(["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "55000"], 60000);
+  // herdr's own timeout first, so a slow start reads as herdr's reason. The extra
+  // arguments come from the checked profile only.
+  const extra = plan.extraArgs.length ? ["--", ...plan.extraArgs] : [];
+  const start = await herdr(["agent", "start", name, "--kind", kind, "--pane", pane, "--timeout", "55000", ...extra], 60000);
   if (start.code !== 0) {
     const e = herdrError(start, "herdr");
     if (e.code !== "agent_not_ready") {
@@ -457,7 +519,38 @@ async function launch(action, root) {
   }
   const sent = await submit(herdr, pane, text);
   if (sent) return say("error", `${kind} started, but ${sent} Send it yourself in the new pane: ${text}`);
-  say("ok", `Started ${kind} in a new pane: ${text}`);
+  say("ok", `Started ${kind} in a new pane: ${text}${note}`);
+}
+
+// `mcc run -- … <prompt>` in the new pane: herdr types it into the pane's shell as
+// one line, every word quoted, and Claude Code takes the prompt as its first
+// message. mcc may first ask what to do about a usage limit, so the launch counts
+// as started only once herdr sees Claude Code there, idle or working.
+async function runMcc(herdr, pane, argv, text) {
+  const ran = await herdr(["pane", "run", pane, P.shellJoin(argv)], 10000);
+  if (ran.code !== 0) {
+    await herdr(["pane", "close", pane], 5000);
+    return say("error", `Can't run mcc in the new pane: ${herdrError(ran, "herdr").message}`);
+  }
+  say("info", `Starting ${P.HARNESS_NAMES.mcc} in the new pane: ${text}`);
+  const statusIn = async () => {
+    const r = await herdr(["agent", "list"], 10000);
+    if (r.code !== 0) return null;
+    try { const a = (JSON.parse(r.stdout).result.agents ?? []).find((x) => x.pane_id === pane); return a ? String(a.agent_status ?? "unknown") : null; } catch { return null; }
+  };
+  const waiting = () => say("info", `mcc is waiting in the new pane (it may be asking about a usage limit). Answer it there; Claude Code then works on: ${text}`);
+  const deadline = Date.now() + TIMING.appearMs;
+  let found = await statusIn();
+  while (found === null && Date.now() < deadline) {
+    await sleep(TIMING.pollMs);
+    found = await statusIn();
+  }
+  if (found === null) return waiting();
+  const settled = await herdr(["agent", "wait", pane, "--until", "idle", "--until", "working", "--until", "blocked", "--timeout", String(TIMING.waitMs)], TIMING.waitMs + 5000);
+  if (settled.code !== 0) return waiting();
+  const status = await statusIn();
+  if (status !== "idle" && status !== "working") return waiting();
+  say("ok", `Started ${P.HARNESS_NAMES.mcc} in a new pane: ${text}`);
 }
 
 // How long the panel waits for you to answer an agent's startup question.
@@ -482,7 +575,9 @@ async function submit(herdr, pane, text) {
 
 // One row: the selection bar, a 1-cell icon, the title (2 lines), the description
 // (3 lines) and the meta line, left text cut so the right-hand parts always fit.
-function rowLines(item, selected, cols, icon, meta, trailing) {
+// With an action, a Resolve or Review button follows on a line of its own; the
+// lines then carry `hit`: { line, from, to }, where the button is.
+function rowLines(item, selected, cols, icon, meta, trailing, action = null) {
   const inner = Math.max(10, cols - 5);
   const bar = selected ? accent("▌") : " ";
   const lines = [];
@@ -495,6 +590,11 @@ function rowLines(item, selected, cols, icon, meta, trailing) {
   const left = fit(meta, Math.max(0, room()));
   const pad = " ".repeat(Math.max(0, room() - width(left)));
   lines.push(`${bar}   ${dim(left)}${pad}${parts.map((p) => " " + p.s).join("")}`);
+  if (action) {
+    const label = ` ${fit(`${action.label} #${action.number}`, cols - 6)} `;
+    lines.hit = { line: lines.length, from: 4, to: 4 + width(label) };
+    lines.push(`${bar}   ${invert(label)}`);
+  }
   // The selected row also shows its URL as plain text: herdr ignores OSC 8 links,
   // but Ctrl-click on a visible http(s) URL opens it on the machine you sit at.
   if (selected && linkable(item.url)) for (const l of urlLines(item.url, cols - 4)) lines.push(`${bar}   ${accent(l)}`);
@@ -515,7 +615,7 @@ const part = (text, style = dim) => ({ w: width(text), s: style(text) });
 
 const REVIEWS = { approved: ["Approved", green], changes: ["Changes requested", red], review: ["Review", muted] };
 
-function prRow(p, selected, cols) {
+function prRow(p, selected, cols, action = null) {
   const review = REVIEWS[p.review];
   const trailing = [];
   if (p.draft) trailing.push(part("[Draft]"));
@@ -523,16 +623,16 @@ function prRow(p, selected, cols) {
   if (p.checks) trailing.push(p.checks === "fail" ? part("✗", red) : p.checks === "pending" ? part("●", yellow) : part("✓", green));
   trailing.push(part(ago(p.updatedAt)));
   return rowLines(p, selected, cols, p.draft ? dim("◌") : green("●"),
-    [p.ref, p.author ?? "?", p.branch].filter(Boolean).join(" · "), trailing);
+    [p.ref, p.author ?? "?", p.branch].filter(Boolean).join(" · "), trailing, action);
 }
 
-function issueRow(i, selected, cols) {
+function issueRow(i, selected, cols, action = null) {
   const trailing = (i.labels ?? []).slice(0, 3).map((l) => {
     const name = fit(clean(l.name), 14);
     return { w: width(name) + 2, s: `${rgb(l.color)("●")} ${dim(name)}` };
   });
   trailing.push(part(ago(i.updatedAt)));
-  return rowLines(i, selected, cols, green("◉"), `${i.ref} · ${i.author ?? "?"}`, trailing);
+  return rowLines(i, selected, cols, green("◉"), `${i.ref} · ${i.author ?? "?"}`, trailing, action);
 }
 
 const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -552,12 +652,13 @@ function noticeLines(notice, cols, room) {
 
 function draw() {
   const cols = process.stdout.columns || 60, rows = process.stdout.rows || 24;
+  if (ui.settings) return paint(settingsLines(cols, rows), rows);
   const out = [];
   ui.buttons = [];
 
   // Header: repo, spinner, then the Resolve or Review button for the selected row,
-  // and the refresh and open-on-the-forge buttons.
-  const right = ui.repo?.url ? " ↻  ↗ " : " ↻ ";
+  // and the profiles, refresh and open-on-the-forge buttons.
+  const right = ui.repo?.url ? " ⚙  ↻  ↗ " : " ⚙  ↻ ";
   const action = actionFor(ui.view);
   const button = action ? ` ${action.label} #${action.number} ` : "";
   const spin = ui.loading ? yellow(SPIN[ui.frame % SPIN.length]) + " " : "";
@@ -566,8 +667,9 @@ function draw() {
   out.push(` ${link(ui.repo?.url, bold(title))}${gap}${spin}${button ? invert(button) : ""}${dim(right)}`);
   const at = cols - width(right);
   if (button) ui.buttons.push({ row: 0, from: at - width(button), to: at, action: () => act() });
-  ui.buttons.push({ row: 0, from: at, to: at + 3, action: () => refresh() });
-  if (ui.repo?.url) ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => openUrl(ui.repo.url) });
+  ui.buttons.push({ row: 0, from: at, to: at + 3, action: () => openSettings() });
+  ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => refresh() });
+  if (ui.repo?.url) ui.buttons.push({ row: 0, from: at + 6, to: at + 9, action: () => openUrl(ui.repo.url) });
   out.push(dim("─".repeat(cols)));
 
   // The switch: Pull requests (or Merge requests) N / Issues N.
@@ -586,12 +688,14 @@ function draw() {
   // The list, scrolled so the selected row is in full view, above any notice.
   const notice = ui.notice ? noticeLines(ui.notice, cols, rows - out.length - 2) : [];
   const view = ui.view, items = ui[view], listTop = out.length, height = Math.max(1, rows - listTop - 1 - notice.length);
-  const lines = [], owner = [];
+  const lines = [], owner = [], hits = [];
   let selStart = 0, selEnd = 0;
   items.forEach((x, i) => {
     if (i) { lines.push(""); owner.push(-1); }
     if (i === ui.sel[view]) selStart = lines.length;
-    for (const l of view === "prs" ? prRow(x, i === ui.sel[view], cols) : issueRow(x, i === ui.sel[view], cols)) { lines.push(l); owner.push(i); }
+    const a = actionFor(view, i), row = view === "prs" ? prRow(x, i === ui.sel[view], cols, a) : issueRow(x, i === ui.sel[view], cols, a);
+    if (row.hit) hits[lines.length + row.hit.line] = { ...row.hit, index: i };
+    for (const l of row) { lines.push(l); owner.push(i); }
     if (i === ui.sel[view]) selEnd = lines.length;
   });
   if (!items.length) {
@@ -610,14 +714,216 @@ function draw() {
   for (let r = 0; r < height; r++) {
     out.push(lines[ui.top[view] + r] ?? "");
     ui.rows[listTop + r] = owner[ui.top[view] + r] ?? -1;
+    // A row's own Resolve or Review button acts on that row.
+    const hit = hits[ui.top[view] + r];
+    if (hit) ui.buttons.push({ row: listTop + r, from: hit.from, to: hit.to, action: () => { ui.sel[view] = hit.index; draw(); return act(view, hit.index); } });
   }
   out.push(...notice);
 
-  out.push(dim(fit(` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · r refresh · o repo · q close`, cols)));
+  out.push(dim(fit(` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · q close`, cols)));
+  paint(out, rows);
+}
 
+function paint(out, rows) {
   let frame = `${ESC}?2026h`;
   out.slice(0, rows).forEach((l, i) => { frame += `${ESC}${i + 1};1H${l}${ESC}0m${ESC}K`; });
   process.stdout.write(frame + `${ESC}J${ESC}?2026l`);
+}
+
+// ── Profiles ────────────────────────────────────────────────────────────────
+// s or the header's ⚙: the agent profiles, which one Resolve and Review start, and
+// a form to add or change one. The store is read when the view opens, and written
+// only while the file still holds what was read.
+
+const FIELDS = [
+  { key: "name", label: "Name", max: 40 },
+  { key: "id", label: "Id", max: 32 },
+  { key: "harness", label: "Harness" },
+  { key: "model", label: "Model", max: 128 },
+  { key: "thinking", label: "Thinking" },
+];
+const choices = (form, key) => key === "harness" ? P.HARNESSES : ["", ...P.THINKING[form.harness]];
+// What OpenCode does with a model or thinking level, in the profiles module's words.
+const OPENCODE_NOTE = P.buildLaunch({ id: "x", name: "x", harness: "opencode", model: "m" }, "x").warnings[0];
+const entries = () => [P.DEFAULT_PROFILE, ...ui.settings.store.profiles];
+const describe = (p) => [P.HARNESS_NAMES[p.harness], p.model, p.thinking && `thinking ${p.thinking}`].filter(Boolean).join(" · ");
+
+function openSettings() {
+  ui.settings = { mode: "list", sel: 0, form: null, field: 0, error: null, info: null, ...readStore() };
+  draw();
+}
+
+function closeSettings() {
+  ui.settings = null;
+  draw();
+}
+
+// ✕ and Esc: from the form back to the list, from the list back to the rows.
+function settingsBack() {
+  const st = ui.settings;
+  if (st.mode === "list") return closeSettings();
+  Object.assign(st, { mode: "list", form: null, error: null });
+  draw();
+}
+
+// Writes the store through a temporary file, and only when the file still holds
+// what was read: a change made meanwhile, in the app say, isn't overwritten.
+function saveStore(next) {
+  const st = ui.settings;
+  if (st.readOnly) throw new Error(`Not saved: ${st.warnings[0] ?? "the profiles file is read only"}`);
+  let now = null;
+  try { now = fs.readFileSync(st.file, "utf8"); } catch (e) { if (e.code !== "ENOENT") throw e; }
+  if (now !== st.text) {
+    Object.assign(st, readStore());
+    st.sel = Math.min(st.sel, entries().length - 1);
+    throw new Error("The profiles changed elsewhere and were read again: make your change again");
+  }
+  const text = P.serializeStore(next);
+  fs.mkdirSync(path.dirname(st.file), { recursive: true });
+  const tmp = `${st.file}.${process.pid}.tmp`;
+  try { fs.writeFileSync(tmp, text); fs.renameSync(tmp, st.file); } catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
+  Object.assign(st, { store: next, text });
+}
+
+// Runs a change to the store, then shows what happened.
+function change(fn, info) {
+  const st = ui.settings;
+  try { fn(); Object.assign(st, { error: null, info }); } catch (e) { Object.assign(st, { error: e.message, info: null }); }
+  draw();
+}
+
+function editProfile(p) {
+  const st = ui.settings;
+  st.form = { prev: p?.id ?? null, name: p?.name ?? "", id: p?.id ?? "", harness: p?.harness ?? "mcc", model: p?.model ?? "", thinking: p?.thinking ?? "" };
+  Object.assign(st, { mode: "edit", field: 0, error: null, info: null });
+  draw();
+}
+
+function saveForm() {
+  const st = ui.settings, f = st.form;
+  const profile = { id: f.id, name: f.name.trim(), harness: f.harness, model: f.model, thinking: f.thinking };
+  change(() => {
+    saveStore(P.upsertProfile(st.store, profile, f.prev));
+    Object.assign(st, { mode: "list", form: null });
+    st.sel = Math.max(0, entries().findIndex((p) => p.id === profile.id));
+  }, `Saved ${profile.name}`);
+}
+
+const UP = ["\x1b[A", "\x1bOA"], DOWN = ["\x1b[B", "\x1bOB"];
+
+// Keys in the profile views. In the form, keys are text: q or j is typed, not a
+// command, and Esc goes back to the list. Ctrl-C still closes the panel.
+function settingsKey(m) {
+  const st = ui.settings, k = m[0];
+  if (m[1] != null) {
+    if (Number(m[1]) === 0 && m[4] === "M") click(Number(m[2]) - 1, Number(m[3]) - 1);
+    return;
+  }
+  if (k === "\x03") return quit();
+  if (st.mode === "confirm") {
+    const p = entries()[st.sel];
+    st.mode = "list";
+    if (k === "y" || k === "Y") return change(() => saveStore(P.removeProfile(st.store, p.id)), `Deleted ${p.name}`);
+    return draw();
+  }
+  if (st.mode === "edit") return formKey(st, k);
+  const p = entries()[st.sel], fixed = p.id === P.DEFAULT_PROFILE.id;
+  if (k === "\x1b" || k === "q" || k === "s") return closeSettings();
+  if (UP.includes(k) || k === "k") st.sel = Math.max(0, st.sel - 1);
+  else if (DOWN.includes(k) || k === "j") st.sel = Math.min(entries().length - 1, st.sel + 1);
+  else if (k === "n") return editProfile(null);
+  else if (k === "e" || k === "\r" || k === "\n") {
+    if (!fixed) return editProfile(p);
+    st.error = "The default profile can't be changed: add your own with n";
+  } else if (k === "d") {
+    if (!fixed) st.mode = "confirm";
+    else st.error = "The default profile can't be deleted";
+  } else if (k === "R" || k === "V") {
+    const action = k === "R" ? "resolve" : "review";
+    return change(() => saveStore(P.assignProfile(st.store, action, p.id)), `${action === "resolve" ? "Resolve" : "Review"} now starts ${p.name}`);
+  } else return;
+  draw();
+}
+
+function formKey(st, k) {
+  const form = st.form, field = FIELDS[st.field];
+  if (k === "\x1b") return settingsBack();
+  if (k === "\r" || k === "\n") return saveForm();
+  if (UP.includes(k) || DOWN.includes(k) || k === "\t" || k === "\x1b[Z") {
+    const by = UP.includes(k) || k === "\x1b[Z" ? FIELDS.length - 1 : 1;
+    Object.assign(st, { field: (st.field + by) % FIELDS.length, error: null });
+    return draw();
+  }
+  if (!field.max) {
+    // A choice: ← and → (or space) step through what the harness takes.
+    if (k !== "\x1b[C" && k !== "\x1b[D" && k !== " ") return;
+    const list = choices(form, field.key), at = Math.max(0, list.indexOf(form[field.key]));
+    form[field.key] = list[(at + (k === "\x1b[D" ? list.length - 1 : 1)) % list.length];
+    if (!choices(form, "thinking").includes(form.thinking)) form.thinking = "";
+    return draw();
+  }
+  if (k === "\x7f" || k === "\b") form[field.key] = [...form[field.key]].slice(0, -1).join("");
+  else if (!k.startsWith("\x1b") && !/[\x00-\x1f\x7f-\x9f]/.test(k) && form[field.key].length < field.max) form[field.key] += k;
+  else return;
+  draw();
+}
+
+// The profile views' lines; their own buttons replace the rows' and the header's.
+function settingsLines(cols, rows) {
+  const st = ui.settings, out = [];
+  ui.rows = [];
+  ui.buttons = [];
+  const close = " ✕ ";
+  const heading = fit(st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles", cols - width(close) - 2);
+  out.push(` ${bold(heading)}${" ".repeat(Math.max(0, cols - 1 - width(heading) - width(close)))}${dim(close)}`);
+  ui.buttons.push({ row: 0, from: cols - width(close), to: cols, action: () => settingsBack() });
+  out.push(dim("─".repeat(cols)));
+
+  const status = [];
+  if (st.mode === "confirm") status.push(yellow(fit(` Delete ${entries()[st.sel].name}? y deletes it, any other key keeps it`, cols)));
+  for (const w of st.warnings) for (const l of wrap(w, cols - 2, 2)) status.push(" " + yellow(l));
+  if (st.mode === "edit" && st.form.harness === "opencode" && (st.form.model || st.form.thinking)) {
+    for (const l of wrap(OPENCODE_NOTE, cols - 2, 2)) status.push(" " + yellow(l));
+  }
+  if (st.error) for (const l of wrap(st.error, cols - 2, 2)) status.push(" " + red(l));
+  if (st.info) status.push(" " + green(fit(st.info, cols - 2)));
+  const footer = dim(fit(st.mode === "edit"
+    ? " ↑↓ field · ←→ choose · type to edit · ⏎ save · esc back"
+    : " ↑↓ select · n new · e edit · d delete · R/V assign · esc back", cols));
+  const height = Math.max(1, rows - out.length - status.length - 1);
+
+  const body = [], owner = [];
+  if (st.mode === "edit") {
+    FIELDS.forEach((f, i) => {
+      const on = i === st.field, value = st.form[f.key];
+      let shown;
+      if (f.max) shown = (value ? fit(value, cols - 15) : on ? "" : dim(f.key === "model" ? "harness default" : "—")) + (on ? invert(" ") : "");
+      else shown = `‹ ${f.key === "harness" ? P.HARNESS_NAMES[value] : value || "harness default"} ›`;
+      body.push(`${on ? accent("▌") : " "} ${(on ? bold : muted)(f.label.padEnd(9))} ${shown}`);
+      owner.push(() => { Object.assign(st, { field: i, error: null }); draw(); });
+    });
+  } else {
+    const using = (id) => P.ACTION_KEYS.filter((a) => (st.store.assign[a] ?? P.DEFAULT_PROFILE.id) === id).map((a) => a === "resolve" ? "Resolve" : "Review");
+    entries().forEach((p, i) => {
+      if (i) { body.push(""); owner.push(null); }
+      const on = i === st.sel, bar = on ? accent("▌") : " ", select = () => { Object.assign(st, { sel: i, error: null }); draw(); };
+      const tag = [p.id === P.DEFAULT_PROFILE.id ? "default" : p.id, ...using(p.id)].join(" · ");
+      const name = fit(p.name, Math.max(4, cols - width(tag) - 5));
+      body.push(`${bar} ${on ? bold(name) : name}${" ".repeat(Math.max(1, cols - 3 - width(name) - width(tag)))}${accent(tag)}`);
+      body.push(`${bar}   ${dim(fit(describe(p), cols - 4))}`);
+      owner.push(select, select);
+    });
+  }
+  // Keep the selected entry (two lines and the gap) in view.
+  const focus = st.mode === "edit" ? st.field : st.sel * 3 + 1;
+  const top = Math.max(0, Math.min(focus - height + 1, body.length - height));
+  for (let r = 0; r < height; r++) {
+    out.push(body[top + r] ?? "");
+    const action = owner[top + r];
+    if (action) ui.buttons.push({ row: out.length - 1, from: 0, to: cols, action });
+  }
+  out.push(...status, footer);
+  return out;
 }
 
 // ── Input ───────────────────────────────────────────────────────────────────
@@ -640,6 +946,7 @@ function move(by) {
 function click(x, y) {
   const button = ui.buttons.find((b) => b.row === y && x >= b.from && x < b.to);
   if (button) return button.action();
+  if (ui.settings) return;
   const i = ui.rows[y];
   if (i == null || i < 0) return;
   ui.sel[ui.view] = i;
@@ -657,6 +964,8 @@ const KEYS = /\x1b\[<(\d+);(\d+);(\d+)([mM])|\x1b\[[0-9;]*[A-Za-z~]|\x1bO[A-Za-z
 function onInput(data) {
   for (const m of data.toString("utf8").matchAll(KEYS)) {
     const k = m[0];
+    // The profile views take every key and click while they're open.
+    if (ui.settings) { settingsKey(m); continue; }
     if (m[1] != null) {
       const button = Number(m[1]), x = Number(m[2]) - 1, y = Number(m[3]) - 1;
       if (button === 64) { ui.top[ui.view] -= 3; draw(); }
@@ -679,6 +988,7 @@ function onInput(data) {
     else if (k === "\r" || k === "\n") openUrl(ui[ui.view][ui.sel[ui.view]]?.url);
     else if (k === "o") openUrl(ui.repo?.url);
     else if (k === "a") act();
+    else if (k === "s") openSettings();
     else if (k === "r") refresh();
   }
 }
@@ -719,4 +1029,11 @@ function main() {
 }
 
 if (require.main === module) main();
-else module.exports = { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, findSkill, promptFor, IDD };
+else {
+  module.exports = {
+    width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput,
+    act, launch, findSkill, promptFor, readStore, IDD, TIMING,
+    // Tests point the panel at another followed pane, or none.
+    follow: (pane) => { target = pane; },
+  };
+}
