@@ -120,8 +120,9 @@ function emptyStore() {
 }
 
 // The store in a file's text, read leniently: a bad profile is skipped with a
-// warning. A file that isn't valid JSON, or is from another version, is read-only:
-// saving would overwrite what it holds. No file (null or "") is an empty store.
+// warning. A file that isn't valid JSON, is from another version, or holds a
+// profile that was skipped is read-only: saving would overwrite what it holds.
+// No file (null or "") is an empty store.
 function parseStore(text) {
   const warnings = [];
   if (text === null || text === undefined || String(text).trim() === "") return { store: emptyStore(), warnings, readOnly: false };
@@ -137,16 +138,24 @@ function parseStore(text) {
     readOnly = true;
   }
   const store = emptyStore();
-  if (data.profiles !== undefined && !Array.isArray(data.profiles)) warnings.push("The profiles file's profiles aren't a list");
+  let skipped = data.profiles !== undefined && !Array.isArray(data.profiles);
+  if (skipped) warnings.push("The profiles file's profiles aren't a list");
   (Array.isArray(data.profiles) ? data.profiles : []).forEach((raw, i) => {
     const label = typeof raw?.id === "string" && ID.test(raw.id) ? `"${raw.id}"` : `#${i + 1}`;
+    const skip = (why) => { skipped = true; warnings.push(`Skipped profile ${label}: ${why}`); };
     const p = raw && typeof raw === "object" ? normalizeProfile(raw) : raw;
     const errors = validateProfile(p);
-    if (errors.length) return warnings.push(`Skipped profile ${label}: ${errors[0]}`);
-    if (p.id === DEFAULT_PROFILE.id) return warnings.push(`Skipped profile ${label}: the id "default" is reserved`);
-    if (store.profiles.some((q) => q.id === p.id)) return warnings.push(`Skipped profile ${label}: its id is used twice`);
+    if (errors.length) return skip(errors[0]);
+    if (p.id === DEFAULT_PROFILE.id) return skip('the id "default" is reserved');
+    if (store.profiles.some((q) => q.id === p.id)) return skip("its id is used twice");
     store.profiles.push(p);
   });
+  // Saving would drop what was skipped, and the actions assigned to it: first say why
+  // nothing is saved, as "Not saved: …" shows this first warning.
+  if (skipped && !readOnly) {
+    warnings.unshift("Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save");
+    readOnly = true;
+  }
   for (const action of ACTION_KEYS) {
     const id = data.assign?.[action];
     if (id === null || id === undefined) continue;

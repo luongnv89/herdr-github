@@ -116,7 +116,7 @@ test("parseStore: no file is empty; bad JSON or another version is read only", (
   assert.equal(P.resolveProfile(newer.store, "resolve").harness, "pi");
 });
 
-test("parseStore skips bad, duplicate and reserved profiles, and drops a missing assignment", () => {
+test("parseStore skips bad, duplicate and reserved profiles, drops a missing assignment, and is then read only", () => {
   const text = JSON.stringify({
     version: 1,
     profiles: [
@@ -130,15 +130,29 @@ test("parseStore skips bad, duplicate and reserved profiles, and drops a missing
     assign: { resolve: "b", review: "c" },
   });
   const { store, warnings, readOnly } = P.parseStore(text);
-  assert.equal(readOnly, false);
+  // Saving would erase the skipped profiles and what they're assigned to.
+  assert.equal(readOnly, true);
+  assert.match(warnings[0], /read only here: fix or remove them to save/);
   assert.deepEqual(store.profiles, [{ id: "a", name: "Profile", harness: "codex", model: "gpt-5" }, { id: "c", name: "Profile", harness: "opencode" }]);
   assert.deepEqual(store.assign, { resolve: null, review: "c" });
-  assert.equal(warnings.length, 5);
+  assert.equal(warnings.length, 6);
   assert.ok(warnings.some((w) => /"b".*Model/.test(w)));
   assert.ok(warnings.some((w) => /used twice/.test(w)));
   assert.ok(warnings.some((w) => /reserved/.test(w)));
   assert.ok(warnings.some((w) => /#5/.test(w)));
   assert.ok(warnings.some((w) => /resolve action's profile isn't there/.test(w)));
+  // Only a missing assignment, or nothing wrong: still writable.
+  const dangling = P.parseStore(JSON.stringify({ version: 1, profiles: [ok({ id: "a", harness: "pi" })], assign: { resolve: "gone" } }));
+  assert.equal(dangling.readOnly, false);
+  assert.equal(dangling.warnings.length, 1);
+  // Profiles that aren't a list are read only too.
+  const notList = P.parseStore(JSON.stringify({ version: 1, profiles: { a: 1 } }));
+  assert.equal(notList.readOnly, true);
+  assert.match(notList.warnings[0], /read only here/);
+  // Another version says so first, and only once.
+  const both = P.parseStore(JSON.stringify({ version: 2, profiles: ["x"] }));
+  assert.match(both.warnings[0], /version 2/);
+  assert.ok(!both.warnings.some((w) => /fix or remove them/.test(w)));
   // What it writes, it reads back the same.
   const again = P.parseStore(P.serializeStore(store));
   assert.deepEqual(again, { store, warnings: [], readOnly: false });

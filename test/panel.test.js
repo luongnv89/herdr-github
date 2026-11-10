@@ -634,7 +634,8 @@ test("without the skill, nothing starts and the notice points to the install pag
   const after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.deepEqual(herdrCalls(), ["agent list"]);
   assert.equal(IDD, "https://luongnv.com/idd");
-  assert.ok(after.some((l) => l?.includes("issue-resolver skill isn't installed for claude")), after.join("\n"));
+  // The harness by its name, as the profiles view shows it.
+  assert.ok(text(after).includes("issue-resolver skill isn't installed for Claude Code."), after.join("\n"));
   // The URL sits whole on a line of its own, so a Ctrl-click opens it.
   assert.ok(after.some((l) => l?.trim() === IDD));
 });
@@ -743,7 +744,7 @@ test("herdr missing or failing shows a red reason and starts nothing", async (t)
   fakeHerdr(claudeHere, { "pane split": herdrFail("pane_not_found", "pane not found") });
   after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.equal(herdrCalls().length, 2);
-  assert.ok(after.some((l) => l?.includes("Can't open a pane for claude: pane not found")), after.join("\n"));
+  assert.ok(after.some((l) => l?.includes("Can't open a pane for Claude Code: pane not found")), after.join("\n"));
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent list": { error: Object.assign(new Error("spawn herdr ENOENT"), { code: "ENOENT" }) } });
   after = await screenAsync(() => onInput(Buffer.from("a")));
@@ -869,7 +870,8 @@ test("mcc that never shows Claude Code, or shows it blocked, gets the waiting no
   const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   mccOnPath(t);
   mccEnv(path.join(dir, ".claude"));
-  const waiting = "mcc is waiting in the new pane (it may be asking about a usage limit)";
+  // What to do comes first.
+  const waiting = "Answer mcc in the new pane: it is waiting there, maybe asking about a usage limit.";
   // Never there: polls until the deadline, then no wait.
   setupGitHub("issues");
   fakeHerdr(claudeHere);
@@ -1039,7 +1041,10 @@ test("a click inside the profile views opens nothing and starts nothing", (t) =>
   setupGitHub("issues");
   screen(() => onInput(Buffer.from("s")));
   for (const mode of ["list", "edit"]) {
-    if (mode === "edit") screen(() => onInput(Buffer.from("n")));
+    if (mode === "edit") {
+      screen(() => onInput(Buffer.from("n")));
+      assert.equal(ui.settings.mode, "edit", "the list's clicks left n anywhere but the form");
+    }
     for (let y = 0; y < 24; y++) {
       if (y === 0) continue; // ✕ goes back
       screen(() => onInput(Buffer.from(press(y))));
@@ -1081,6 +1086,13 @@ test("the header's ⚙ opens the profiles; e edits and d deletes, and the defaul
   screen(() => onInput(Buffer.from("dy")));
   store = JSON.parse(fs.readFileSync(storeFile(), "utf8"));
   assert.deepEqual(store, { version: 1, profiles: [], assign: { resolve: null, review: null } });
+  // It was the last one listed: the selection moves up to what's left, and the
+  // next keys work rather than throw.
+  assert.equal(ui.settings.sel, 0);
+  assert.equal(noExit(() => assert.doesNotThrow(() => screen(() => onInput(Buffer.from("j"))))), null);
+  assert.equal(ui.settings?.mode, "list");
+  assert.equal(noExit(() => assert.doesNotThrow(() => screen(() => onInput(Buffer.from("\x1b"))))), null);
+  assert.equal(ui.settings, null);
   assert.ok(dir);
 });
 
@@ -1119,4 +1131,157 @@ test("a corrupt or newer store is shown read only, and actions use the default",
   setupGitHub("issues");
   const after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.ok(text(after).includes("mcc isn't on your PATH"), after.join("\n"));
+});
+
+// Like screen, at another size.
+function screenAt(cols, rows, fn) {
+  const { columns, rows: before } = process.stdout;
+  process.stdout.columns = cols; process.stdout.rows = rows;
+  const { write } = process.stdout;
+  let frame = "";
+  process.stdout.write = (x) => { frame = x; return true; };
+  try { fn(); } finally { Object.assign(process.stdout, { write, columns, rows: before }); }
+  const lines = [];
+  for (const m of frame.matchAll(/\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K/g)) lines[m[1] - 1] = strip(m[2]);
+  return lines;
+}
+// Where a button's label sits on the screen: [x, y].
+const find = (lines, label) => {
+  const y = lines.findIndex((l) => l?.includes(label));
+  return [lines[y]?.indexOf(label), y];
+};
+
+test("a store with a profile it can't use is read only, so saving doesn't erase that profile", (t) => {
+  const dir = home(t);
+  const file = useProfiles(dir, [
+    { id: "good", name: "Good", harness: "pi" },
+    { id: "bad", name: "Bad", harness: "claude", model: "opus[1m]" },
+  ], { resolve: "bad" });
+  const before = fs.readFileSync(file, "utf8");
+  setupGitHub("issues");
+  let shown = screen(() => onInput(Buffer.from("s")));
+  assert.ok(text(shown).includes("read only here"), shown.join("\n"));
+  assert.ok(text(shown).includes('Skipped profile "bad"'), shown.join("\n"));
+  shown = screen(() => onInput(Buffer.from("jR")));
+  assert.ok(text(shown).includes("Not saved: Some profiles in the file can't be used"), shown.join("\n"));
+  screen(() => onInput(Buffer.from("dy")));
+  screen(() => onInput(Buffer.from("n")));
+  screen(() => onInput(Buffer.from("New\x1b[Bnew\r")));
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+});
+
+test("the selected profile has buttons, the header a + New, and the form a Save", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  let lines = screen(() => onInput(Buffer.from("s")));
+  // The default is selected: it can be assigned, not edited or deleted.
+  assert.match(lines.join("\n"), / Use for Resolve {3}Use for Review \n/);
+  assert.ok(!lines.some((l) => /Edit |Delete /.test(l ?? "")), lines.join("\n"));
+  let [x, y] = find(lines, "Use for Resolve");
+  lines = screen(() => click(x + 1, y));
+  assert.deepEqual(JSON.parse(fs.readFileSync(storeFile(), "utf8")).assign, { resolve: null, review: "cc" });
+  assert.ok(text(lines).includes("Resolve now starts Claude Code via mcc run"), lines.join("\n"));
+  // cc: assigned to Review, so that one shows ✓; Edit opens the form.
+  lines = screen(() => onInput(Buffer.from("j")));
+  assert.match(lines.join("\n"), / Use for Resolve {3}Review ✓ {3}Edit {3}Delete \n/);
+  [x, y] = find(lines, "Edit ");
+  lines = screen(() => click(x + 1, y));
+  assert.equal(ui.settings.mode, "edit");
+  assert.equal(ui.settings.form.prev, "cc");
+  // The form's Save saves, as enter does.
+  screen(() => onInput(Buffer.from("!")));
+  lines = screen(draw);
+  [x, y] = find(lines, " Save ");
+  lines = screen(() => click(x + 2, y));
+  assert.equal(ui.settings.mode, "list");
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).profiles[0].name, "Claude Code!");
+  // Delete asks first, with buttons: Keep keeps it, Delete deletes it.
+  [x, y] = find(lines, "Delete ");
+  lines = screen(() => click(x + 1, y));
+  assert.equal(ui.settings.mode, "confirm");
+  assert.match(lines.join("\n"), / Delete {3}Keep \n/);
+  [x, y] = find(lines, " Keep ");
+  lines = screen(() => click(x + 1, y));
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).profiles.length, 1);
+  [x, y] = find(lines, "Delete ");
+  lines = screen(() => click(x + 1, y));
+  [x, y] = find(lines, " Delete ");
+  lines = screen(() => click(x + 1, y));
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).profiles.length, 0);
+  assert.equal(ui.settings.sel, 0);
+  // + New in the header opens an empty form; ✕ stays at the right edge.
+  assert.match(lines[0], /\+ New {2}✕ $/);
+  lines = screen(() => click(lines[0].indexOf("+ New"), 0));
+  assert.equal(ui.settings.mode, "edit");
+  assert.equal(ui.settings.form.prev, null);
+  assert.doesNotMatch(lines[0], /\+ New/);
+});
+
+test("the profiles footer goes onto two lines when it doesn't fit, rather than being cut", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  for (const cols of [60, 40]) {
+    let lines = screenAt(cols, 24, () => { ui.settings = null; onInput(Buffer.from("s")); });
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    let foot = lines.slice(-2).join(" ");
+    for (const hint of ["↑↓ select", "n new", "e edit", "d delete", "R/V assign", "esc back"]) assert.ok(foot.includes(hint), `${cols}: ${foot}`);
+    assert.ok(!foot.includes("…"), foot);
+    lines = screenAt(cols, 24, () => onInput(Buffer.from("n")));
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    foot = lines.slice(-2).join(" ");
+    for (const hint of ["↑↓ field", "⏎ save", "esc back"]) assert.ok(foot.includes(hint), `${cols}: ${foot}`);
+    screenAt(cols, 24, () => onInput(Buffer.from("\x1b")));
+  }
+  // Wide enough: one line.
+  const lines = screenAt(100, 24, draw);
+  assert.match(lines[23], /^ ↑↓ select · n new · e edit · d delete · R\/V assign · esc back/);
+  assert.equal(lines[22], "");
+});
+
+test("the form names the id's rule, fits a narrow pane, and shows each field's reason under it", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from("s")));
+  let lines = screen(() => onInput(Buffer.from("n")));
+  assert.ok(lines.some((l) => l?.includes("Id (a-z 0-9 -)")), lines.join("\n"));
+  // Two bad fields: both reasons show, each under its own field.
+  lines = screen(() => onInput(Buffer.from("\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
+  assert.equal(ui.settings.mode, "edit");
+  const at = (label) => lines.findIndex((l) => l?.trimStart().replace(/^▌ /, "").startsWith(label));
+  const name = at("Name"), id = at("Id"), model = at("Model");
+  assert.ok(lines[name + 1].includes("Name: 1-40 printable characters"), lines.join("\n"));
+  assert.ok(id > name + 1 && lines.slice(id + 1, at("Harness")).join(" ").includes("Id:"), lines.join("\n"));
+  assert.ok(lines.slice(model + 1, at("Thinking")).join(" ").replace(/\s+/g, " ").includes("Model: letters, digits"), lines.join("\n"));
+  for (const l of lines) assert.ok(width(l ?? "") <= 60, l);
+  // Typing in a field takes its reason away.
+  lines = screen(() => onInput(Buffer.from("\x7f")));
+  assert.ok(!text(lines).includes("Model: letters"), lines.join("\n"));
+  // A narrow pane cuts the choice, not the line.
+  lines = screenAt(28, 24, () => onInput(Buffer.from("\x1b[B\x1b[B\x1b[B\x1b[B")));
+  for (const l of lines) assert.ok(width(l ?? "") <= 28, l);
+  assert.ok(lines.some((l) => l?.includes("Harness") && l.includes("‹ ")), lines.join("\n"));
+  // An empty form too, its placeholders included, and the key hints whole.
+  lines = screenAt(28, 24, () => onInput(Buffer.from("\x1bn")));
+  for (const l of lines) assert.ok(width(l ?? "") <= 28, l);
+  assert.ok(text(lines.slice(-3)).endsWith("esc back"), lines.join("\n"));
+});
+
+test("launch notices name the harness, and lead with what to do", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  setupGitHub("issues");
+  const seen = [];
+  fakeHerdr(claudeHere, { "pane split": () => { seen.push(ui.notice?.text); return ok({ pane: { pane_id: "w1:p7" } }); } });
+  await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(seen, ["Starting Claude Code to resolve issue #12…"]);
+  // mcc missing: the remedy first, the whole of it on screen.
+  const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  assert.ok(dir);
+  mccOnPath(t, false);
+  setupGitHub("issues");
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(text(after).includes("mcc isn't on your PATH: press s to pick another profile for Resolve, or install mcc."), after.join("\n"));
+  // A long notice gets up to five lines.
+  ui.notice = { tone: "info", text: "word ".repeat(60), url: null };
+  const lines = screen(draw).filter((l) => l?.startsWith(" word"));
+  assert.equal(lines.length, 5);
 });

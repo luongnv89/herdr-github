@@ -453,14 +453,14 @@ async function launch(action, root, profile) {
   // The profile is checked before anything runs: an unchecked one never reaches a command line.
   const invalid = P.validateProfile(profile);
   if (invalid.length) throw new Error(`Invalid profile: ${invalid.join("; ")}`);
-  const harness = profile.harness;
+  const harness = profile.harness, shown = P.HARNESS_NAMES[harness];
   const what = `${action.noun} #${action.number}`;
   const herdr = (args, timeout) => run(HERDR, args, { timeout }).catch((e) =>
     ({ code: -1, stdout: "", stderr: e.code === "ENOENT" ? "herdr isn't installed" : e.message }));
   if (!target && !ui.tab) return say("error", `Open this panel in herdr to ${action.key} ${what} with an agent.`);
   const mcc = harness === "mcc" ? which("mcc") : null;
   if (harness === "mcc" && !mcc) {
-    return say("error", `mcc isn't on your PATH, so ${P.HARNESS_NAMES.mcc} can't start. Install mcc, or press s and assign another profile to ${action.label}.`);
+    return say("error", `mcc isn't on your PATH: press s to pick another profile for ${action.label}, or install mcc.`);
   }
   say("info", `Finding where to ${action.key} ${what}…`);
   const list = await herdr(["agent", "list"], 10000);
@@ -485,16 +485,16 @@ async function launch(action, root, profile) {
     }
   }
   const skill = findSkill(harness, action.skill, root, claudeDir);
-  if (!skill) return say("error", `The ${action.skill} skill isn't installed for ${harness}. Install the skills from:`, IDD);
+  if (!skill) return say("error", `The ${action.skill} skill isn't installed for ${shown}. Install the skills from:`, IDD);
   const text = promptFor(harness, skill, action);
   const plan = P.buildLaunch(profile, text);
   const note = plan.warnings.length ? ` (${plan.warnings.join("; ")})` : "";
 
-  say("info", `Starting ${harness} to ${action.key} ${what}…`);
+  say("info", `Starting ${shown} to ${action.key} ${what}…`);
   const split = await herdr(["pane", "split", anchor, "--direction", "down", "--cwd", root, "--no-focus"], 10000);
   let pane = null;
   try { const r = JSON.parse(split.stdout).result; pane = r?.pane?.pane_id ?? r?.pane_id ?? null; } catch {}
-  if (split.code !== 0 || !pane) return say("error", `Can't open a pane for ${harness}: ${herdrError(split, "herdr").message}`);
+  if (split.code !== 0 || !pane) return say("error", `Can't open a pane for ${shown}: ${herdrError(split, "herdr").message}`);
   if (plan.mode === "command") return runMcc(herdr, pane, [mcc, ...plan.argv.slice(1)], text);
 
   const kind = plan.kind;
@@ -538,7 +538,7 @@ async function runMcc(herdr, pane, argv, text) {
     if (r.code !== 0) return null;
     try { const a = (JSON.parse(r.stdout).result.agents ?? []).find((x) => x.pane_id === pane); return a ? String(a.agent_status ?? "unknown") : null; } catch { return null; }
   };
-  const waiting = () => say("info", `mcc is waiting in the new pane (it may be asking about a usage limit). Answer it there; Claude Code then works on: ${text}`);
+  const waiting = () => say("info", `Answer mcc in the new pane: it is waiting there, maybe asking about a usage limit. Claude Code then works on: ${text}`);
   const deadline = Date.now() + TIMING.appearMs;
   let found = await statusIn();
   while (found === null && Date.now() < deadline) {
@@ -644,7 +644,7 @@ const TONES = { info: yellow, ok: green, error: red };
 // An agent action's notice is its message, in the tone's color, and maybe a URL.
 function noticeLines(notice, cols, room) {
   const { url } = notice, lines = [dim("─".repeat(cols))];
-  if (notice.tone) for (const l of wrap(notice.text, cols - 2, 3)) lines.push(" " + TONES[notice.tone](l));
+  if (notice.tone) for (const l of wrap(notice.text, cols - 2, 5)) lines.push(" " + TONES[notice.tone](l));
   else lines.push(" " + red(fit(notice.reason, cols - 2)), " " + dim(fit(HINT, cols - 2)));
   if (url) for (const l of urlLines(url, cols - 2)) lines.push(" " + link(url, accent(l)));
   return lines.slice(0, Math.max(0, room));
@@ -735,21 +735,25 @@ function paint(out, rows) {
 // a form to add or change one. The store is read when the view opens, and written
 // only while the file still holds what was read.
 
+// `word` is how the profiles module names the field in its reasons ("Model: …").
 const FIELDS = [
-  { key: "name", label: "Name", max: 40 },
-  { key: "id", label: "Id", max: 32 },
-  { key: "harness", label: "Harness" },
-  { key: "model", label: "Model", max: 128 },
-  { key: "thinking", label: "Thinking" },
+  { key: "name", label: "Name", word: "Name", max: 40 },
+  { key: "id", label: "Id (a-z 0-9 -)", word: "Id", max: 32 },
+  { key: "harness", label: "Harness", word: "Harness" },
+  { key: "model", label: "Model", word: "Model", max: 128 },
+  { key: "thinking", label: "Thinking", word: "Thinking" },
 ];
+// The form's label column: "▌ ", the widest label, a space.
+const LABEL_W = Math.max(...FIELDS.map((f) => f.label.length)), VALUE_AT = LABEL_W + 3;
 const choices = (form, key) => key === "harness" ? P.HARNESSES : ["", ...P.THINKING[form.harness]];
 // What OpenCode does with a model or thinking level, in the profiles module's words.
 const OPENCODE_NOTE = P.buildLaunch({ id: "x", name: "x", harness: "opencode", model: "m" }, "x").warnings[0];
 const entries = () => [P.DEFAULT_PROFILE, ...ui.settings.store.profiles];
 const describe = (p) => [P.HARNESS_NAMES[p.harness], p.model, p.thinking && `thinking ${p.thinking}`].filter(Boolean).join(" · ");
+const ACTION_LABELS = { resolve: "Resolve", review: "Review" };
 
 function openSettings() {
-  ui.settings = { mode: "list", sel: 0, form: null, field: 0, error: null, info: null, ...readStore() };
+  ui.settings = { mode: "list", sel: 0, form: null, field: 0, error: null, fieldErrors: {}, info: null, ...readStore() };
   draw();
 }
 
@@ -758,11 +762,18 @@ function closeSettings() {
   draw();
 }
 
+// The selected profile, with the selection kept inside the list: a delete, or the
+// file read again, can leave it past the end.
+function selectedEntry(st) {
+  st.sel = Math.max(0, Math.min(st.sel, entries().length - 1));
+  return entries()[st.sel];
+}
+
 // ✕ and Esc: from the form back to the list, from the list back to the rows.
 function settingsBack() {
   const st = ui.settings;
   if (st.mode === "list") return closeSettings();
-  Object.assign(st, { mode: "list", form: null, error: null });
+  Object.assign(st, { mode: "list", form: null, error: null, fieldErrors: {} });
   draw();
 }
 
@@ -775,7 +786,7 @@ function saveStore(next) {
   try { now = fs.readFileSync(st.file, "utf8"); } catch (e) { if (e.code !== "ENOENT") throw e; }
   if (now !== st.text) {
     Object.assign(st, readStore());
-    st.sel = Math.min(st.sel, entries().length - 1);
+    selectedEntry(st);
     throw new Error("The profiles changed elsewhere and were read again: make your change again");
   }
   const text = P.serializeStore(next);
@@ -785,17 +796,31 @@ function saveStore(next) {
   Object.assign(st, { store: next, text });
 }
 
+// A reason from the profiles module, split by field: in the form, each field's
+// own shows under that field, and only the rest in the status lines.
+function splitErrors(message, inForm) {
+  const fieldErrors = {}, rest = [];
+  for (const part of inForm ? message.split("; ") : [message]) {
+    const f = FIELDS.find((x) => part.startsWith(`${x.word}:`));
+    if (f && !fieldErrors[f.key]) fieldErrors[f.key] = part;
+    else rest.push(part);
+  }
+  return { fieldErrors, error: rest.length ? rest.join("; ") : null };
+}
+
 // Runs a change to the store, then shows what happened.
 function change(fn, info) {
   const st = ui.settings;
-  try { fn(); Object.assign(st, { error: null, info }); } catch (e) { Object.assign(st, { error: e.message, info: null }); }
+  try { fn(); Object.assign(st, { error: null, fieldErrors: {}, info }); }
+  catch (e) { Object.assign(st, { info: null }, splitErrors(e.message, st.mode === "edit")); }
+  selectedEntry(st);
   draw();
 }
 
 function editProfile(p) {
   const st = ui.settings;
   st.form = { prev: p?.id ?? null, name: p?.name ?? "", id: p?.id ?? "", harness: p?.harness ?? "mcc", model: p?.model ?? "", thinking: p?.thinking ?? "" };
-  Object.assign(st, { mode: "edit", field: 0, error: null, info: null });
+  Object.assign(st, { mode: "edit", field: 0, error: null, fieldErrors: {}, info: null });
   draw();
 }
 
@@ -809,6 +834,33 @@ function saveForm() {
   }, `Saved ${profile.name}`);
 }
 
+// The selected profile's actions, from a key or its buttons.
+function assignTo(action) {
+  const st = ui.settings, p = selectedEntry(st);
+  change(() => saveStore(P.assignProfile(st.store, action, p.id)), `${ACTION_LABELS[action]} now starts ${p.name}`);
+}
+
+function editSelected() {
+  const st = ui.settings, p = selectedEntry(st);
+  if (p.id !== P.DEFAULT_PROFILE.id) return editProfile(p);
+  st.error = "The default profile can't be changed: add your own with n";
+  draw();
+}
+
+function askDelete() {
+  const st = ui.settings, p = selectedEntry(st);
+  if (p.id !== P.DEFAULT_PROFILE.id) Object.assign(st, { mode: "confirm", error: null, info: null });
+  else st.error = "The default profile can't be deleted";
+  draw();
+}
+
+function confirmDelete(yes) {
+  const st = ui.settings, p = selectedEntry(st);
+  st.mode = "list";
+  if (yes && p.id !== P.DEFAULT_PROFILE.id) return change(() => saveStore(P.removeProfile(st.store, p.id)), `Deleted ${p.name}`);
+  draw();
+}
+
 const UP = ["\x1b[A", "\x1bOA"], DOWN = ["\x1b[B", "\x1bOB"];
 
 // Keys in the profile views. In the form, keys are text: q or j is typed, not a
@@ -820,28 +872,17 @@ function settingsKey(m) {
     return;
   }
   if (k === "\x03") return quit();
-  if (st.mode === "confirm") {
-    const p = entries()[st.sel];
-    st.mode = "list";
-    if (k === "y" || k === "Y") return change(() => saveStore(P.removeProfile(st.store, p.id)), `Deleted ${p.name}`);
-    return draw();
-  }
+  if (st.mode === "confirm") return confirmDelete(k === "y" || k === "Y");
   if (st.mode === "edit") return formKey(st, k);
-  const p = entries()[st.sel], fixed = p.id === P.DEFAULT_PROFILE.id;
+  selectedEntry(st);
   if (k === "\x1b" || k === "q" || k === "s") return closeSettings();
   if (UP.includes(k) || k === "k") st.sel = Math.max(0, st.sel - 1);
   else if (DOWN.includes(k) || k === "j") st.sel = Math.min(entries().length - 1, st.sel + 1);
   else if (k === "n") return editProfile(null);
-  else if (k === "e" || k === "\r" || k === "\n") {
-    if (!fixed) return editProfile(p);
-    st.error = "The default profile can't be changed: add your own with n";
-  } else if (k === "d") {
-    if (!fixed) st.mode = "confirm";
-    else st.error = "The default profile can't be deleted";
-  } else if (k === "R" || k === "V") {
-    const action = k === "R" ? "resolve" : "review";
-    return change(() => saveStore(P.assignProfile(st.store, action, p.id)), `${action === "resolve" ? "Resolve" : "Review"} now starts ${p.name}`);
-  } else return;
+  else if (k === "e" || k === "\r" || k === "\n") return editSelected();
+  else if (k === "d") return askDelete();
+  else if (k === "R" || k === "V") return assignTo(k === "R" ? "resolve" : "review");
+  else return;
   draw();
 }
 
@@ -860,12 +901,42 @@ function formKey(st, k) {
     const list = choices(form, field.key), at = Math.max(0, list.indexOf(form[field.key]));
     form[field.key] = list[(at + (k === "\x1b[D" ? list.length - 1 : 1)) % list.length];
     if (!choices(form, "thinking").includes(form.thinking)) form.thinking = "";
+    delete st.fieldErrors[field.key];
     return draw();
   }
   if (k === "\x7f" || k === "\b") form[field.key] = [...form[field.key]].slice(0, -1).join("");
   else if (!k.startsWith("\x1b") && !/[\x00-\x1f\x7f-\x9f]/.test(k) && form[field.key].length < field.max) form[field.key] += k;
   else return;
+  delete st.fieldErrors[field.key];
   draw();
+}
+
+// Buttons on a line after `prefix` (`at` cells wide), onto more lines when they
+// don't fit: [{ text, hits: [{ from, to, action }] }].
+function buttonLines(buttons, cols, prefix, at) {
+  const out = [];
+  let text = prefix, x = at, hits = [];
+  for (const [label, action] of buttons) {
+    const b = ` ${fit(label, cols - at - 2)} `, w = width(b);
+    if (hits.length && x + 1 + w > cols) { out.push({ text, hits }); text = prefix; x = at; hits = []; }
+    if (hits.length) { text += " "; x += 1; }
+    hits.push({ from: x, to: x + w, action });
+    text += invert(b); x += w;
+  }
+  out.push({ text, hits });
+  return out;
+}
+
+// Key hints on one line, or more (up to three) when they don't fit, rather than
+// cut off.
+function hintLines(hints, cols) {
+  const lines = [[]];
+  for (const h of hints) {
+    const line = lines[lines.length - 1];
+    if (line.length && lines.length < 3 && width(` ${[...line, h].join(" · ")}`) > cols) lines.push([h]);
+    else line.push(h);
+  }
+  return lines.map((l) => dim(fit(` ${l.join(" · ")}`, cols)));
 }
 
 // The profile views' lines; their own buttons replace the rows' and the header's.
@@ -873,56 +944,87 @@ function settingsLines(cols, rows) {
   const st = ui.settings, out = [];
   ui.rows = [];
   ui.buttons = [];
-  const close = " ✕ ";
-  const heading = fit(st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles", cols - width(close) - 2);
-  out.push(` ${bold(heading)}${" ".repeat(Math.max(0, cols - 1 - width(heading) - width(close)))}${dim(close)}`);
-  ui.buttons.push({ row: 0, from: cols - width(close), to: cols, action: () => settingsBack() });
+  const p = st.mode === "edit" ? null : selectedEntry(st);
+  // Header: the view's name, + New in the list, and ✕ (back) at the right edge.
+  const tools = st.mode === "edit" ? [] : [[" + New ", () => editProfile(null)]];
+  tools.push([" ✕ ", () => settingsBack()]);
+  const right = tools.reduce((w, [t]) => w + width(t), 0);
+  const heading = fit(st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles", cols - right - 2);
+  out.push(` ${bold(heading)}${" ".repeat(Math.max(0, cols - 1 - width(heading) - right))}${dim(tools.map(([t]) => t).join(""))}`);
+  let x = cols - right;
+  for (const [t, action] of tools) { ui.buttons.push({ row: 0, from: x, to: x + width(t), action }); x += width(t); }
   out.push(dim("─".repeat(cols)));
 
   const status = [];
-  if (st.mode === "confirm") status.push(yellow(fit(` Delete ${entries()[st.sel].name}? y deletes it, any other key keeps it`, cols)));
+  if (st.mode === "confirm") status.push(yellow(fit(` Delete ${p.name}? y deletes it, any other key keeps it`, cols)));
   for (const w of st.warnings) for (const l of wrap(w, cols - 2, 2)) status.push(" " + yellow(l));
   if (st.mode === "edit" && st.form.harness === "opencode" && (st.form.model || st.form.thinking)) {
     for (const l of wrap(OPENCODE_NOTE, cols - 2, 2)) status.push(" " + yellow(l));
   }
-  if (st.error) for (const l of wrap(st.error, cols - 2, 2)) status.push(" " + red(l));
+  if (st.error) for (const l of wrap(st.error, cols - 2, 4)) status.push(" " + red(l));
   if (st.info) status.push(" " + green(fit(st.info, cols - 2)));
-  const footer = dim(fit(st.mode === "edit"
-    ? " ↑↓ field · ←→ choose · type to edit · ⏎ save · esc back"
-    : " ↑↓ select · n new · e edit · d delete · R/V assign · esc back", cols));
-  const height = Math.max(1, rows - out.length - status.length - 1);
+  const footer = hintLines(st.mode === "edit"
+    ? ["↑↓ field", "←→ choose", "type to edit", "⏎ save", "esc back"]
+    : ["↑↓ select", "n new", "e edit", "d delete", "R/V assign", "esc back"], cols);
+  const height = Math.max(1, rows - out.length - status.length - footer.length);
 
-  const body = [], owner = [];
+  // Each line's click: the whole line's, and its buttons' first.
+  const body = [], owner = [], hits = [];
+  let selStart = 0, selEnd = 0;
+  const addButtons = (buttons, prefix, at, own) => {
+    for (const l of buttonLines(buttons, cols, prefix, at)) { hits[body.length] = l.hits; body.push(l.text); owner.push(own); }
+  };
   if (st.mode === "edit") {
+    const valueW = cols - VALUE_AT;
     FIELDS.forEach((f, i) => {
-      const on = i === st.field, value = st.form[f.key];
+      const on = i === st.field, value = st.form[f.key], pick = () => { Object.assign(st, { field: i, error: null }); draw(); };
       let shown;
-      if (f.max) shown = (value ? fit(value, cols - 15) : on ? "" : dim(f.key === "model" ? "harness default" : "—")) + (on ? invert(" ") : "");
-      else shown = `‹ ${f.key === "harness" ? P.HARNESS_NAMES[value] : value || "harness default"} ›`;
-      body.push(`${on ? accent("▌") : " "} ${(on ? bold : muted)(f.label.padEnd(9))} ${shown}`);
-      owner.push(() => { Object.assign(st, { field: i, error: null }); draw(); });
+      if (f.max) shown = (value ? fit(value, valueW - 1) : on ? "" : dim(fit(f.key === "model" ? "harness default" : "—", valueW))) + (on ? invert(" ") : "");
+      else shown = fit(`‹ ${f.key === "harness" ? P.HARNESS_NAMES[value] : value || "harness default"} ›`, valueW);
+      if (on) selStart = body.length;
+      body.push(`${on ? accent("▌") : " "} ${(on ? bold : muted)(f.label.padEnd(LABEL_W))} ${shown}`);
+      owner.push(pick);
+      // The field's own reason, under it.
+      const why = st.fieldErrors[f.key];
+      if (why) for (const l of wrap(why, valueW, 3)) { body.push(" ".repeat(VALUE_AT) + red(l)); owner.push(pick); }
+      if (on) selEnd = body.length;
     });
+    body.push(""); owner.push(null);
+    addButtons([["Save", () => saveForm()], ["Cancel", () => settingsBack()]], "  ", 2, null);
   } else {
-    const using = (id) => P.ACTION_KEYS.filter((a) => (st.store.assign[a] ?? P.DEFAULT_PROFILE.id) === id).map((a) => a === "resolve" ? "Resolve" : "Review");
-    entries().forEach((p, i) => {
+    const using = (id) => P.ACTION_KEYS.filter((a) => (st.store.assign[a] ?? P.DEFAULT_PROFILE.id) === id);
+    entries().forEach((q, i) => {
       if (i) { body.push(""); owner.push(null); }
-      const on = i === st.sel, bar = on ? accent("▌") : " ", select = () => { Object.assign(st, { sel: i, error: null }); draw(); };
-      const tag = [p.id === P.DEFAULT_PROFILE.id ? "default" : p.id, ...using(p.id)].join(" · ");
-      const name = fit(p.name, Math.max(4, cols - width(tag) - 5));
+      const on = i === st.sel, bar = on ? accent("▌") : " ", select = () => { Object.assign(st, { sel: i, error: null, mode: "list" }); draw(); };
+      const tag = [q.id === P.DEFAULT_PROFILE.id ? "default" : q.id, ...using(q.id).map((a) => ACTION_LABELS[a])].join(" · ");
+      const name = fit(q.name, Math.max(4, cols - width(tag) - 5));
+      if (on) selStart = body.length;
       body.push(`${bar} ${on ? bold(name) : name}${" ".repeat(Math.max(1, cols - 3 - width(name) - width(tag)))}${accent(tag)}`);
-      body.push(`${bar}   ${dim(fit(describe(p), cols - 4))}`);
+      body.push(`${bar}   ${dim(fit(describe(q), cols - 4))}`);
       owner.push(select, select);
+      // The selected profile's buttons, on a line of their own.
+      if (on) {
+        const fixed = q.id === P.DEFAULT_PROFILE.id, used = using(q.id);
+        const buttons = st.mode === "confirm"
+          ? [["Delete", () => confirmDelete(true)], ["Keep", () => confirmDelete(false)]]
+          : [
+            ...P.ACTION_KEYS.map((a) => used.includes(a) ? [`${ACTION_LABELS[a]} ✓`, () => {}] : [`Use for ${ACTION_LABELS[a]}`, () => assignTo(a)]),
+            ...(fixed ? [] : [["Edit", () => editSelected()], ["Delete", () => askDelete()]]),
+          ];
+        addButtons(buttons, `${bar}   `, 4, select);
+        selEnd = body.length;
+      }
     });
   }
-  // Keep the selected entry (two lines and the gap) in view.
-  const focus = st.mode === "edit" ? st.field : st.sel * 3 + 1;
-  const top = Math.max(0, Math.min(focus - height + 1, body.length - height));
+  // Keep the selected entry (or field) in view.
+  const top = Math.min(selStart, Math.max(0, selEnd - height));
   for (let r = 0; r < height; r++) {
     out.push(body[top + r] ?? "");
+    for (const h of hits[top + r] ?? []) ui.buttons.push({ row: out.length - 1, from: h.from, to: h.to, action: h.action });
     const action = owner[top + r];
     if (action) ui.buttons.push({ row: out.length - 1, from: 0, to: cols, action });
   }
-  out.push(...status, footer);
+  out.push(...status, ...footer);
   return out;
 }
 
