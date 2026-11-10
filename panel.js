@@ -642,11 +642,19 @@ const TONES = { info: yellow, ok: green, error: red };
 
 // A failed open, at most `room` lines: why, what to do instead, and the whole URL.
 // An agent action's notice is its message, in the tone's color, and maybe a URL.
+// The message is whole when the room allows, and the URL under it always gets its
+// lines first: only a message too long for the room is cut, ending in "…".
 function noticeLines(notice, cols, room) {
   const { url } = notice, lines = [dim("─".repeat(cols))];
-  if (notice.tone) for (const l of wrap(notice.text, cols - 2, 5)) lines.push(" " + TONES[notice.tone](l));
-  else lines.push(" " + red(fit(notice.reason, cols - 2)), " " + dim(fit(HINT, cols - 2)));
-  if (url) for (const l of urlLines(url, cols - 2)) lines.push(" " + link(url, accent(l)));
+  const under = url ? urlLines(url, cols - 2).map((l) => " " + link(url, accent(l))) : [];
+  const most = Math.max(1, room - 1 - under.length);
+  if (notice.tone) for (const l of wrap(notice.text, cols - 2, most)) lines.push(" " + TONES[notice.tone](l));
+  else {
+    const why = wrap(notice.reason, cols - 2, most).map((l) => " " + red(l));
+    const hint = most > why.length ? wrap(HINT, cols - 2, most - why.length) : [];
+    lines.push(...why, ...hint.map((l) => " " + dim(l)));
+  }
+  lines.push(...under);
   return lines.slice(0, Math.max(0, room));
 }
 
@@ -957,14 +965,15 @@ function settingsLines(cols, rows) {
   for (const [t, action] of tools) { ui.buttons.push({ row: 0, from: x, to: x + width(t), action }); x += width(t); }
   out.push(dim("─".repeat(cols)));
 
-  const status = [];
-  if (st.mode === "confirm") for (const l of wrap(`Delete ${p.name}? y deletes it, any other key keeps it`, cols - 2, 3)) status.push(" " + yellow(l));
-  for (const w of st.warnings) for (const l of wrap(w, cols - 2, 2)) status.push(" " + yellow(l));
-  if (st.mode === "edit" && st.form.harness === "opencode" && (st.form.model || st.form.thinking)) {
-    for (const l of wrap(OPENCODE_NOTE, cols - 2, 2)) status.push(" " + yellow(l));
-  }
-  if (st.error) for (const l of wrap(st.error, cols - 2, 4)) status.push(" " + red(l));
-  if (st.info) for (const l of wrap(st.info, cols - 2, 2)) status.push(" " + green(l));
+  // What to know or do, each message whole however narrow the pane: the body
+  // above scrolls into the lines that are left.
+  const notes = [];
+  if (st.mode === "confirm") notes.push([yellow, `Delete ${p.name}? y deletes it, any other key keeps it`]);
+  for (const w of st.warnings) notes.push([yellow, w]);
+  if (st.mode === "edit" && st.form.harness === "opencode" && (st.form.model || st.form.thinking)) notes.push([yellow, OPENCODE_NOTE]);
+  if (st.error) notes.push([red, st.error]);
+  if (st.info) notes.push([green, st.info]);
+  const status = notes.flatMap(([tone, text]) => wrap(text, cols - 2, Infinity).map((l) => " " + tone(l)));
   const footer = hintLines(st.mode === "edit" ? ["↑↓ field", "←→ choose", "type to edit", "⏎ save", "esc back"]
     : st.mode === "confirm" ? ["y delete", "any other key keeps it"]
       : ["↑↓ select", "n new", "e edit", "d delete", "R/V assign", "esc back"], cols);

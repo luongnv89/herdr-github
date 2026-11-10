@@ -100,7 +100,8 @@ function buildLaunch(profile, prompt) {
     if (model) flags.push("--model", model);
     if (thinking) flags.push("--thinking", thinking);
   } else if (harness === "opencode" && (model || thinking)) {
-    warnings.push("OpenCode has no model or thinking flag when it starts, so this profile's model and thinking level are ignored");
+    // The consequence first: a notice cut short in a narrow pane still says it.
+    warnings.push("OpenCode ignores this profile's model and thinking level: it has no flag for them when it starts");
   }
   if (harness === "mcc") return { mode: "command", argv: ["mcc", "run", "--", ...flags, prompt], warnings };
   return { mode: "agent", kind: harness, extraArgs: flags, warnings };

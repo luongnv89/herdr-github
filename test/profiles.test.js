@@ -60,7 +60,7 @@ test("OpenCode starts without flags, and says its model and thinking level are i
   const l = P.buildLaunch(ok({ harness: "opencode", model: "x", thinking: "high" }), PROMPT);
   assert.deepEqual([l.mode, l.kind, l.extraArgs], ["agent", "opencode", []]);
   assert.equal(l.warnings.length, 1);
-  assert.match(l.warnings[0], /OpenCode has no model or thinking flag/);
+  assert.equal(l.warnings[0], "OpenCode ignores this profile's model and thinking level: it has no flag for them when it starts");
   assert.deepEqual(P.buildLaunch(ok({ harness: "opencode" }), PROMPT).warnings, []);
 });
 

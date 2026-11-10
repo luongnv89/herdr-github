@@ -556,14 +556,14 @@ const herdrCalls = () => calls.filter((c) => c[0] === "herdr").map((c) => c.slic
 
 // Like screen, for a launch: stdout stays borrowed until the launch is over. Only
 // the panel's frames are taken; node --test reports through stdout meanwhile.
-async function screenAsync(fn) {
+async function screenAsync(fn, columns = 60) {
   const { write } = process.stdout, cols = process.stdout.columns, rows = process.stdout.rows;
   let frame = "";
   process.stdout.write = function (s, ...rest) {
     if (typeof s === "string" && s.startsWith("\x1b[?2026h")) { frame = s; return true; }
     return write.call(this, s, ...rest);
   };
-  process.stdout.columns = 60; process.stdout.rows = 24;
+  process.stdout.columns = columns; process.stdout.rows = 24;
   try { fn(); await ui.acting; } finally { Object.assign(process.stdout, { write, columns: cols, rows }); }
   const lines = [];
   for (const m of frame.matchAll(/\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K/g)) lines[m[1] - 1] = strip(m[2]);
@@ -934,7 +934,7 @@ test("each harness starts with its own model and thinking flags; empty ones add 
     fakeHerdr(claudeHere);
     const after = await screenAsync(() => onInput(Buffer.from("a")));
     assert.equal(herdrCalls()[2], `agent start resolve-12 ${start}`, JSON.stringify(p));
-    assert.equal(text(after).includes("OpenCode has no model or thinking flag"), p.harness === "opencode", after.join("\n"));
+    assert.equal(text(after).includes("OpenCode ignores this profile's model and thinking level"), p.harness === "opencode", after.join("\n"));
   }
 });
 
@@ -1340,8 +1340,96 @@ test("launch notices name the harness, and lead with what to do", async (t) => {
   setupGitHub("issues");
   const after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.ok(text(after).includes("mcc isn't on your PATH: press s to pick another profile for Resolve, or install mcc."), after.join("\n"));
-  // A long notice gets up to five lines.
-  ui.notice = { tone: "info", text: "word ".repeat(60), url: null };
-  const lines = screen(draw).filter((l) => l?.startsWith(" word"));
-  assert.equal(lines.length, 5);
+  // A long notice shows whole while the room allows it, above the key hints.
+  ui.notice = { tone: "info", text: `${"word ".repeat(60)}end`, url: null };
+  let lines = screen(draw);
+  assert.equal(text(lines).match(/\bword\b/g).length, 60, lines.join("\n"));
+  assert.ok(text(lines).includes("word end"), lines.join("\n"));
+  assert.ok(!lines.some((l) => l?.startsWith(" word") && l.includes("…")), lines.join("\n"));
+  assert.match(lines[23], /^ ↑↓ select/);
+  // One too long for the room is cut there, ending in "…": the list keeps a line,
+  // the URL under the message stays whole, and so do the key hints.
+  ui.notice = { tone: "error", text: "word ".repeat(400), url: "https://x/install" };
+  lines = screen(draw);
+  assert.ok(!lines[4].startsWith(" word") && lines[5].startsWith("─"), lines.join("\n"));
+  assert.ok(lines[21].endsWith("…"), lines.join("\n"));
+  assert.equal(lines[22], " https://x/install");
+  assert.match(lines[23], /^ ↑↓ select/);
+});
+
+// The same text, however a narrow pane broke it: a word too long for a line is
+// split without a space.
+const squash = (s) => s.replace(/\s+/g, "");
+const shows = (lines, message) => squash(text(lines)).includes(squash(message));
+// A 40-character name, the longest there is, with no space to break at.
+const LONG_NAME = "Abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+
+test("at 28, 30 and 40 cells the profiles show each warning, note and question whole", (t) => {
+  const dir = home(t);
+  const note = "OpenCode ignores this profile's model and thinking level: it has no flag for them when it starts";
+  for (const cols of [28, 30, 40]) {
+    const at = (fn) => {
+      const lines = screenAt(cols, 24, fn);
+      for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+      return lines;
+    };
+    // The OpenCode note, in the form, under an OpenCode profile with a model.
+    useProfiles(dir, []);
+    setupGitHub("issues");
+    let lines = at(() => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[Bx")));
+    assert.equal(ui.settings.form.harness, "opencode");
+    assert.ok(shows(lines, note), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(lines.at(-1).trimEnd().endsWith("esc back"), `${cols}:\n${lines.join("\n")}`);
+    at(() => onInput(Buffer.from("\x1b\x1b")));
+
+    // A skipped profile: why the file is read only, and the rule it broke.
+    useProfiles(dir, [{ id: "bad", name: "Bad", harness: "claude", model: "opus[1m]" }], { resolve: "bad" });
+    setupGitHub("issues");
+    lines = at(() => onInput(Buffer.from("s")));
+    for (const w of [
+      "Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save",
+      'Skipped profile "bad": Model: letters, digits and . _ : / @ + - only, starting with a letter or digit',
+      "The resolve action's profile isn't there, so it uses the default",
+    ]) assert.ok(shows(lines, w), `${cols}: ${w}\n${lines.join("\n")}`);
+    assert.ok(lines.at(-1).trimEnd().endsWith("esc back"), `${cols}:\n${lines.join("\n")}`);
+    // And why a change isn't saved.
+    lines = at(() => onInput(Buffer.from("R")));
+    assert.ok(shows(lines, "Not saved: Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save"), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(lines.at(-1).trimEnd().endsWith("esc back"), `${cols}:\n${lines.join("\n")}`);
+    at(() => onInput(Buffer.from("\x1b")));
+
+    // A file from another version.
+    fs.writeFileSync(useProfiles(dir, []), JSON.stringify({ version: 2, profiles: [], assign: {} }));
+    setupGitHub("issues");
+    lines = at(() => onInput(Buffer.from("s")));
+    assert.ok(shows(lines, "The profiles file is version 2, not 1: it is read only here"), `${cols}:\n${lines.join("\n")}`);
+    at(() => onInput(Buffer.from("\x1b")));
+
+    // A 40-character name in what a change did, and in the delete question.
+    useProfiles(dir, [{ id: "long", name: LONG_NAME, harness: "pi" }]);
+    setupGitHub("issues");
+    lines = at(() => onInput(Buffer.from("sjR")));
+    assert.ok(shows(lines, `Resolve now starts ${LONG_NAME}`), `${cols}:\n${lines.join("\n")}`);
+    lines = at(() => onInput(Buffer.from("d")));
+    assert.ok(shows(lines, `Delete ${LONG_NAME}? y deletes it, any other key keeps it`), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(lines.at(-1).trimEnd().endsWith("any other key keeps it"), `${cols}:\n${lines.join("\n")}`);
+    lines = at(() => onInput(Buffer.from("y")));
+    assert.ok(shows(lines, `Deleted ${LONG_NAME}`), `${cols}:\n${lines.join("\n")}`);
+    at(() => onInput(Buffer.from("\x1b")));
+  }
+});
+
+test("at 28 and 30 cells the notice of a started OpenCode keeps its note whole", async (t) => {
+  const dir = home(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  for (const cols of [28, 30]) {
+    useProfiles(dir, [{ id: "p", name: "P", harness: "opencode", model: "x" }], { resolve: "p" });
+    setupGitHub("issues");
+    fakeHerdr(claudeHere);
+    const lines = await screenAsync(() => onInput(Buffer.from("a")), cols);
+    const whole = "Started OpenCode in a new pane: Use the issue-resolver skill on issue #12. " +
+      "(OpenCode ignores this profile's model and thinking level: it has no flag for them when it starts)";
+    assert.ok(shows(lines, whole), `${cols}:\n${lines.join("\n")}`);
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    assert.match(lines[23], /^ ↑↓ select/);
+  }
 });
