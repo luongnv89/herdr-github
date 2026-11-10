@@ -117,6 +117,37 @@ test("an action with no profile, or a missing one, gets Claude Code via mcc run"
   assert.equal(P.resolveProfile(store, "review"), P.DEFAULT_PROFILE);
 });
 
+test("profileChoices: the default alone with no profiles; the default first, then every profile", () => {
+  // Nothing to choose: one entry, the default.
+  assert.deepEqual(P.profileChoices(P.emptyStore(), "resolve"), { entries: [P.DEFAULT_PROFILE], sel: 0 });
+  assert.deepEqual(P.profileChoices(undefined, "review"), { entries: [P.DEFAULT_PROFILE], sel: 0 });
+  const a = ok({ id: "a", name: "A", harness: "pi" }), b = ok({ id: "b", name: "B", harness: "codex" });
+  const store = { ...P.emptyStore(), profiles: [a, b], assign: { resolve: "b", review: null } };
+  const { entries } = P.profileChoices(store, "resolve");
+  assert.deepEqual(entries.map((p) => p.id), ["default", "a", "b"]);
+  assert.equal(entries[0], P.DEFAULT_PROFILE);
+});
+
+test("profileChoices highlights the action's own profile; none, or a missing one, highlights the default", () => {
+  const a = ok({ id: "a", name: "A", harness: "pi" }), b = ok({ id: "b", name: "B", harness: "codex" });
+  const store = { ...P.emptyStore(), profiles: [a, b], assign: { resolve: "b", review: "a" } };
+  assert.equal(P.profileChoices(store, "resolve").sel, 2);
+  assert.equal(P.profileChoices(store, "review").sel, 1);
+  assert.equal(P.profileChoices({ ...store, assign: { resolve: null, review: null } }, "resolve").sel, 0);
+  assert.equal(P.profileChoices({ ...store, assign: { resolve: "gone", review: null } }, "resolve").sel, 0);
+});
+
+test("findChoice finds the default and your profiles by id, and nothing for an unknown one", () => {
+  const a = ok({ id: "a", name: "A", harness: "pi" });
+  const store = { ...P.emptyStore(), profiles: [a] };
+  assert.equal(P.findChoice(store, "default"), P.DEFAULT_PROFILE);
+  assert.equal(P.findChoice(P.emptyStore(), "default"), P.DEFAULT_PROFILE);
+  assert.equal(P.findChoice(store, "a"), a);
+  assert.equal(P.findChoice(store, "gone"), null);
+  assert.equal(P.findChoice(P.emptyStore(), "a"), null);
+  assert.equal(P.findChoice(undefined, "a"), null);
+});
+
 test("the store path is one fixed file under home, whatever the environment says", async () => {
   const E = await esm();
   for (const home of ["/home/me", "/home/me/", "/Users/a b"]) {
@@ -373,6 +404,9 @@ test("the CommonJS copy behaves as the app mod's module", async () => {
   assert.equal(E.expandPrompt("#{number} {number}", 5), P.expandPrompt("#{number} {number}", 5));
   assert.equal(E.resolvePrompt(E.setPrompt(E.emptyStore(), "review", "R {number}"), "review"), P.resolvePrompt(P.setPrompt(P.emptyStore(), "review", "R {number}"), "review"));
   assert.equal(E.parseMccEnv("unset CLAUDE_CONFIG_DIR", "/h"), P.parseMccEnv("unset CLAUDE_CONFIG_DIR", "/h"));
+  const store = { ...P.emptyStore(), profiles: [ok({ id: "a", harness: "pi" })], assign: { resolve: "a", review: null } };
+  for (const action of ["resolve", "review"]) assert.deepEqual(E.profileChoices(store, action), P.profileChoices(store, action), action);
+  for (const id of ["default", "a", "gone"]) assert.deepEqual(E.findChoice(store, id), P.findChoice(store, id), id);
 });
 
 test("profiles.cjs is up to date with the app mod's profiles.js", () => {

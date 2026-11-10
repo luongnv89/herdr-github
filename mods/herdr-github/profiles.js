@@ -277,6 +277,24 @@ export function resolveProfile(store, action) {
   return (id && store.profiles?.find((p) => p.id === id)) || DEFAULT_PROFILE;
 }
 
+// What Resolve or Review can start, for you to choose from: the default first, then
+// your profiles in the store's order. `sel` is where the action's own profile is in
+// that list, so it is the one a choice starts from; with none assigned, or its
+// profile gone, that is the default (0). One entry means there is nothing to choose.
+export function profileChoices(store, action) {
+  const entries = [DEFAULT_PROFILE, ...(store?.profiles ?? [])];
+  const id = resolveProfile(store, action).id;
+  return { entries, sel: Math.max(0, entries.findIndex((p) => p.id === id)) };
+}
+
+// The profile with id `id` in the store as it is now: the default for "default",
+// else one of yours; null when there is none, as when it was deleted after the
+// choice was offered.
+export function findChoice(store, id) {
+  if (id === DEFAULT_PROFILE.id) return DEFAULT_PROFILE;
+  return store?.profiles?.find((p) => p.id === id) ?? null;
+}
+
 // Sets the custom prompt of "resolve" or "review", trimmed; empty text or null
 // goes back to the default (the IDD skill). Returns a new store; throws, with the
 // field's name first ("Resolve prompt: …"), when the prompt can't be used.
