@@ -1885,3 +1885,217 @@ test("a custom prompt from the profiles view is what Resolve then sends", async 
   assert.equal(herdrCalls()[3], "agent prompt w1:p7 Resolve issue 12 with tests first --wait --until working --until blocked --until done --timeout 15000");
   assert.ok(text(after).includes("Started Claude Code in a new pane: Resolve issue 12 with tests first"), after.join("\n"));
 });
+
+// ── The profile menu ────────────────────────────────────────────────────────
+
+const CC = { id: "cc", name: "Claude Code", harness: "claude" }, CX = { id: "cx", name: "Codex quick", harness: "codex" };
+// The box's line for a profile, as drawn: its marker, name and hint, then the border.
+const entryLine = (lines, label) => lines.findIndex((l) => l?.includes(`│ ▸ ${label}`) || l?.includes(`│   ${label}`));
+const resolveButton = (lines, n) => {
+  const y = lines.findIndex((l) => l?.trim() === `Resolve #${n}`);
+  return [lines[y]?.indexOf("Resolve"), y];
+};
+
+test("with only the default profile, a and a row's button start at once, with no menu", async (t) => {
+  const dir = home(t, { ".mcc/profiles/work/skills/issue-resolver/SKILL.md": "x" });
+  const bin = mccOnPath(t);
+  mccEnv(path.join(dir, ".mcc/profiles/work"));
+  let lines = setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent list": appears("working", 2) });
+  let menu = "unset";
+  await screenAsync(() => { onInput(Buffer.from("a")); menu = ui.menu; });
+  assert.equal(menu, null, "a opened a menu with nothing to choose");
+  assert.ok(herdrCalls().includes(`pane run w1:p7 '${bin}' 'run' '--' '/issue-resolver 12'`), herdrCalls().join("\n"));
+  lines = setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent list": appears("working", 2) });
+  const [x, y] = resolveButton(lines, 11);
+  menu = "unset";
+  await screenAsync(() => { click(x, y); menu = ui.menu; });
+  assert.equal(menu, null, "the row's button opened a menu with nothing to choose");
+  assert.ok(herdrCalls().includes(`pane run w1:p7 '${bin}' 'run' '--' '/issue-resolver 11'`), herdrCalls().join("\n"));
+  assert.deepEqual(opened, []);
+});
+
+test("with more profiles, a opens a menu of every one, the default first and the action's own highlighted", (t) => {
+  const dir = claudeHome(t);
+  useProfiles(dir, [CC, CX], { resolve: "cx", review: "cc" });
+  setupGitHub("issues");
+  const lines = screen(() => onInput(Buffer.from("a")));
+  assert.deepEqual(ui.menu?.entries.map((p) => p.id), ["default", "cc", "cx"]);
+  assert.equal(ui.menu.sel, 2);
+  assert.ok(lines.some((l) => /│ {3}Claude Code via mcc run · default +│$/.test(l ?? "")), lines.join("\n"));
+  assert.ok(lines.some((l) => /│ {3}Claude Code +│$/.test(l ?? "")), lines.join("\n"));
+  assert.ok(lines.some((l) => /│ ▸ Codex quick · Codex +│$/.test(l ?? "")), lines.join("\n"));
+  assert.ok(lines.some((l) => l?.includes("┌ Resolve #12 with")), lines.join("\n"));
+  assert.match(lines[FOOTER], /^ ↑↓ choose · ⏎ start · esc cancel/);
+  // ↑ and ↓ (and k and j) move, and stop at either end; a does nothing while it's open.
+  screen(() => onInput(Buffer.from("kkkkk")));
+  assert.equal(ui.menu.sel, 0);
+  screen(() => onInput(Buffer.from("\x1b[B\x1b[Bjj")));
+  assert.equal(ui.menu.sel, 2);
+  screen(() => onInput(Buffer.from("\x1b[Aa")));
+  assert.equal(ui.menu?.sel, 1);
+  assert.deepEqual(calls, []);
+  // A review gets its own profile highlighted.
+  setupGitHub("prs");
+  screen(() => onInput(Buffer.from("a")));
+  assert.equal(ui.menu?.key, "review");
+  assert.equal(ui.menu.sel, 1);
+});
+
+test("the profile chosen in the menu starts, with the action's custom prompt, by key or click", async (t) => {
+  const dir = home(t);
+  usePrompts(dir, { resolve: "Fix #{number} carefully" }, [CC, CX], { resolve: "cc" });
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  // j to Codex, which isn't Resolve's own, then enter.
+  await screenAsync(() => { onInput(Buffer.from("a")); assert.equal(ui.menu.sel, 1); onInput(Buffer.from("j\r")); });
+  assert.equal(ui.menu, null);
+  assert.deepEqual(herdrCalls(), [
+    "agent list",
+    "pane split w1:p1 --direction down --cwd /repo --no-focus",
+    "agent start resolve-12 --kind codex --pane w1:p7 --timeout 55000",
+    "agent prompt w1:p7 Fix #12 carefully --wait --until working --until blocked --until done --timeout 15000",
+  ]);
+  // A click on a profile starts that one, whichever is highlighted.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  const lines = screen(() => onInput(Buffer.from("a")));
+  const y = entryLine(lines, "Codex quick");
+  assert.ok(y > 0 && ui.menu.sel !== 2, lines.join("\n"));
+  await screenAsync(() => click(lines[y].indexOf("│") + 3, y));
+  assert.equal(herdrCalls()[2], "agent start resolve-12 --kind codex --pane w1:p7 --timeout 55000");
+  assert.equal(herdrCalls()[3], "agent prompt w1:p7 Fix #12 carefully --wait --until working --until blocked --until done --timeout 15000");
+  assert.deepEqual(opened, []);
+});
+
+test("esc, q, the wheel and a click elsewhere close the menu and start nothing, and the panel stays", (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  const closers = {
+    esc: () => onInput(Buffer.from("\x1b")),
+    q: () => onInput(Buffer.from("q")),
+    wheel: () => onInput(Buffer.from(wheelDown)),
+    "a row": (lines) => onInput(Buffer.from(press(lines.findIndex((l) => l?.includes("Title 0"))))),
+    "the switch": () => onInput(Buffer.from(press(2).replace("<0;5;", "<0;50;"))),
+    "the header's ⚙": (lines) => click(lines[0].indexOf("⚙"), 0),
+  };
+  for (const [what, close] of Object.entries(closers)) {
+    const lines = setupGitHub("issues");
+    fakeHerdr(claudeHere);
+    // From a row's button, so the box is under that row, clear of the switch.
+    const [x, y] = resolveButton(lines, 11);
+    const open = screen(() => click(x, y));
+    assert.ok(ui.menu, what);
+    assert.ok(open[y + 1].includes("┌ Resolve #11 with"), `${what}\n${open.join("\n")}`);
+    const exit = noExit(() => screen(() => close(open)));
+    assert.equal(exit, null, `${what} closed the panel`);
+    assert.equal(ui.menu, null, `${what} left the menu open`);
+    assert.deepEqual(herdrCalls(), [], what);
+    assert.deepEqual(opened, [], `${what} opened a URL`);
+    assert.equal(ui.view, "issues", what);
+    assert.equal(ui.settings, null, `${what} opened the profiles`);
+  }
+});
+
+test("the header's button opens the menu under the header, a row's under that row's button", (t) => {
+  claudeHome(t);
+  let lines = setupGitHub("issues");
+  const bx = buttonAt(lines, "Resolve");
+  lines = screen(() => click(bx + 1, 0));
+  assert.equal(ui.menu?.anchor, "header");
+  assert.match(lines[0], /Resolve #12/);
+  assert.match(lines[1], /^ *┌ Resolve #12 with ─*┐$/);
+  // At the right edge, as near the button as it fits.
+  assert.equal(lines[1].length, 60, lines.join("\n"));
+  assert.ok(lines[1].indexOf("┌") <= bx, lines.join("\n"));
+  // A row's: right under its button, from the button's column.
+  lines = setupGitHub("issues");
+  const [x, y] = resolveButton(lines, 11);
+  lines = screen(() => click(x, y));
+  assert.equal(ui.menu?.anchor, "row");
+  assert.equal(ui.menu.number, 11);
+  assert.match(lines[y], /^▌ +Resolve #11 $/);
+  assert.equal(lines[y + 1].indexOf("┌ Resolve #11 with"), x - 1, lines.join("\n"));
+  // The last row's button sits low: the menu goes above it.
+  setupGitHub("issues");
+  ui.sel.issues = 9;
+  lines = screen(() => onInput(Buffer.from("a")));
+  const at = lines.findIndex((l) => /Resolve #19 $/.test(l ?? ""));
+  assert.ok(at > LIST.from && lines[at - 1].trimStart().startsWith("└"), lines.join("\n"));
+  assert.ok(lines.slice(LIST.from, at).some((l) => l?.includes("┌ Resolve #19 with")), lines.join("\n"));
+});
+
+test("a profile deleted while the menu is open starts nothing and says so", (t) => {
+  const dir = claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  screen(() => onInput(Buffer.from("a")));
+  assert.equal(ui.menu.entries[ui.menu.sel].id, "cc");
+  useProfiles(dir, [], {});
+  const lines = screen(() => onInput(Buffer.from("\r")));
+  assert.equal(ui.menu, null);
+  assert.equal(ui.acting, null);
+  assert.deepEqual(herdrCalls(), []);
+  assert.equal(ui.notice?.tone, "error");
+  assert.ok(text(lines).includes("The profile Claude Code isn't there any more, so nothing started"), lines.join("\n"));
+});
+
+test("a row gone in a refresh while its menu is open starts nothing and says so", (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  // The refresh draws: the menu closes, with why.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  screen(() => onInput(Buffer.from("a")));
+  assert.ok(ui.menu);
+  ui.issues = ui.issues.filter((x) => x.number !== 12);
+  let lines = screen(draw);
+  assert.equal(ui.menu, null);
+  assert.ok(text(lines).includes("The issue #12 isn't in the list any more, so nothing started."), lines.join("\n"));
+  // Enter then is the rows' again: it opens the selected row, and starts nothing.
+  screen(() => onInput(Buffer.from("\r")));
+  assert.deepEqual(herdrCalls(), []);
+  // Gone with no draw between: enter starts nothing.
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from("a")));
+  ui.issues = ui.issues.filter((x) => x.number !== 12);
+  lines = screen(() => onInput(Buffer.from("\r")));
+  assert.equal(ui.menu, null);
+  assert.deepEqual(herdrCalls(), []);
+  assert.ok(text(lines).includes("The issue #12 isn't in the list any more"), lines.join("\n"));
+});
+
+test("while a launch is under way, a and the buttons open no menu", (t) => {
+  claudeHome(t);
+  const lines = setupGitHub("issues");
+  ui.acting = new Promise(() => {});
+  try {
+    const [x, y] = resolveButton(lines, 11);
+    for (const press of [() => onInput(Buffer.from("a")), () => click(buttonAt(lines, "Resolve") + 1, 0), () => click(x, y)]) {
+      screen(press);
+      assert.equal(ui.menu, null);
+    }
+    assert.deepEqual(calls, []);
+  } finally { ui.acting = null; }
+});
+
+test("at 28, 30, 40 and 60 cells the menu fits, with a 40-character name, and its profiles take a click", async (t) => {
+  const dir = home(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  useProfiles(dir, [{ id: "long", name: LONG_NAME, harness: "pi" }], {});
+  for (const cols of [28, 30, 40, 60]) for (const anchor of ["row", "header"]) {
+    let lines = setupGitHub("issues");
+    fakeHerdr(claudeHere);
+    lines = screenAt(cols, 24, draw);
+    lines = screenAt(cols, 24, () => (anchor === "row" ? onInput(Buffer.from("a")) : click(lines[0].indexOf("Resolve") + 1, 0)));
+    const where = `${cols} ${anchor}:\n${lines.join("\n")}`;
+    assert.equal(ui.menu?.anchor, anchor, where);
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${where}\n${l}`);
+    assert.match(lines[FOOTER], /^ ↑↓ choose/, where);
+    // The name, cut to the box when it must, ending in "…".
+    const y = lines.findIndex((l) => l?.includes("│   Abcdefghij"));
+    assert.ok(y > 0, where);
+    assert.ok(lines[y].includes(LONG_NAME) || lines[y].includes("…"), where);
+    const after = await screenAsync(() => click(lines[y].indexOf("│") + 2, y), cols);
+    assert.equal(herdrCalls()[2], "agent start resolve-12 --kind pi --pane w1:p7 --timeout 55000", where);
+    for (const l of after) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+  }
+});
