@@ -605,7 +605,7 @@ test("Resolve with a Claude Code profile starts claude in a new pane, prompted w
   ]);
   assert.ok(calls.every((c) => c[0] === "herdr"));
   assert.deepEqual(opened, [], "the button opened the browser");
-  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-resolver 12")), after.join("\n"));
+  assert.ok(after.some((l) => l?.includes("Started Claude Code in a new pane: /issue-resolver 12")), after.join("\n"));
 });
 
 test("a on a pull request starts a review with the profile's harness, below the tab's agent, with a free name", async (t) => {
@@ -624,7 +624,7 @@ test("a on a pull request starts a review with the profile's harness, below the 
     "agent start review-12-2 --kind codex --pane w1:p7 --timeout 55000",
     "agent prompt w1:p7 Use the issue-pr-review skill on pull request #12. --wait --until working --until blocked --until done --timeout 15000",
   ]);
-  assert.ok(after.some((l) => l?.includes("Started codex")));
+  assert.ok(after.some((l) => l?.includes("Started Codex in a new pane")));
 });
 
 test("without the skill, nothing starts and the notice points to the install page", async (t) => {
@@ -650,7 +650,7 @@ test("with no agent in the tab, the new pane opens below the pane the panel foll
     "pane split w1:p1 --direction down --cwd /repo --no-focus",
     "agent start review-12 --kind claude --pane w1:p7 --timeout 55000",
   ]);
-  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-pr-review 12")), after.join("\n"));
+  assert.ok(after.some((l) => l?.includes("Started Claude Code in a new pane: /issue-pr-review 12")), after.join("\n"));
 });
 
 test("with no agent in the tab and no pane followed, nothing starts and the notice says so", async (t) => {
@@ -682,7 +682,7 @@ test("a failed start shows herdr's reason and closes the new pane", async (t) =>
   fakeHerdr(claudeHere, { "agent start": herdrFail("agent_exited", "claude exited before it was ready") });
   const after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.deepEqual(herdrCalls().slice(2), ["agent start resolve-12 --kind claude --pane w1:p7 --timeout 55000", "pane close w1:p7"]);
-  assert.ok(after.some((l) => l?.includes("claude didn't start: claude exited before it was ready")), after.join("\n"));
+  assert.ok(after.map((l) => l?.trim()).join(" ").includes("Claude Code didn't start: claude exited before it was ready"), after.join("\n"));
 });
 
 test("an agent that asks something on start keeps its pane, waits for your answer, then gets the prompt", async (t) => {
@@ -700,8 +700,8 @@ test("an agent that asks something on start keeps its pane, waits for your answe
     "agent prompt w1:p7 /issue-resolver 12 --wait --until working --until blocked --until done --timeout 15000",
   ]);
   assert.equal(during?.tone, "info");
-  assert.equal(during?.text, "claude is asking you something in the new pane. Answer it, and the panel sends: /issue-resolver 12");
-  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-resolver 12")), after.join("\n"));
+  assert.equal(during?.text, "Claude Code is asking you something in the new pane. Answer it, and the panel sends: /issue-resolver 12");
+  assert.ok(after.some((l) => l?.includes("Started Claude Code in a new pane: /issue-resolver 12")), after.join("\n"));
   // No answer in time: the pane stays, and the notice says what to send.
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent start": herdrFail("agent_not_ready", "trust dialog"), "agent wait": herdrFail("timeout", "timed out") });
@@ -719,7 +719,7 @@ test("a prompt left in the input box gets one more Enter; a failed prompt says w
     "agent send-keys w1:p7 enter",
     "agent wait w1:p7 --until working --until blocked --until done --timeout 10000",
   ]);
-  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-resolver 12")), after.join("\n"));
+  assert.ok(after.some((l) => l?.includes("Started Claude Code in a new pane: /issue-resolver 12")), after.join("\n"));
   // Still idle after the Enter.
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent prompt": herdrFail("agent_prompt_stalled", "stalled"), "agent wait": herdrFail("timeout", "timed out") });
@@ -954,7 +954,7 @@ test("each issue row has its own Resolve button, which resolves that issue", asy
   assert.deepEqual(opened, []);
   assert.equal(ui.sel.issues, 1);
   assert.equal(herdrCalls()[2], "agent start resolve-11 --kind claude --pane w1:p7 --timeout 55000");
-  assert.ok(text(after).includes("Started claude in a new pane: /issue-resolver 11"), after.join("\n"));
+  assert.ok(text(after).includes("Started Claude Code in a new pane: /issue-resolver 11"), after.join("\n"));
   // Pull requests get Review buttons; GitLab rows get none.
   assert.ok(setupGitHub("prs").some((l) => l?.trim() === "Review #10"));
   setup("issues");
@@ -1243,7 +1243,8 @@ test("the form names the id's rule, fits a narrow pane, and shows each field's r
   setupGitHub("issues");
   screen(() => onInput(Buffer.from("s")));
   let lines = screen(() => onInput(Buffer.from("n")));
-  assert.ok(lines.some((l) => l?.includes("Id (a-z 0-9 -)")), lines.join("\n"));
+  // The id's rule is the empty field's hint, beside a short label.
+  assert.ok(lines.some((l) => /^ {2}Id {7}a-z 0-9 -/.test(l ?? "")), lines.join("\n"));
   // Two bad fields: both reasons show, each under its own field.
   lines = screen(() => onInput(Buffer.from("\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
   assert.equal(ui.settings.mode, "edit");
@@ -1256,14 +1257,71 @@ test("the form names the id's rule, fits a narrow pane, and shows each field's r
   // Typing in a field takes its reason away.
   lines = screen(() => onInput(Buffer.from("\x7f")));
   assert.ok(!text(lines).includes("Model: letters"), lines.join("\n"));
-  // A narrow pane cuts the choice, not the line.
+  // A narrow pane puts a wide choice under its label, and cuts its name, not its ›.
   lines = screenAt(28, 24, () => onInput(Buffer.from("\x1b[B\x1b[B\x1b[B\x1b[B")));
   for (const l of lines) assert.ok(width(l ?? "") <= 28, l);
-  assert.ok(lines.some((l) => l?.includes("Harness") && l.includes("‹ ")), lines.join("\n"));
+  const harness = lines.findIndex((l) => l?.includes("Harness"));
+  assert.ok(!lines[harness].includes("‹"), lines.join("\n"));
+  assert.match(lines[harness + 1], /^[▌ ] {2}‹ Claude Code via.*… ›$/, lines.join("\n"));
   // An empty form too, its placeholders included, and the key hints whole.
   lines = screenAt(28, 24, () => onInput(Buffer.from("\x1bn")));
   for (const l of lines) assert.ok(width(l ?? "") <= 28, l);
   assert.ok(text(lines.slice(-3)).endsWith("esc back"), lines.join("\n"));
+});
+
+test("at 30 and 40 cells the form shows each reason whole, and each choice with its ›", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  const rules = {
+    id: "Id: 1-32 lowercase letters, digits or -, not starting with -",
+    model: "Model: letters, digits and . _ : / @ + - only, starting with a letter or digit",
+  };
+  for (const cols of [30, 40]) {
+    screenAt(cols, 24, () => { ui.settings = null; onInput(Buffer.from("sn")); });
+    let lines = screenAt(cols, 24, () => onInput(Buffer.from("\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
+    assert.equal(ui.settings.mode, "edit");
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    const all = text(lines).replace(/\s+/g, " ");
+    for (const rule of Object.values(rules)) assert.ok(all.includes(rule), `${cols}:\n${lines.join("\n")}`);
+    // Each reason under its own field, never cut.
+    const at = (label) => lines.findIndex((l) => l?.trimStart().replace(/^▌ /, "").startsWith(label));
+    assert.ok(text(lines.slice(at("Id") + 1, at("Harness"))).replace(/\s+/g, " ").includes(rules.id), lines.join("\n"));
+    assert.ok(text(lines.slice(at("Model") + 1, at("Thinking"))).replace(/\s+/g, " ").includes(rules.model), lines.join("\n"));
+    assert.ok(!lines.some((l) => /^ {4}\S/.test(l ?? "") && l.includes("…")), lines.join("\n"));
+    // The harness and thinking choices whole, ending in ›.
+    assert.ok(lines.some((l) => l?.trimEnd().endsWith("‹ Claude Code via mcc run ›")), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(lines.some((l) => l?.includes("Thinking") && l.trimEnd().endsWith("‹ harness default ›")), `${cols}:\n${lines.join("\n")}`);
+    screenAt(cols, 24, () => onInput(Buffer.from("\x1b\x1b")));
+  }
+});
+
+test("at 30 cells a profile keeps its name, its Resolve and Review tags move down, and notices wrap", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  const cols = 30;
+  let lines = screenAt(cols, 24, () => { ui.settings = null; onInput(Buffer.from("sj")); });
+  for (const l of lines) assert.ok(width(l ?? "") <= cols, l);
+  // cc, used by both: its whole name and id on top, the tags on the line under it.
+  const y = lines.findIndex((l) => l?.includes("Claude Code") && l.trimEnd().endsWith("cc"));
+  assert.ok(y > 0, lines.join("\n"));
+  assert.match(lines[y + 1], /^▌ {3}Resolve · Review · Claude/, lines.join("\n"));
+  // The confirm question and its keys, whole.
+  lines = screenAt(cols, 24, () => onInput(Buffer.from("d")));
+  for (const l of lines) assert.ok(width(l ?? "") <= cols, l);
+  assert.ok(text(lines).includes("Delete Claude Code? y deletes it, any other key keeps it"), lines.join("\n"));
+  assert.deepEqual(lines.slice(-2).map((l) => l.trim()), ["y delete", "any other key keeps it"]);
+  assert.match(screenAt(60, 24, draw).at(-1), /^ y delete · any other key keeps it/);
+  assert.ok(!text(lines.slice(-2)).includes("n new"), lines.join("\n"));
+  // What a change did, whole.
+  lines = screenAt(cols, 24, () => onInput(Buffer.from("nkV")));
+  for (const l of lines) assert.ok(width(l ?? "") <= cols, l);
+  assert.ok(text(lines).includes("Review now starts Claude Code via mcc run"), lines.join("\n"));
+  // The default, used by both now: at 40 cells its name keeps 12 cells.
+  lines = screenAt(40, 24, () => onInput(Buffer.from("R")));
+  const d = lines.findIndex((l) => l?.includes("default"));
+  assert.match(lines[d], /^▌ Claude Code via mcc run +default$/, lines.join("\n"));
+  assert.match(lines[d + 1], /^▌ {3}Resolve · Review · Claude Code via/, lines.join("\n"));
+  screenAt(cols, 24, () => onInput(Buffer.from("\x1b")));
 });
 
 test("launch notices name the harness, and lead with what to do", async (t) => {
@@ -1271,8 +1329,10 @@ test("launch notices name the harness, and lead with what to do", async (t) => {
   setupGitHub("issues");
   const seen = [];
   fakeHerdr(claudeHere, { "pane split": () => { seen.push(ui.notice?.text); return ok({ pane: { pane_id: "w1:p7" } }); } });
-  await screenAsync(() => onInput(Buffer.from("a")));
+  const started = await screenAsync(() => onInput(Buffer.from("a")));
   assert.deepEqual(seen, ["Starting Claude Code to resolve issue #12…"]);
+  assert.ok(text(started).includes("Started Claude Code in a new pane: /issue-resolver 12"), started.join("\n"));
+  assert.ok(!text(started).includes("Started claude"), started.join("\n"));
   // mcc missing: the remedy first, the whole of it on screen.
   const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   assert.ok(dir);

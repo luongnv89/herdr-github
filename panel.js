@@ -509,17 +509,17 @@ async function launch(action, root, profile) {
     const e = herdrError(start, "herdr");
     if (e.code !== "agent_not_ready") {
       await herdr(["pane", "close", pane], 5000);
-      return say("error", `${kind} didn't start: ${e.message}`);
+      return say("error", `${shown} didn't start: ${e.message}`);
     }
     // Not ready means the agent is asking you something, such as whether you
     // trust the folder: keep the pane, wait for your answer, then send the prompt.
-    say("info", `${kind} is asking you something in the new pane. Answer it, and the panel sends: ${text}`);
+    say("info", `${shown} is asking you something in the new pane. Answer it, and the panel sends: ${text}`);
     const ready = await herdr(["agent", "wait", pane, "--until", "idle", "--timeout", String(ANSWER_MS)], ANSWER_MS + 5000);
-    if (ready.code !== 0) return say("error", `${kind} isn't ready in the new pane. When it is, send it: ${text}`);
+    if (ready.code !== 0) return say("error", `${shown} isn't ready in the new pane. When it is, send it: ${text}`);
   }
   const sent = await submit(herdr, pane, text);
-  if (sent) return say("error", `${kind} started, but ${sent} Send it yourself in the new pane: ${text}`);
-  say("ok", `Started ${kind} in a new pane: ${text}${note}`);
+  if (sent) return say("error", `${shown} started, but ${sent} Send it yourself in the new pane: ${text}`);
+  say("ok", `Started ${shown} in a new pane: ${text}${note}`);
 }
 
 // `mcc run -- … <prompt>` in the new pane: herdr types it into the pane's shell as
@@ -738,13 +738,15 @@ function paint(out, rows) {
 // `word` is how the profiles module names the field in its reasons ("Model: …").
 const FIELDS = [
   { key: "name", label: "Name", word: "Name", max: 40 },
-  { key: "id", label: "Id (a-z 0-9 -)", word: "Id", max: 32 },
+  { key: "id", label: "Id", word: "Id", max: 32, hint: "a-z 0-9 -" },
   { key: "harness", label: "Harness", word: "Harness" },
-  { key: "model", label: "Model", word: "Model", max: 128 },
+  { key: "model", label: "Model", word: "Model", max: 128, hint: "harness default" },
   { key: "thinking", label: "Thinking", word: "Thinking" },
 ];
 // The form's label column: "▌ ", the widest label, a space.
 const LABEL_W = Math.max(...FIELDS.map((f) => f.label.length)), VALUE_AT = LABEL_W + 3;
+// A choice in `max` cells: its name is cut before the closing ›.
+const choiceText = (name, max) => width(`‹ ${name} ›`) <= max ? `‹ ${name} ›` : `‹ ${fit(name, max - 4)} ›`;
 const choices = (form, key) => key === "harness" ? P.HARNESSES : ["", ...P.THINKING[form.harness]];
 // What OpenCode does with a model or thinking level, in the profiles module's words.
 const OPENCODE_NOTE = P.buildLaunch({ id: "x", name: "x", harness: "opencode", model: "m" }, "x").warnings[0];
@@ -956,16 +958,16 @@ function settingsLines(cols, rows) {
   out.push(dim("─".repeat(cols)));
 
   const status = [];
-  if (st.mode === "confirm") status.push(yellow(fit(` Delete ${p.name}? y deletes it, any other key keeps it`, cols)));
+  if (st.mode === "confirm") for (const l of wrap(`Delete ${p.name}? y deletes it, any other key keeps it`, cols - 2, 3)) status.push(" " + yellow(l));
   for (const w of st.warnings) for (const l of wrap(w, cols - 2, 2)) status.push(" " + yellow(l));
   if (st.mode === "edit" && st.form.harness === "opencode" && (st.form.model || st.form.thinking)) {
     for (const l of wrap(OPENCODE_NOTE, cols - 2, 2)) status.push(" " + yellow(l));
   }
   if (st.error) for (const l of wrap(st.error, cols - 2, 4)) status.push(" " + red(l));
-  if (st.info) status.push(" " + green(fit(st.info, cols - 2)));
-  const footer = hintLines(st.mode === "edit"
-    ? ["↑↓ field", "←→ choose", "type to edit", "⏎ save", "esc back"]
-    : ["↑↓ select", "n new", "e edit", "d delete", "R/V assign", "esc back"], cols);
+  if (st.info) for (const l of wrap(st.info, cols - 2, 2)) status.push(" " + green(l));
+  const footer = hintLines(st.mode === "edit" ? ["↑↓ field", "←→ choose", "type to edit", "⏎ save", "esc back"]
+    : st.mode === "confirm" ? ["y delete", "any other key keeps it"]
+      : ["↑↓ select", "n new", "e edit", "d delete", "R/V assign", "esc back"], cols);
   const height = Math.max(1, rows - out.length - status.length - footer.length);
 
   // Each line's click: the whole line's, and its buttons' first.
@@ -978,15 +980,25 @@ function settingsLines(cols, rows) {
     const valueW = cols - VALUE_AT;
     FIELDS.forEach((f, i) => {
       const on = i === st.field, value = st.form[f.key], pick = () => { Object.assign(st, { field: i, error: null }); draw(); };
-      let shown;
-      if (f.max) shown = (value ? fit(value, valueW - 1) : on ? "" : dim(fit(f.key === "model" ? "harness default" : "—", valueW))) + (on ? invert(" ") : "");
-      else shown = fit(`‹ ${f.key === "harness" ? P.HARNESS_NAMES[value] : value || "harness default"} ›`, valueW);
+      const bar = on ? accent("▌") : " ";
+      // An empty field shows its hint, the id's rule even while you type in it.
+      let shown, below = null;
+      if (f.max && value) shown = fit(value, valueW - 1) + (on ? invert(" ") : "");
+      else if (f.max && on) shown = invert(" ") + (f.key === "id" ? dim(fit(f.hint, valueW - 1)) : "");
+      else if (f.max) shown = dim(fit(f.hint ?? "—", valueW));
+      else {
+        // A choice too wide for the value column goes on a line of its own.
+        const name = f.key === "harness" ? P.HARNESS_NAMES[value] : value || "harness default";
+        if (width(`‹ ${name} ›`) <= valueW) shown = `‹ ${name} ›`;
+        else { shown = ""; below = `${bar}  ${choiceText(name, cols - 3)}`; }
+      }
       if (on) selStart = body.length;
-      body.push(`${on ? accent("▌") : " "} ${(on ? bold : muted)(f.label.padEnd(LABEL_W))} ${shown}`);
+      body.push(`${bar} ${(on ? bold : muted)(f.label.padEnd(LABEL_W))} ${shown}`);
       owner.push(pick);
-      // The field's own reason, under it.
+      if (below) { body.push(below); owner.push(pick); }
+      // The field's own reason, whole, under it: the form scrolls.
       const why = st.fieldErrors[f.key];
-      if (why) for (const l of wrap(why, valueW, 3)) { body.push(" ".repeat(VALUE_AT) + red(l)); owner.push(pick); }
+      if (why) for (const l of wrap(why, cols - 4, Infinity)) { body.push("    " + red(l)); owner.push(pick); }
       if (on) selEnd = body.length;
     });
     body.push(""); owner.push(null);
@@ -996,11 +1008,16 @@ function settingsLines(cols, rows) {
     entries().forEach((q, i) => {
       if (i) { body.push(""); owner.push(null); }
       const on = i === st.sel, bar = on ? accent("▌") : " ", select = () => { Object.assign(st, { sel: i, error: null, mode: "list" }); draw(); };
-      const tag = [q.id === P.DEFAULT_PROFILE.id ? "default" : q.id, ...using(q.id).map((a) => ACTION_LABELS[a])].join(" · ");
+      // The name keeps at least 12 cells: the Resolve and Review tags move down to
+      // the second line when they would squeeze it, and a long id is cut.
+      const idTag = q.id === P.DEFAULT_PROFILE.id ? "default" : q.id, tags = using(q.id).map((a) => ACTION_LABELS[a]).join(" · ");
+      const keep = Math.min(12, width(q.name)), together = [idTag, tags].filter(Boolean).join(" · ");
+      const down = tags && cols - 5 - width(together) < keep;
+      const tag = fit(down ? idTag : together, Math.max(1, cols - 5 - keep)), below = down ? fit(tags, cols - 4) : "";
       const name = fit(q.name, Math.max(4, cols - width(tag) - 5));
       if (on) selStart = body.length;
       body.push(`${bar} ${on ? bold(name) : name}${" ".repeat(Math.max(1, cols - 3 - width(name) - width(tag)))}${accent(tag)}`);
-      body.push(`${bar}   ${dim(fit(describe(q), cols - 4))}`);
+      body.push(`${bar}   ${below ? accent(below) + dim(fit(` · ${describe(q)}`, cols - 4 - width(below))) : dim(fit(describe(q), cols - 4))}`);
       owner.push(select, select);
       // The selected profile's buttons, on a line of their own.
       if (on) {
