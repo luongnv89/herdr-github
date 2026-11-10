@@ -4,6 +4,7 @@
 
 ### Added
 
+- Custom prompts for Resolve and Review (#20). Each action can send a prompt you write, with `{number}` where the issue's or pull request's number goes, instead of the IDD skill's `/issue-resolver <N>` or `/issue-pr-review <N>`; left empty, it sends the skill's prompt as before. The prompt is sent as written to every harness, and a custom prompt starts the agent even when the IDD skills aren't installed. Set it under the profiles, in the terminal panel's profiles view (the **Resolve prompt** and **Review prompt** rows) and in the app's (the two prompt boxes). A prompt must contain `{number}` and is refused with a backslash, a line break, a control or invisible character, a leading `-`, `!` or `#`, or more than 500 characters with the number filled in. Nothing else from the row goes into it.
 - A **Resolve #N** button under every issue and a **Review #N** button under every pull request, on GitHub (#18). Each acts on its own row; the header button and `a` still act on the selected one. There are no buttons on GitLab, since both skills work through `gh`.
 - Agent profiles (#18). A profile has a name, an id, a harness (Claude Code via `mcc run`, Claude Code, Codex, Pi or OpenCode) and an optional model and thinking level; an empty one leaves the harness's own default. Resolve and Review each get their own profile. Models with shell characters or brackets (such as `opus[1m]`) are refused. OpenCode has no model or thinking flag when it starts, so the panel says it ignores them.
 - A profiles view in the terminal panel (`s`, or `⚙` in the header) and in the app (the gear, or `s`) to add, edit, delete and assign profiles. Both read and write `~/.config/herdr/plugins/config/herdr-github/profiles.json` on the machine where they run, and never overwrite a change the other made meanwhile, nor a file they can't read or that holds a profile they can't use. Both views work from the keyboard and the mouse.
@@ -12,6 +13,7 @@
 
 ### Changed
 
+- The profiles file holding a custom prompt is version 2, with a `prompts` entry; without one it stays version 1. Older versions of the panel show a version 2 file read only, so they never overwrite your prompts (#20).
 - **Behavior change:** with no profile assigned, Resolve and Review start Claude Code through `mcc run`, instead of the same kind of agent as the one in your tab. Assign a profile to keep using another agent. The terminal panel no longer needs an agent in the tab: with none, the new pane opens below the pane the panel follows. In the app, the new tab opens in the space you're in.
 
 ### Fixed

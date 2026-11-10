@@ -88,6 +88,21 @@ test("tabStart: mcc runs its own command line, prompt last, with no first messag
     { argv: ["mcc", "run", "--", "/issue-pr-review 3"], task: null });
 });
 
+test("tabStart: a custom prompt, its {number}s filled in, is the first message, or mcc's last word", () => {
+  const template = "Fix issue #{number} on a branch, then open a PR that closes #{number}; don't merge it";
+  const text = P.expandPrompt(template, 7);
+  assert.equal(text, "Fix issue #7 on a branch, then open a PR that closes #7; don't merge it");
+  // An agent: the same start as with the skill, the prompt as the tab's task.
+  const codex = P.buildLaunch({ id: "c", name: "C", harness: "codex", model: "gpt-5" }, text);
+  assert.deepEqual(F.tabStart(codex, ["codex"], text), { argv: ["codex", "-m", "gpt-5"], task: text });
+  // mcc: one argv word, the last, as typed; no first message to send.
+  const mcc = P.buildLaunch(P.DEFAULT_PROFILE, P.expandPrompt("Review #{number}: $(id) `id` it's é", 3));
+  assert.deepEqual(F.tabStart(mcc, undefined, "x"), { argv: ["mcc", "run", "--", "Review #3: $(id) `id` it's é"], task: null });
+  // The number is an integer or nothing is built; a prompt that can't be sent isn't started.
+  assert.throws(() => P.expandPrompt(template, "7; id"), /not a number/);
+  assert.throws(() => P.buildLaunch(P.DEFAULT_PROFILE, P.expandPrompt("-{number}", 7)), /Invalid prompt/);
+});
+
 test("tabStart: an agent herdr has no run for is refused", () => {
   const plan = P.buildLaunch({ id: "o", name: "O", harness: "opencode" }, "x");
   for (const run of [undefined, null, [], [""], [3], "opencode"]) {
