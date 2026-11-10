@@ -23,6 +23,10 @@ const ACTION_LABELS = { resolve: "Resolve", review: "Review" };
 const OPENCODE_NOTE = buildLaunch({ id: "x", name: "x", harness: "opencode", model: "m" }, "x").warnings[0];
 const describe = (p) => [HARNESS_NAMES[p.harness], p.model, p.thinking && `thinking ${p.thinking}`].filter(Boolean).join(" · ");
 const parent = (file) => file.slice(0, file.lastIndexOf("/"));
+// The profile form's fields, in the order ↑ and ↓ move through them; the others are
+// choices, which ← and → step through.
+const FORM_FIELDS = ["name", "id", "harness", "model", "thinking"];
+const TEXT_FIELDS = ["name", "id", "model"];
 
 // Where the panel looks: the focused terminal's folder and machine. While the
 // panel itself (or another mod pane) has the keyboard, it keeps the last one.
@@ -49,7 +53,7 @@ function clamp(text, lines, width, size) {
   return { text: out, lines: Math.max(1, Math.min(lines, Math.ceil(out.length / per))) };
 }
 
-const TITLE_LH = 18, BODY_LH = 16, META_H = 16, PAD = 7, GAP = 4, ACT_H = 22;
+const TITLE_LH = 18, BODY_LH = 16, META_H = 16, PAD = 7, GAP = 4, ACT_H = 24;
 
 export default class GitHub extends View {
   init(_props, cx) {
@@ -71,7 +75,11 @@ export default class GitHub extends View {
       const input = InputState.new({ placeholder });
       input.on("change", (_e, cx) => { if (this.settings?.form) { this.settings.form[key] = input.value(); this.settings.error = null; } cx.notify(); });
       input.on("submit", (_e, cx) => this.saveForm(cx));
-      input.on("focus", (_e, cx) => { this.inputFocus = key; cx.notify(); });
+      input.on("focus", (_e, cx) => {
+        this.inputFocus = key;
+        if (this.settings?.form) this.settings.field = FORM_FIELDS.indexOf(key);
+        cx.notify();
+      });
       input.on("blur", (_e, cx) => { if (this.inputFocus === key) this.inputFocus = null; cx.notify(); });
       this.inputs[key] = input;
     }
@@ -220,7 +228,7 @@ export default class GitHub extends View {
       catch (e) {
         const why = cantRun("mcc", e);
         if (why !== "mcc isn't installed") return this.say("error", why);
-        return this.say("error", `mcc isn't on your PATH${on ? ` on ${on}` : ""}, so ${name} can't start. Install mcc, or click ⚙ and assign another profile to ${action.label}.`);
+        return this.say("error", `mcc isn't on your PATH${on ? ` on ${on}` : ""}: click ⚙ to pick another profile for ${action.label}, or install mcc.`);
       }
       io.claudeDir = env.code === 0 ? parseMccEnv(env.stdout, base) : null;
       if (!io.claudeDir) {
@@ -229,7 +237,7 @@ export default class GitHub extends View {
       }
     }
     const skill = await findSkill(harness, action.skill, root, io);
-    if (!skill) return this.say("error", `The ${action.skill} skill isn't installed for ${harness}. Install the skills from:`, IDD);
+    if (!skill) return this.say("error", `The ${action.skill} skill isn't installed for ${name}. Install the skills from:`, IDD);
     const text = promptFor(harness, skill, action);
     const plan = buildLaunch(profile, text);
     const note = plan.warnings.length ? ` (${plan.warnings.join("; ")})` : "";
@@ -238,7 +246,7 @@ export default class GitHub extends View {
     let known = null;
     if (plan.mode === "agent") {
       known = (await knownAgents({ on }).catch(() => [])).find((k) => k.key === plan.kind) ?? null;
-      if (known?.installed === false) return this.say("error", `${known.name ?? name} isn't installed${on ? ` on ${on}` : ""}. Install it, or click ⚙ and assign another profile to ${action.label}.`);
+      if (known?.installed === false) return this.say("error", `${known.name ?? name} isn't installed${on ? ` on ${on}` : ""}: click ⚙ to pick another profile for ${action.label}, or install it.`);
     }
     const start = tabStart(plan, known?.run, text);
     this.say("info", `Starting ${name} to ${action.key} ${what}…`); cx.notify();
@@ -267,7 +275,7 @@ export default class GitHub extends View {
   // while the file still holds what was read.
 
   openSettings(cx) {
-    const st = { mode: "list", confirm: null, form: null, error: null, info: null, saving: false, loading: true, file: null, text: null, store: emptyStore(), warnings: [], readOnly: true };
+    const st = { mode: "list", sel: 0, field: 0, confirm: null, form: null, error: null, info: null, saving: false, loading: true, file: null, text: null, store: emptyStore(), warnings: [], readOnly: true };
     this.settings = st;
     cx.spawn(async (cx) => {
       Object.assign(st, await this.readStore(), { loading: false });
@@ -327,7 +335,7 @@ export default class GitHub extends View {
     const values = { ...st.form };
     for (const key of ["name", "id", "model"]) this.inputs[key].set_value(values[key]);
     Object.assign(st.form, { name: values.name, id: values.id, model: values.model });
-    Object.assign(st, { mode: "edit", confirm: null, error: null, info: null });
+    Object.assign(st, { mode: "edit", field: 0, confirm: null, error: null, info: null });
     // The field exists only once the form is drawn: focus it again after that, as
     // Herdr's own mods do, unless you've clicked into a field meanwhile.
     this.inputs.name.focus();
@@ -352,19 +360,97 @@ export default class GitHub extends View {
     const st = this.settings, f = st?.form;
     if (!f) return;
     f[key] = value;
+    st.field = FORM_FIELDS.indexOf(key);
     if (!["", ...THINKING[f.harness]].includes(f.thinking)) f.thinking = "";
     st.error = null;
     cx.notify();
   }
 
+  // The profiles in the list, the default first, with the selection kept inside
+  // it: a delete, or the file read again, can leave it past the end.
+  entries() {
+    const st = this.settings, list = [DEFAULT_PROFILE, ...st.store.profiles];
+    st.sel = Math.max(0, Math.min(st.sel ?? 0, list.length - 1));
+    return list;
+  }
+
+  deleteProfile(p, cx) {
+    const st = this.settings;
+    this.change((s) => removeProfile(s, p.id), `Deleted ${p.name}`, cx, () => { st.confirm = null; if (this.settings === st) this.entries(); });
+  }
+
+  assignTo(action, p, cx) {
+    const st = this.settings;
+    if ((st.store.assign[action] ?? DEFAULT_PROFILE.id) === p.id) { Object.assign(st, { error: null, info: `${ACTION_LABELS[action]} already starts ${p.name}` }); return cx.notify(); }
+    this.change((s) => assignProfile(s, action, p.id), `${ACTION_LABELS[action]} now starts ${p.name}`, cx);
+  }
+
+  // ↑ and ↓ in the form: the next field, its text box focused, or a choice.
+  moveField(by, cx) {
+    const st = this.settings;
+    st.field = (st.field + by + FORM_FIELDS.length) % FORM_FIELDS.length;
+    const key = FORM_FIELDS[st.field];
+    if (TEXT_FIELDS.includes(key)) this.inputs[key].focus(); else this.handle.focus();
+    cx.notify();
+  }
+
+  // ← and → (or space) on a choice: the previous or next value it can take.
+  stepChoice(by, cx) {
+    const f = this.settings.form, key = FORM_FIELDS[this.settings.field];
+    if (TEXT_FIELDS.includes(key)) return false;
+    const values = key === "harness" ? HARNESSES : ["", ...THINKING[f.harness]];
+    if (values.length < 2) return true;
+    const at = Math.max(0, values.indexOf(f[key]));
+    this.pickChoice(key, values[(at + by + values.length) % values.length], cx);
+    return true;
+  }
+
+  // Keys in the profiles view, as in the terminal panel; true when one was used.
+  // What you type into a text box stays there: q or j in a model name doesn't
+  // close or move anything. Esc goes back, from the form (or a delete question)
+  // to the list, from the list to the rows.
+  settingsKey(k, m, cx) {
+    const st = this.settings;
+    if (k === "escape") { this.settingsBack(cx); return true; }
+    if (st.mode === "edit") {
+      if (k === "up" || k === "down") { this.moveField(k === "up" ? -1 : 1, cx); return true; }
+      if (this.inputFocus !== null) return false;
+      if (k === "left" || k === "right" || k === "space") return this.stepChoice(k === "left" ? -1 : 1, cx);
+      if (k === "enter") { this.saveForm(cx); return true; }
+      return false;
+    }
+    if (st.loading) return false;
+    const list = this.entries(), p = list[st.sel], fixed = p.id === DEFAULT_PROFILE.id;
+    // A delete question: y deletes, any other key keeps the profile.
+    if (st.confirm) {
+      const q = list.find((x) => x.id === st.confirm);
+      if (k === "y" && q) this.deleteProfile(q, cx);
+      else { st.confirm = null; cx.notify(); }
+      return true;
+    }
+    const upper = (c) => k === c || (k === c.toLowerCase() && m.shift);
+    if (k === "up" || k === "k") st.sel = Math.max(0, st.sel - 1);
+    else if (k === "down" || k === "j") st.sel = Math.min(list.length - 1, st.sel + 1);
+    else if (k === "n" && !m.shift) this.editProfile(null, cx);
+    else if ((k === "e" && !m.shift) || k === "enter") {
+      if (fixed) Object.assign(st, { error: "The default profile can't be changed: add your own with n", info: null });
+      else this.editProfile(p, cx);
+    } else if (k === "d" && !m.shift) {
+      if (fixed) Object.assign(st, { error: "The default profile can't be deleted", info: null });
+      else Object.assign(st, { confirm: p.id, error: null, info: null });
+    } else if (upper("R")) this.assignTo("resolve", p, cx);
+    else if (upper("V")) this.assignTo("review", p, cx);
+    else return false;
+    cx.notify();
+    return true;
+  }
+
   onKey(e, cx) {
     const k = e.key, m = e.modifiers ?? {};
     if (m.control || m.alt || m.platform || m.function) return;
-    // The profiles view takes the keys while it's open: what you type goes to its
-    // fields, never to the panel (q or j in a model name doesn't close or move it),
-    // and Esc goes back, from the form to the list, from the list to the rows.
+    // The profiles view takes the keys while it's open, never the rows behind it.
     if (this.settings) {
-      if (k === "escape") { this.settingsBack(cx); cx.stop_propagation(); }
+      if (this.settingsKey(k, m, cx)) cx.stop_propagation();
       return;
     }
     // Any key clears a notice, except the progress of a launch still under way.
@@ -482,12 +568,17 @@ export default class GitHub extends View {
   }
 
   // A row of choices: only the values the profile can take.
+  // The one the keys are on shows it: its label in the accent color, and a frame.
   choices(t, label, key, values, shownAs) {
-    const f = this.settings.form;
+    const f = this.settings.form, on = this.choiceFocused(key);
     return v_flex().gap(4)
-      .child(div().text_size(11.5).text_color(t.dim).child(label))
-      .child(h_flex().flex_wrap().gap(4)
+      .child(div().text_size(11.5).text_color(on ? t.accent : t.dim).child(on ? `${label}  ·  ← → to change` : label))
+      .child(h_flex().flex_wrap().gap(4).p(3).rounded(8).border_1().border_color(on ? t.accent : t.background)
         .children(values.map((v) => this.chip(t, `hg-${key}-${v || "default"}`, shownAs(v), f[key] === v, (_e, cx) => this.pickChoice(key, v, cx)))));
+  }
+
+  choiceFocused(key) {
+    return this.settings?.form && FORM_FIELDS[this.settings.field] === key && this.inputFocus === null && this.handle.is_focused();
   }
 
   profileForm(t) {
@@ -500,7 +591,7 @@ export default class GitHub extends View {
       .child(this.field(t, "model", "Model (optional)"))
       .child(levels.length > 1
         ? this.choices(t, "Thinking (optional)", "thinking", levels, (v) => v || "harness default")
-        : v_flex().gap(4).child(div().text_size(11.5).text_color(t.dim).child("Thinking"))
+        : v_flex().gap(4).child(div().text_size(11.5).text_color(this.choiceFocused("thinking") ? t.accent : t.dim).child("Thinking"))
           .child(div().text_size(12).text_color(t.muted).child(`${HARNESS_NAMES[f.harness]} takes no thinking level`)))
       .when(f.harness === "opencode" && Boolean(f.model.trim() || f.thinking), (el) => el.child(div().text_size(12).text_color(t.blocked).child(OPENCODE_NOTE)))
       .when(Boolean(st.error), (el) => el.child(div().text_size(12).text_color(t.ansi1).child(st.error)))
@@ -509,25 +600,27 @@ export default class GitHub extends View {
         .child(this.chip(t, "hg-form-cancel", "Cancel", false, (_e, cx) => this.settingsBack(cx))));
   }
 
-  profileCard(t, p) {
-    const st = this.settings, fixed = p.id === DEFAULT_PROFILE.id;
+  profileCard(t, p, index) {
+    const st = this.settings, fixed = p.id === DEFAULT_PROFILE.id, on = index === st.sel;
     const using = ACTION_KEYS.filter((a) => (st.store.assign[a] ?? DEFAULT_PROFILE.id) === p.id);
     const buttons = st.confirm === p.id
       ? [
         div().text_size(12).text_color(t.blocked).child(`Delete ${p.name}?`),
-        this.chip(t, `hg-del-yes-${p.id}`, "Delete", false, (_e, cx) => this.change((s) => removeProfile(s, p.id), `Deleted ${p.name}`, cx, () => { st.confirm = null; }), true),
+        this.chip(t, `hg-del-yes-${p.id}`, "Delete", false, (_e, cx) => this.deleteProfile(p, cx), true),
         this.chip(t, `hg-del-no-${p.id}`, "Keep", false, (_e, cx) => { st.confirm = null; cx.notify(); }),
       ]
       : [
         ...ACTION_KEYS.map((a) => this.chip(t, `hg-use-${a}-${p.id}`, using.includes(a) ? `${ACTION_LABELS[a]} ✓` : `Use for ${ACTION_LABELS[a]}`, using.includes(a), (_e, cx) => {
-          if (!using.includes(a)) this.change((s) => assignProfile(s, a, p.id), `${ACTION_LABELS[a]} now starts ${p.name}`, cx);
+          if (!using.includes(a)) this.assignTo(a, p, cx);
         })),
         ...(fixed ? [] : [
           this.chip(t, `hg-edit-${p.id}`, "Edit", false, (_e, cx) => this.editProfile(p, cx)),
           this.chip(t, `hg-del-${p.id}`, "Delete", false, (_e, cx) => { Object.assign(st, { confirm: p.id, error: null, info: null }); cx.notify(); }),
         ]),
       ];
-    return v_flex().flex_none().gap(6).px(10).py(8).rounded(7).border_1().border_color(using.length ? t.accent : t.border)
+    // A click anywhere on it selects it, for the keys.
+    return v_flex().id(`hg-card-${p.id}`).flex_none().gap(6).px(10).py(8).rounded(7).border_1().border_color(using.length ? t.accent : t.border)
+      .when(on, (el) => el.bg(t.selected)).on_click((_e, cx) => { st.sel = index; cx.notify(); })
       .child(h_flex().gap(6).items_center()
         .child(div().flex_1().min_w(0).truncate().font_medium().child(p.name))
         .child(div().flex_none().text_size(11).text_color(t.dim).child(fixed ? "default" : p.id)))
@@ -541,7 +634,7 @@ export default class GitHub extends View {
     return v_flex().id("hg-profile-list").flex_1().min_h(0).overflow_y_scrollbar().p(8).gap(6)
       .child(div().px(2).text_size(11.5).text_color(t.muted)
         .child("Resolve and Review each start the profile they use. Without one, Claude Code starts through mcc run."))
-      .children([DEFAULT_PROFILE, ...st.store.profiles].map((p) => this.profileCard(t, p)))
+      .children(this.entries().map((p, i) => this.profileCard(t, p, i)))
       .child(h_flex().gap(6).items_center()
         .child(this.chip(t, "hg-new", "New profile", false, (_e, cx) => this.editProfile(null, cx)))
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(st.file ?? "")));
@@ -560,7 +653,9 @@ export default class GitHub extends View {
     const title = !st ? this.repo?.name ?? this.forge?.name ?? "Pull requests and issues"
       : st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles";
     const hints = !st ? `↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · esc close`
-      : st.mode === "edit" ? "⏎ save · esc back" : "esc back";
+      : st.mode === "edit" ? `↑↓ field · ${this.inputFocus === null ? "←→ choose" : "type to edit"} · ⏎ save · esc back`
+        : st.confirm ? "y delete · any other key keeps it"
+          : "↑↓ select · n new · e edit · d delete · R/V assign · esc back";
     const status = st && st.mode === "list" ? [
       ...st.warnings.map((w) => [w, t.blocked]),
       ...(st.error ? [[st.error, t.ansi1]] : []),
@@ -602,7 +697,9 @@ export default class GitHub extends View {
           .child(div().text_color(tones[this.notice.tone] ?? t.foreground).child(this.notice.text))
           .when(Boolean(this.notice.url), (el) => el.child(div().id("hg-notice-url").text_color(t.accent).cursor_pointer().truncate()
             .on_click((_e, cx) => this.openUrl(this.notice.url, cx)).child(this.notice.url))))))
-      .child(div().flex_none().h(24).px(14).flex().items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(focused ? t.muted : t.dim).truncate()
+      // The profiles view's keys wrap onto a second line rather than being cut.
+      .child(div().flex_none().min_h(24).px(14).flex().items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(focused ? t.muted : t.dim)
+        .when(!st, (el) => el.h(24).truncate()).when(Boolean(st), (el) => el.py(4))
         .child(focused ? hints : "Click here for keys"));
   }
 }
