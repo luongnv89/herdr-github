@@ -18,20 +18,26 @@ require("node:child_process").spawn = (cmd, args) => {
   };
   return lastChild;
 };
-// Agent actions run herdr through execFile: answer from a scripted herdr instead,
-// recording each call. The panel follows pane w1:p1 from its own pane w1:p9.
-const calls = [];
-let herdr = () => ({ code: 1, stderr: "no herdr in tests" });
-require("node:child_process").execFile = (cmd, args, opts, cb) => {
-  calls.push([cmd, ...args]);
-  const r = herdr(args);
-  setImmediate(() => cb(r.error ?? (r.code ? Object.assign(new Error("exit"), { code: r.code }) : null), r.stdout ?? "", r.stderr ?? ""));
-};
-Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1" });
-const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, findSkill, promptFor, IDD } = require("../panel.js");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+// Agent actions run herdr and mcc through execFile: answer from a scripted herdr
+// and mcc instead, by the command's name, recording each call and its options.
+// The panel follows pane w1:p1 from its own pane w1:p9.
+const calls = [], callOpts = [];
+let herdr = () => ({ code: 1, stderr: "no herdr in tests" });
+let mcc = () => ({ code: 1, stderr: "no mcc in tests" });
+require("node:child_process").execFile = (cmd, args, opts, cb) => {
+  const name = path.basename(cmd);
+  calls.push([name, ...args]);
+  callOpts.push(opts);
+  const r = name === "herdr" ? herdr(args) : name === "mcc" ? mcc(args) : { code: 1, stderr: `no ${name} in tests` };
+  setImmediate(() => cb(r.error ?? (r.code ? Object.assign(new Error("exit"), { code: r.code }) : null), r.stdout ?? "", r.stderr ?? ""));
+};
+Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1" });
+const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow } = require("../panel.js");
+// A launch through mcc polls herdr for Claude Code in the new pane: quickly, here.
+Object.assign(TIMING, { pollMs: 1, appearMs: 40 });
 
 // Drops colors and OSC 8 hyperlinks, leaving the text a terminal shows.
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;[^\x07\x1b]*(?:\x1b\\|\x07)/g, "");
@@ -227,7 +233,9 @@ function setup(view) {
   Object.assign(ui, {
     view, prs: items("pull"), issues: items("issues"), errors: {}, error: null, repo: { name: "o/p", url: "https://x/o/p" },
     loading: false, fetched: true, follow: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, notice: null,
+    forge: null, root: null, settings: null, acting: null,
   });
+  follow("w1:p1");
   opened.length = 0;
   return screen(draw);
 }
@@ -497,6 +505,7 @@ function setupGitHub(view) {
   for (const v of ["prs", "issues"]) ui[v].forEach((x, i) => Object.assign(x, { ref: `#${10 + i}`, number: 10 + i }));
   Object.assign(ui, { forge: FORGES.github, root: "/repo", tab: "w1:t1", sel: { prs: 2, issues: 2 }, acting: null });
   calls.length = 0;
+  callOpts.length = 0;
   return screen(draw);
 }
 
@@ -513,12 +522,29 @@ function home(t, files = {}) {
   return dir;
 }
 
-// A herdr with these agents, where each step answers as `replies` says.
+// The profile store in a HOME, as the app and the panel share it.
+function useProfiles(dir, profiles, assign = {}) {
+  const file = path.join(dir, ".config/herdr/plugins/config/herdr-github/profiles.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, profiles, assign }));
+  return file;
+}
+// A HOME whose Resolve and Review start Claude Code itself, as herdr's claude agent.
+function claudeHome(t, files = {}) {
+  const dir = home(t, files);
+  useProfiles(dir, [{ id: "cc", name: "Claude Code", harness: "claude" }], { resolve: "cc", review: "cc" });
+  return dir;
+}
+
+// A herdr with these agents, where each step answers as `replies` says: a reply,
+// or a function of how many times the step ran before.
+const ok = (result) => ({ code: 0, stdout: JSON.stringify({ result }) });
 function fakeHerdr(agents, replies = {}) {
-  const ok = (result) => ({ code: 0, stdout: JSON.stringify({ result }) });
+  const seen = {};
   herdr = (args) => {
     const step = `${args[0]} ${args[1]}`;
-    if (replies[step]) return replies[step];
+    const n = seen[step] = (seen[step] ?? -1) + 1;
+    if (replies[step]) return typeof replies[step] === "function" ? replies[step](n, args) : replies[step];
     if (step === "agent list") return ok({ agents });
     if (step === "pane split") return ok({ pane: { pane_id: "w1:p7" } });
     return ok({});
@@ -526,7 +552,7 @@ function fakeHerdr(agents, replies = {}) {
 }
 const herdrFail = (code, message) => ({ code: 1, stderr: JSON.stringify({ error: { code, message } }) });
 const claudeHere = [{ agent: "claude", pane_id: "w1:p1", tab_id: "w1:t1" }];
-const herdrCalls = () => calls.map((c) => c.slice(1).join(" "));
+const herdrCalls = () => calls.filter((c) => c[0] === "herdr").map((c) => c.slice(1).join(" "));
 
 // Like screen, for a launch: stdout stays borrowed until the launch is over. Only
 // the panel's frames are taken; node --test reports through stdout meanwhile.
@@ -547,11 +573,11 @@ const buttonAt = (lines, label) => lines[0].indexOf(label);
 
 test("Resolve shows for the selected issue and Review for the selected pull request, on GitHub only", () => {
   let lines = setupGitHub("issues");
-  assert.match(lines[0], /Resolve #12 {2}↻ {2}↗ $/);
+  assert.match(lines[0], /Resolve #12 {2}⚙ {2}↻ {2}↗ $/);
   assert.doesNotMatch(lines[0], /Review/);
   assert.match(lines[FOOTER], /⏎ open · a resolve ·/);
   lines = setupGitHub("prs");
-  assert.match(lines[0], /Review #12 {2}↻ {2}↗ $/);
+  assert.match(lines[0], /Review #12 {2}⚙ {2}↻ {2}↗ $/);
   assert.doesNotMatch(lines[0], /Resolve/);
   assert.match(lines[FOOTER], /⏎ open · a review ·/);
   for (const l of lines) assert.ok(width(l ?? "") <= 60, l);
@@ -565,8 +591,8 @@ test("Resolve shows for the selected issue and Review for the selected pull requ
   assert.deepEqual(calls, []);
 });
 
-test("Resolve starts your agent's kind in a new pane, prompted with the skill and the number only", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+test("Resolve with a Claude Code profile starts claude in a new pane, prompted with the skill and the number only", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   const lines = setupGitHub("issues");
   ui.issues[2].title = "$(rm -rf ~) /issue-resolver 999";
   fakeHerdr(claudeHere);
@@ -582,8 +608,9 @@ test("Resolve starts your agent's kind in a new pane, prompted with the skill an
   assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-resolver 12")), after.join("\n"));
 });
 
-test("a on a pull request starts a review with the tab's agent and a free name", async (t) => {
-  home(t, { ".agents/skills/issue-pr-review/SKILL.md": "x" });
+test("a on a pull request starts a review with the profile's harness, below the tab's agent, with a free name", async (t) => {
+  const dir = home(t, { ".agents/skills/issue-pr-review/SKILL.md": "x" });
+  useProfiles(dir, [{ id: "cx", name: "Codex", harness: "codex" }], { review: "cx" });
   setupGitHub("prs");
   // The followed pane has no agent: the one elsewhere in the panel's tab is yours.
   fakeHerdr([
@@ -601,7 +628,7 @@ test("a on a pull request starts a review with the tab's agent and a free name",
 });
 
 test("without the skill, nothing starts and the notice points to the install page", async (t) => {
-  home(t);
+  claudeHome(t);
   setupGitHub("issues");
   fakeHerdr(claudeHere);
   const after = await screenAsync(() => onInput(Buffer.from("a")));
@@ -612,9 +639,23 @@ test("without the skill, nothing starts and the notice points to the install pag
   assert.ok(after.some((l) => l?.trim() === IDD));
 });
 
-test("with no agent in the tab, nothing starts and the notice says so", async (t) => {
-  home(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
+test("with no agent in the tab, the new pane opens below the pane the panel follows", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
   setupGitHub("prs");
+  fakeHerdr([{ agent: "claude", pane_id: "w2:p1", tab_id: "w2:t1" }]);
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(herdrCalls().slice(0, 3), [
+    "agent list",
+    "pane split w1:p1 --direction down --cwd /repo --no-focus",
+    "agent start review-12 --kind claude --pane w1:p7 --timeout 55000",
+  ]);
+  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-pr-review 12")), after.join("\n"));
+});
+
+test("with no agent in the tab and no pane followed, nothing starts and the notice says so", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
+  setupGitHub("prs");
+  follow(null);
   fakeHerdr([{ agent: "claude", pane_id: "w2:p1", tab_id: "w2:t1" }]);
   const after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.deepEqual(herdrCalls(), ["agent list"]);
@@ -635,7 +676,7 @@ test("a row without a valid number gets no button, and the prompt takes integers
 });
 
 test("a failed start shows herdr's reason and closes the new pane", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent start": herdrFail("agent_exited", "claude exited before it was ready") });
   const after = await screenAsync(() => onInput(Buffer.from("a")));
@@ -644,7 +685,7 @@ test("a failed start shows herdr's reason and closes the new pane", async (t) =>
 });
 
 test("an agent that asks something on start keeps its pane, waits for your answer, then gets the prompt", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent start": herdrFail("agent_not_ready", "trust dialog") });
   // What the panel shows while herdr waits for your answer.
@@ -669,7 +710,7 @@ test("an agent that asks something on start keeps its pane, waits for your answe
 });
 
 test("a prompt left in the input box gets one more Enter; a failed prompt says what to send", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent prompt": herdrFail("agent_prompt_stalled", "no working state within 5000 ms") });
   let after = await screenAsync(() => onInput(Buffer.from("a")));
@@ -692,7 +733,7 @@ test("a prompt left in the input box gets one more Enter; a failed prompt says w
 });
 
 test("herdr missing or failing shows a red reason and starts nothing", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent list": { code: 1, stderr: "connection refused\n" } });
   let after = await screenAsync(() => onInput(Buffer.from("a")));
@@ -711,7 +752,7 @@ test("herdr missing or failing shows a red reason and starts nothing", async (t)
 });
 
 test("one launch at a time: a second press while starting does nothing", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere);
   let during;
@@ -729,6 +770,7 @@ test("a skill Claude has only from a plugin is found, under its plugin's name", 
     ".claude/plugins/synced/acct/abc123/issue-pr-review/SKILL.md": "x",
     ".claude/plugins/synced/acct/abc123/.claude-plugin/plugin.json": JSON.stringify({ name: "idd" }),
   });
+  useProfiles(dir, [{ id: "cc", name: "Claude Code", harness: "claude" }], { resolve: "cc" });
   // Cached but not installed: not found.
   assert.equal(findSkill("claude", "issue-resolver", "/repo"), null);
   const installed = { version: 2, plugins: { "idd@market": [{ scope: "user", installPath: path.join(dir, cache) }] } };
@@ -752,6 +794,7 @@ test("a skill from a disabled Claude plugin counts as missing: nothing starts", 
     [`${cache}/skills/issue-resolver/SKILL.md`]: "x",
     ".claude/settings.json": JSON.stringify({ enabledPlugins: { "idd@market": false } }),
   });
+  useProfiles(dir, [{ id: "cc", name: "Claude Code", harness: "claude" }], { resolve: "cc" });
   const installed = { version: 2, plugins: { "idd@market": [{ scope: "user", installPath: path.join(dir, cache) }] } };
   fs.writeFileSync(path.join(dir, ".claude/plugins/installed_plugins.json"), JSON.stringify(installed));
   assert.equal(findSkill("claude", "issue-resolver", "/repo"), null);
@@ -763,4 +806,317 @@ test("a skill from a disabled Claude plugin counts as missing: nothing starts", 
   // Enabled again, under the plugin's key name when it has no plugin.json.
   fs.writeFileSync(path.join(dir, ".claude/settings.json"), JSON.stringify({ enabledPlugins: { "idd@market": true } }));
   assert.equal(findSkill("claude", "issue-resolver", "/repo"), "idd:issue-resolver");
+});
+
+// ── Profiles: per-row buttons, harnesses, mcc ───────────────────────────────
+
+const PATH = process.env.PATH;
+// PATH set to exactly one new folder, holding an executable mcc unless `present`
+// is false; restored after the test.
+function mccOnPath(t, present = true) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-github-bin-"));
+  if (present) {
+    fs.writeFileSync(path.join(dir, "mcc"), "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(path.join(dir, "mcc"), 0o755);
+  }
+  process.env.PATH = dir;
+  t.after(() => { process.env.PATH = PATH; fs.rmSync(dir, { recursive: true, force: true }); });
+  return path.join(dir, "mcc");
+}
+// An mcc whose `env -q --shell bash` prints what it prints for a profile folder.
+const mccEnv = (dir) => { mcc = (args) => args[0] === "env" ? { code: 0, stdout: `export CLAUDE_CONFIG_DIR='${dir}'\nunset MCC_PROFILE\n` } : { code: 1, stderr: "unexpected" }; };
+const mccCalls = () => calls.filter((c) => c[0] === "mcc").map((c) => c.slice(1).join(" "));
+// Claude Code showing up in the new pane w1:p7 on the given agent-list poll, in `status`.
+const appears = (status, on = 1) => (n) => ok({ agents: [...claudeHere, ...(n >= on ? [{ agent: "claude", pane_id: "w1:p7", tab_id: "w1:t1", agent_status: status }] : [])] });
+const text = (lines) => lines.map((l) => l?.trim()).join(" ");
+
+test("with no profile assigned, Resolve starts Claude Code through mcc run, with the skills of mcc's profile", async (t) => {
+  const dir = home(t, { ".mcc/profiles/work/skills/issue-resolver/SKILL.md": "x" });
+  const bin = mccOnPath(t);
+  mccEnv(path.join(dir, ".mcc/profiles/work"));
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent list": appears("working", 2) });
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(herdrCalls(), [
+    "agent list",
+    "pane split w1:p1 --direction down --cwd /repo --no-focus",
+    `pane run w1:p7 '${bin}' 'run' '--' '/issue-resolver 12'`,
+    "agent list",
+    "agent list",
+    "agent wait w1:p7 --until idle --until working --until blocked --timeout 30000",
+    "agent list",
+  ]);
+  // mcc env runs in the repo, so it names the profile `mcc run` starts there.
+  assert.deepEqual(mccCalls(), ["env -q --shell bash"]);
+  assert.equal(callOpts[calls.findIndex((c) => c[0] === "mcc")].cwd, "/repo");
+  assert.ok(text(after).includes("Started Claude Code via mcc run in a new pane: /issue-resolver 12"), after.join("\n"));
+});
+
+test("an mcc profile's model and thinking level go to claude after --, in one quoted line", async (t) => {
+  const dir = home(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
+  useProfiles(dir, [{ id: "deep", name: "Deep", harness: "mcc", model: "opus", thinking: "max" }], { review: "deep" });
+  const bin = mccOnPath(t);
+  mccEnv(path.join(dir, ".claude"));
+  setupGitHub("prs");
+  fakeHerdr(claudeHere, { "agent list": appears("idle") });
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.equal(herdrCalls()[2], `pane run w1:p7 '${bin}' 'run' '--' '--model' 'opus' '--effort' 'max' '/issue-pr-review 12'`);
+  assert.equal(calls.find((c) => c[1] === "pane" && c[2] === "run").length, 5, "the command line is one argument");
+  assert.ok(after.some((l) => l?.includes("Started Claude Code via mcc run")), after.join("\n"));
+});
+
+test("mcc that never shows Claude Code, or shows it blocked, gets the waiting notice, never Started", async (t) => {
+  const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  mccOnPath(t);
+  mccEnv(path.join(dir, ".claude"));
+  const waiting = "mcc is waiting in the new pane (it may be asking about a usage limit)";
+  // Never there: polls until the deadline, then no wait.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  let after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(herdrCalls().filter((c) => c === "agent list").length > 2);
+  assert.ok(!herdrCalls().some((c) => c.startsWith("agent wait")));
+  assert.ok(text(after).includes(waiting), after.join("\n"));
+  assert.ok(!text(after).includes("Started"), after.join("\n"));
+  // There, but blocked: asking something.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent list": appears("blocked") });
+  after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(herdrCalls().some((c) => c.startsWith("agent wait w1:p7")));
+  assert.ok(text(after).includes(waiting) && !text(after).includes("Started"), after.join("\n"));
+  // Gone by the time herdr waits on it.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent list": appears("working"), "agent wait": herdrFail("agent_not_found", "agent target w1:p7 not found") });
+  after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(text(after).includes(waiting) && !text(after).includes("Started"), after.join("\n"));
+});
+
+test("without mcc on PATH, the default profile starts nothing and says so", async (t) => {
+  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  mccOnPath(t, false);
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(calls, []);
+  assert.ok(text(after).includes("mcc isn't on your PATH"), after.join("\n"));
+});
+
+test("when mcc env names no folder, the skill isn't found and nothing starts", async (t) => {
+  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  mccOnPath(t);
+  mcc = () => ({ code: 0, stdout: "something else\n" });
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  let after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(herdrCalls(), ["agent list"]);
+  assert.ok(text(after).includes("issue-resolver skill isn't found for mcc"), after.join("\n"));
+  assert.ok(after.some((l) => l?.trim() === IDD));
+  mcc = () => ({ code: 2, stderr: "no such profile\n" });
+  setupGitHub("issues");
+  after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(text(after).includes("mcc env failed: no such profile"), after.join("\n"));
+});
+
+test("each harness starts with its own model and thinking flags; empty ones add none", async (t) => {
+  const dir = home(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  const cases = [
+    [{ harness: "claude", model: "sonnet", thinking: "high" }, "--kind claude --pane w1:p7 --timeout 55000 -- --model sonnet --effort high"],
+    [{ harness: "codex", model: "gpt-5", thinking: "high" }, `--kind codex --pane w1:p7 --timeout 55000 -- -m gpt-5 -c model_reasoning_effort="high"`],
+    [{ harness: "pi", model: "anthropic/claude-x", thinking: "minimal" }, "--kind pi --pane w1:p7 --timeout 55000 -- --model anthropic/claude-x --thinking minimal"],
+    [{ harness: "pi" }, "--kind pi --pane w1:p7 --timeout 55000"],
+    [{ harness: "opencode", model: "x" }, "--kind opencode --pane w1:p7 --timeout 55000"],
+  ];
+  for (const [p, start] of cases) {
+    useProfiles(dir, [{ id: "p", name: "P", ...p }], { resolve: "p" });
+    setupGitHub("issues");
+    fakeHerdr(claudeHere);
+    const after = await screenAsync(() => onInput(Buffer.from("a")));
+    assert.equal(herdrCalls()[2], `agent start resolve-12 ${start}`, JSON.stringify(p));
+    assert.equal(text(after).includes("OpenCode has no model or thinking flag"), p.harness === "opencode", after.join("\n"));
+  }
+});
+
+test("each issue row has its own Resolve button, which resolves that issue", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  const lines = setupGitHub("issues");
+  const y = lines.findIndex((l) => l?.trim() === "Resolve #11");
+  assert.ok(y > LIST.from, lines.join("\n"));
+  fakeHerdr(claudeHere);
+  const x = lines[y].indexOf("Resolve");
+  // Beside the button the line is the row's, and opens it.
+  screen(() => click(lines[y].length + 2, y));
+  assert.deepEqual(opened, ["https://x/issues/1"]);
+  assert.deepEqual(calls, []);
+  opened.length = 0;
+  const after = await screenAsync(() => click(x, y));
+  assert.deepEqual(opened, []);
+  assert.equal(ui.sel.issues, 1);
+  assert.equal(herdrCalls()[2], "agent start resolve-11 --kind claude --pane w1:p7 --timeout 55000");
+  assert.ok(text(after).includes("Started claude in a new pane: /issue-resolver 11"), after.join("\n"));
+  // Pull requests get Review buttons; GitLab rows get none.
+  assert.ok(setupGitHub("prs").some((l) => l?.trim() === "Review #10"));
+  setup("issues");
+  ui.forge = FORGES.gitlab;
+  assert.ok(!screen(draw).some((l) => /Resolve|Review/.test(l ?? "")));
+});
+
+test("a profile with shell text in it is refused before anything runs", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  mccOnPath(t);
+  mccEnv("/nowhere");
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  const action = { label: "Resolve", key: "resolve", skill: "issue-resolver", noun: "issue", number: 12 };
+  const bad = ["$(id)", "a;id", "a`id`", "a'b", "a\nb", "a b"];
+  for (const harness of ["claude", "codex", "mcc"]) {
+    for (const v of bad) {
+      for (const field of ["model", "thinking"]) {
+        calls.length = 0;
+        await assert.rejects(launch(action, "/repo", { id: "x", name: "X", harness, [field]: v }), /Invalid profile/, `${harness} ${field} ${JSON.stringify(v)}`);
+        assert.deepEqual(calls, [], `${harness} ${field} ${JSON.stringify(v)} ran something`);
+      }
+    }
+  }
+  // Through a button too: the stored file can't carry it to a command line.
+  const dir = process.env.HOME;
+  useProfiles(dir, [{ id: "x", name: "X", harness: "claude", model: "$(id)" }], { resolve: "x" });
+  calls.length = 0;
+  setupGitHub("issues");
+  mccOnPath(t, false);
+  await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(!calls.some((c) => c.join(" ").includes("$(id)")));
+});
+
+// ── The profile views ───────────────────────────────────────────────────────
+
+// Runs fn with process.exit recorded rather than done.
+function noExit(fn) {
+  const { exit } = process;
+  let code = null;
+  process.exit = (c) => { code = c ?? 0; };
+  try { fn(); } finally { process.exit = exit; }
+  return code;
+}
+const storeFile = () => readStore().file;
+
+test("s opens the profiles; a new profile is typed, saved and assigned, then used", async (t) => {
+  claudeHome(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  fs.rmSync(storeFile());
+  setupGitHub("issues");
+  let lines = screen(() => onInput(Buffer.from("s")));
+  assert.match(lines[0], /Agent profiles/);
+  assert.match(lines.join("\n"), /Claude Code via mcc run +default · Resolve · Review/);
+  // In the form, q and j are text, and Esc goes back without closing the panel.
+  const exit = noExit(() => screen(() => {
+    onInput(Buffer.from("n"));
+    onInput(Buffer.from("Quick job"));
+    onInput(Buffer.from("\x1b[B"));
+    onInput(Buffer.from("qj"));
+    onInput(Buffer.from("\x1b[B\x1b[C\x1b[C"));
+    onInput(Buffer.from("\x1b[B"));
+    onInput(Buffer.from("gpt-5"));
+    onInput(Buffer.from("\x1b[B\x1b[C"));
+  }));
+  assert.equal(exit, null, "a key in the form closed the panel");
+  assert.equal(ui.settings.mode, "edit");
+  assert.deepEqual({ ...ui.settings.form, prev: undefined }, { prev: undefined, name: "Quick job", id: "qj", harness: "codex", model: "gpt-5", thinking: "low" });
+  lines = screen(() => onInput(Buffer.from("\r")));
+  assert.equal(ui.settings.mode, "list");
+  assert.ok(lines.some((l) => l?.includes("Saved Quick job")), lines.join("\n"));
+  screen(() => onInput(Buffer.from("R")));
+  assert.deepEqual(JSON.parse(fs.readFileSync(storeFile(), "utf8")), {
+    version: 1, profiles: [{ id: "qj", name: "Quick job", harness: "codex", model: "gpt-5", thinking: "low" }], assign: { resolve: "qj", review: null },
+  });
+  assert.equal(noExit(() => screen(() => onInput(Buffer.from("\x1b")))), null);
+  assert.equal(ui.settings, null);
+  fakeHerdr(claudeHere);
+  await screenAsync(() => onInput(Buffer.from("a")));
+  assert.equal(herdrCalls()[2], `agent start resolve-12 --kind codex --pane w1:p7 --timeout 55000 -- -m gpt-5 -c model_reasoning_effort="low"`);
+});
+
+test("a click inside the profile views opens nothing and starts nothing", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from("s")));
+  for (const mode of ["list", "edit"]) {
+    if (mode === "edit") screen(() => onInput(Buffer.from("n")));
+    for (let y = 0; y < 24; y++) {
+      if (y === 0) continue; // ✕ goes back
+      screen(() => onInput(Buffer.from(press(y))));
+      assert.deepEqual(opened, [], `${mode} line ${y}`);
+      assert.deepEqual(calls, [], `${mode} line ${y}`);
+      assert.ok(ui.settings, `${mode} line ${y} closed the view`);
+    }
+  }
+  // ✕ goes back: to the list, then to the rows.
+  screen(() => onInput(Buffer.from(press(0).replace("<0;5;", "<0;60;"))));
+  assert.equal(ui.settings.mode, "list");
+  screen(() => onInput(Buffer.from(press(0).replace("<0;5;", "<0;60;"))));
+  assert.equal(ui.settings, null);
+});
+
+test("the header's ⚙ opens the profiles; e edits and d deletes, and the default stays", (t) => {
+  const dir = claudeHome(t);
+  const lines = setupGitHub("issues");
+  screen(() => click(lines[0].indexOf("⚙"), 0));
+  assert.equal(ui.settings?.mode, "list");
+  // The default can't be edited or deleted.
+  let shown = screen(() => onInput(Buffer.from("e")));
+  assert.ok(text(shown).includes("default profile can't be changed"));
+  assert.equal(ui.settings.mode, "list");
+  // Rename cc's id: its assignments follow it.
+  screen(() => onInput(Buffer.from("je\x1b[B\x7f\x7fmine\r")));
+  let store = JSON.parse(fs.readFileSync(storeFile(), "utf8"));
+  assert.deepEqual(store.profiles.map((p) => p.id), ["mine"]);
+  assert.deepEqual(store.assign, { resolve: "mine", review: "mine" });
+  // An invalid model stays in the form with the reason.
+  shown = screen(() => onInput(Buffer.from("e\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
+  assert.equal(ui.settings.mode, "edit");
+  assert.ok(text(shown).includes("Model:"), shown.join("\n"));
+  screen(() => onInput(Buffer.from("\x1b")));
+  assert.equal(ui.settings.mode, "list");
+  // d asks first; n keeps it, y deletes it and its assignments.
+  screen(() => onInput(Buffer.from("dn")));
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).profiles.length, 1);
+  screen(() => onInput(Buffer.from("dy")));
+  store = JSON.parse(fs.readFileSync(storeFile(), "utf8"));
+  assert.deepEqual(store, { version: 1, profiles: [], assign: { resolve: null, review: null } });
+  assert.ok(dir);
+});
+
+test("a store changed elsewhere since it was read isn't overwritten", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from("s")));
+  const theirs = JSON.stringify({ version: 1, profiles: [{ id: "app", name: "From the app", harness: "pi" }], assign: { resolve: "app" } });
+  fs.writeFileSync(storeFile(), theirs);
+  const shown = screen(() => onInput(Buffer.from("jR")));
+  assert.equal(fs.readFileSync(storeFile(), "utf8"), theirs);
+  assert.ok(text(shown).includes("changed elsewhere"), shown.join("\n"));
+  // Read again, so the next change goes through.
+  assert.match(shown.join("\n"), /From the app/);
+  screen(() => onInput(Buffer.from("V")));
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).assign.review, "app");
+  assert.ok(!fs.readdirSync(path.dirname(storeFile())).some((f) => f.endsWith(".tmp")));
+});
+
+test("a corrupt or newer store is shown read only, and actions use the default", async (t) => {
+  const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  for (const bad of ["{ not json", JSON.stringify({ version: 2, profiles: [], assign: {} })]) {
+    const file = useProfiles(dir, []);
+    fs.writeFileSync(file, bad);
+    setupGitHub("issues");
+    const shown = screen(() => onInput(Buffer.from("s")));
+    assert.ok(/isn't valid JSON|read only/.test(text(shown)), shown.join("\n"));
+    const after = screen(() => onInput(Buffer.from("R")));
+    assert.ok(text(after).includes("Not saved"), after.join("\n"));
+    assert.equal(fs.readFileSync(file, "utf8"), bad);
+    screen(() => onInput(Buffer.from("\x1b")));
+  }
+  // An assigned profile that's gone: the default, through mcc.
+  useProfiles(dir, [], { resolve: "gone" });
+  mccOnPath(t, false);
+  setupGitHub("issues");
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(text(after).includes("mcc isn't on your PATH"), after.join("\n"));
 });
