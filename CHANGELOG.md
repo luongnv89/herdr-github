@@ -14,9 +14,9 @@
 
 ### Changed
 
-- In the app, Resolve and Review open the agent in a new pane instead of a new tab (#26). The pane is a split of the tab you're in, below the pane the panel follows (else the first terminal pane in that tab), in the repo's folder, and the other panes stay open. Several started one after another all go in that tab, and the next one can start as soon as the last one's pane is open. An agent other than mcc gets its prompt once it is idle, so a question it asks first, such as whether you trust the folder, is never answered with the prompt; the app waits up to 5 minutes for your answer, then says to send the prompt yourself.
+- In the app, Resolve and Review open the agent in a new pane instead of a new tab (#26). The pane is a split of the tab you're in, to the right of the pane the panel follows (as Cmd+D splits) (else the first terminal pane in that tab), in the repo's folder, and the other panes stay open. Several started one after another all go in that tab, and the next one can start as soon as the last one's pane is open. An agent other than mcc gets its prompt once it is idle, so a question it asks first, such as whether you trust the folder, is never answered with the prompt; the app waits up to 5 minutes for your answer, then says to send the prompt yourself.
 - The profiles file holding a custom prompt is version 2, with a `prompts` entry; without one it stays version 1. Older versions of the panel show a version 2 file read only, so they never overwrite your prompts (#20).
-- **Behavior change:** with no profile assigned, Resolve and Review start Claude Code through `mcc run`, instead of the same kind of agent as the one in your tab. Assign a profile to keep using another agent. The terminal panel no longer needs an agent in the tab: with none, the new pane opens below the pane the panel follows. In the app, the new pane opens below the one you're in, in the same tab.
+- **Behavior change:** with no profile assigned, Resolve and Review start Claude Code through `mcc run`, instead of the same kind of agent as the one in your tab. Assign a profile to keep using another agent. The terminal panel no longer needs an agent in the tab: with none, the new pane opens below the pane the panel follows. In the app, the new pane opens to the right of the one you're in, in the same tab.
 
 ### Fixed
 

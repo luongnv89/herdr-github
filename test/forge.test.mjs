@@ -175,10 +175,10 @@ test("isReadyToSend: only an idle agent takes its first message", () => {
   for (const status of ["working", "blocked", "done", null, undefined]) assert.equal(F.isReadyToSend(status), false, String(status));
 });
 
-test("main.js splits the current tab below the anchor pane, and opens no tab", () => {
+test("main.js splits the current tab to the right of the anchor pane, and opens no tab", () => {
   const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
   assert.doesNotMatch(main, /run\("tab\.new"/);
-  assert.match(main, /run\("pane\.focus", \{ pane: anchor\.pane \}\);\s*run\("terminal\.open", \{ argv: start\.argv, folder: root, place: "down" \}\)/);
+  assert.match(main, /run\("pane\.focus", \{ pane: anchor\.pane \}\);\s*run\("terminal\.open", \{ argv: start\.argv, folder: root, place: "right" \}\)/);
   // The prompt is sent only to an idle agent.
   assert.match(main, /hc\(\["send", "--if", "idle", address, task\]\)/);
 });

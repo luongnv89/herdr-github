@@ -206,7 +206,7 @@ export default class GitHub extends View {
   }
 
   // A Resolve or Review button, the header's or a row's, and the a key: a new pane
-  // below the one you're in, in the same tab, runs the agent of the action's profile
+  // to the right of the one you're in, in the same tab (as Cmd+D splits), runs the agent of the action's profile
   // in the repo's folder, with the skill and the number as its first message. With
   // only the default profile it starts at once; with more, a menu of them opens under
   // the button pressed (`anchor`: "row" or "header"), and the one you choose starts.
@@ -350,7 +350,7 @@ export default class GitHub extends View {
     // The new pane is the terminal that wasn't there before, in the anchor's tab.
     const before = start.task ? terminals().map((t) => t.address) : [];
     run("pane.focus", { pane: anchor.pane });
-    run("terminal.open", { argv: start.argv, folder: root, place: "down" });
+    run("terminal.open", { argv: start.argv, folder: root, place: "right" });
     // The app doesn't say when mcc is ready: it may first ask about a usage limit.
     if (plan.mode === "command") {
       return this.say("info", `Opened mcc in a new pane to ${action.key} ${what}. If mcc asks something first, such as about a usage limit, answer it there; Claude Code then works on: ${text}`);
