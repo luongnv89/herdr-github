@@ -120,3 +120,65 @@ test("main.js imports only what forge.js and profiles.js export", () => {
     for (const n of names) assert.ok(n in mod, `${file} exports ${n}`);
   }
 });
+
+// ── Opening the agent in a split of the current tab (#26) ──────────────────
+
+const pane = (id, tab, extra = {}) => ({ pane: id, tab, terminal: `t-${id}`, ...extra });
+
+test("chooseAnchor: the pane the panel follows, else a terminal pane in its tab, never a mod pane", () => {
+  const list = [pane("p1", "tab1"), pane("p2", "tab1"), pane("p9", "tab2"), { pane: "m1", tab: "tab1", terminal: null, mod: "herdr-github" }];
+  // The followed pane.
+  assert.equal(F.chooseAnchor({ tab: "tab1", pane: "p2" }, list), list[1]);
+  // A mod pane is skipped for the first terminal pane in its tab.
+  assert.equal(F.chooseAnchor({ tab: "tab1", pane: "m1" }, list), list[0]);
+  // No pane followed, or it closed: the first terminal pane in the tab, not another tab's.
+  assert.equal(F.chooseAnchor({ tab: "tab2", pane: null }, list), list[2]);
+  assert.equal(F.chooseAnchor({ tab: "tab2", pane: "gone" }, list), list[2]);
+  // Nothing to split.
+  assert.equal(F.chooseAnchor({ tab: "tab3", pane: null }, list), null);
+  assert.equal(F.chooseAnchor({ tab: "tab1", pane: null }, [list[3]]), null);
+  assert.equal(F.chooseAnchor(null, list), null);
+  assert.equal(F.chooseAnchor({ tab: "tab1", pane: "p1" }, undefined), null);
+});
+
+test("localId: a remote id loses its machine/ prefix, a local one stays", () => {
+  assert.equal(F.localId("tab7"), "tab7");
+  assert.equal(F.localId("omachi/tab7"), "tab7");
+  assert.equal(F.localId(null), null);
+});
+
+test("pickNewTerminal: the one new terminal labelled with the tab, on its machine, or null", () => {
+  const t = (address, tab) => ({ address, labels: { "herdr.space": "s1", "herdr.tab": tab } });
+  const before = ["t1", "t2"];
+  const old = [t("t1", "tab1"), t("t2", "tab1")];
+  // One new terminal in the tab.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab1")], "tab1").address, "t3");
+  // None new.
+  assert.equal(F.pickNewTerminal(before, old, "tab1"), null);
+  // Two new: never a guess.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab1"), t("t4", "tab1")], "tab1"), null);
+  // A new terminal in another tab doesn't count.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab2")], "tab1"), null);
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab2"), t("t4", "tab1")], "tab1").address, "t4");
+  // A remote tab: its id has the machine/ prefix, the labels don't, the address does.
+  assert.equal(F.pickNewTerminal(["omachi/t1"], [t("omachi/t1", "tab1"), t("omachi/t5", "tab1")], "omachi/tab1").address, "omachi/t5");
+  // The same local tab id on another machine isn't the tab.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab1")], "omachi/tab1"), null);
+  assert.equal(F.pickNewTerminal([], [t("omachi/t5", "tab1")], "tab1"), null);
+  // No tab, no labels.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab1")], null), null);
+  assert.equal(F.pickNewTerminal(before, [...old, { address: "t3" }], "tab1"), null);
+});
+
+test("isReadyToSend: only an idle agent takes its first message", () => {
+  assert.equal(F.isReadyToSend("idle"), true);
+  for (const status of ["working", "blocked", "done", null, undefined]) assert.equal(F.isReadyToSend(status), false, String(status));
+});
+
+test("main.js splits the current tab below the anchor pane, and opens no tab", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  assert.doesNotMatch(main, /run\("tab\.new"/);
+  assert.match(main, /run\("pane\.focus", \{ pane: anchor\.pane \}\);\s*run\("terminal\.open", \{ argv: start\.argv, folder: root, place: "down" \}\)/);
+  // The prompt is sent only to an idle agent.
+  assert.match(main, /hc\(\["send", "--if", "idle", address, task\]\)/);
+});
