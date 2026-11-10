@@ -37,7 +37,7 @@ export const clean = (text) => (text || "")
     const cp = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
     return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
   })
-  .replace(/[\x00-\x1f\x7f-\x9f​-‏  ﻿]+/g, " ");
+  .replace(/[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\ufeff]+/g, " ");
 
 // A PR or issue body as one line of prose: no template comments, headings,
 // code blocks, images, link targets, list or emphasis marks.
