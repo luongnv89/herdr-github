@@ -9,10 +9,11 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, VirtualListScrollHandle, Scrollbar, InputState, Input } from "gpui-base";
 import { spaces, panes, focused, exec, theme, layout, window, run, home, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
-import { LIMIT, STALE, IDD, ago, firstLine, FORGES, pickHost, forgesFor, load, actionFor, promptFor, findSkill, cantRun, tabStart, pathTo, shown } from "./forge.js";
+import { LIMIT, STALE, IDD, ago, firstLine, FORGES, ACTIONS, pickHost, forgesFor, load, actionFor, promptFor, findSkill, cantRun, tabStart, pathTo, shown } from "./forge.js";
 import {
   HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, validateProfile, buildLaunch, storePath, emptyStore,
   parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, parseMccEnv,
+  PROMPT_TOKEN, PROMPT_LABELS, validatePrompt, expandPrompt, setPrompt, resolvePrompt,
 } from "./profiles.js";
 
 const MOD = "herdr-github";
@@ -27,6 +28,9 @@ const parent = (file) => file.slice(0, file.lastIndexOf("/"));
 // choices, which ← and → step through.
 const FORM_FIELDS = ["name", "id", "harness", "model", "thinking"];
 const TEXT_FIELDS = ["name", "id", "model"];
+// What an action sends with no custom prompt, as Claude Code takes it.
+const DEFAULT_PROMPTS = Object.fromEntries(Object.values(ACTIONS).map((a) => [a.key, `/${a.skill} ${PROMPT_TOKEN}`]));
+const PROMPT_TIP = `A custom prompt replaces the IDD skill: it is sent as written to every harness, with ${PROMPT_TOKEN} as the number. Empty sends the default.`;
 
 // Where the panel looks: the focused terminal's folder and machine. While the
 // panel itself (or another mod pane) has the keyboard, it keeps the last one.
@@ -64,6 +68,8 @@ export default class GitHub extends View {
     this.acting = false;
     // The profiles view (⚙): null while the rows show.
     this.settings = null;
+    // Each action's custom prompt as last read, for the buttons' tooltips.
+    this.prompts = { resolve: null, review: null };
     this.forges = new Map();
     this.loc = locate(null);
     this.handle = cx.focus_handle();
@@ -83,6 +89,18 @@ export default class GitHub extends View {
       input.on("blur", (_e, cx) => { if (this.inputFocus === key) this.inputFocus = null; cx.notify(); });
       this.inputs[key] = input;
     }
+    // Each action's prompt, in the profiles view: made once, filled from the store
+    // whenever the view reads it. Focused, it is "prompt-resolve" or "prompt-review".
+    this.promptInputs = {};
+    for (const action of ACTION_KEYS) {
+      const input = InputState.new({ placeholder: `default: ${DEFAULT_PROMPTS[action]}` });
+      input.on("change", (_e, cx) => { if (this.settings?.promptErrors) this.settings.promptErrors[action] = null; cx.notify(); });
+      input.on("submit", (_e, cx) => this.savePrompt(action, cx));
+      input.on("focus", (_e, cx) => { this.inputFocus = `prompt-${action}`; cx.notify(); });
+      input.on("blur", (_e, cx) => { if (this.inputFocus === `prompt-${action}`) this.inputFocus = null; cx.notify(); });
+      this.promptInputs[action] = input;
+    }
+    cx.spawn(async (cx) => { await this.readStore(); cx.notify(); });
     cx.timer.every(STALE, (cx) => { if (this.visible()) this.refresh(cx); });
     // keys.json can send "herdr-github:<command>": focus, refresh, resolve, settings.
     cx.spawn(async (cx) => {
@@ -199,30 +217,40 @@ export default class GitHub extends View {
     if (!root) return this.say("error", "No repository to work in");
     if (!loc?.space) return this.say("error", `No space to open a tab in. Click a pane, then ${action.label} again.`);
     // The store is read on every click: the terminal panel may have changed it.
-    const profile = resolveProfile((await this.readStore()).store, action.key);
+    const { store } = await this.readStore();
+    const profile = resolveProfile(store, action.key), template = resolvePrompt(store, action.key);
     // Checked before anything runs: an unchecked profile never reaches a command line.
     const invalid = validateProfile(profile);
     if (invalid.length) throw new Error(`Invalid profile: ${invalid.join("; ")}`);
     const harness = profile.harness, name = HARNESS_NAMES[harness];
+    // So is a custom prompt, with the number in it. It is sent as written, so it
+    // needs no skill: nothing looks for one.
+    const custom = template === null ? null : expandPrompt(template, action.number);
+    const bad = custom === null ? [] : validatePrompt(custom);
+    if (bad.length) throw new Error(`Invalid prompt: ${bad.join("; ")}`);
     this.say("info", `Getting ${name} ready to ${action.key} ${what}…`); cx.notify();
 
-    let base = home();
-    if (on) {
-      const r = await exec("printenv", ["HOME"], { on }).catch(() => null);
-      base = r?.code === 0 ? r.stdout.trim() : null;
-      if (!base) return this.say("error", `Can't find your home folder on ${on}`);
+    // Where the skills are: only the IDD skill's prompt needs them.
+    let base = home(), io = null;
+    if (custom === null) {
+      if (on) {
+        const r = await exec("printenv", ["HOME"], { on }).catch(() => null);
+        base = r?.code === 0 ? r.stdout.trim() : null;
+        if (!base) return this.say("error", `Can't find your home folder on ${on}`);
+      }
+      io = {
+        home: base,
+        read: (p) => readTextFile(p, { on }),
+        dirs: async (p) => {
+          const r = await exec("ls", ["-1", "-p", p], { on });
+          return r.code === 0 ? r.stdout.split("\n").filter((l) => l.endsWith("/")).map((l) => `${p}/${l.slice(0, -1)}`) : [];
+        },
+      };
     }
-    const io = {
-      home: base,
-      read: (p) => readTextFile(p, { on }),
-      dirs: async (p) => {
-        const r = await exec("ls", ["-1", "-p", p], { on });
-        return r.code === 0 ? r.stdout.split("\n").filter((l) => l.endsWith("/")).map((l) => `${p}/${l.slice(0, -1)}`) : [];
-      },
-    };
     if (harness === "mcc") {
       // The Claude Code profile `mcc run` would start in this repo, and its folder:
-      // its skills and plugins are the ones that count.
+      // its skills and plugins are the ones that count. With a custom prompt it is
+      // run only to find out that mcc is there.
       let env;
       try { env = await exec("mcc", ["env", "-q", "--shell", "bash"], { cwd: root, on, timeout: 10000 }); }
       catch (e) {
@@ -230,15 +258,20 @@ export default class GitHub extends View {
         if (why !== "mcc isn't installed") return this.say("error", why);
         return this.say("error", `mcc isn't on your PATH${on ? ` on ${on}` : ""}: click ⚙ to pick another profile for ${action.label}, or install mcc.`);
       }
-      io.claudeDir = env.code === 0 ? parseMccEnv(env.stdout, base) : null;
-      if (!io.claudeDir) {
-        const why = env.code === 0 ? "mcc env didn't name a Claude Code folder" : `mcc env failed: ${firstLine(env.stderr) || `exit ${env.code}`}`;
-        return this.say("error", `The ${action.skill} skill isn't found for mcc (${why}). Install the skills from:`, IDD);
+      if (io) {
+        io.claudeDir = env.code === 0 ? parseMccEnv(env.stdout, base) : null;
+        if (!io.claudeDir) {
+          const why = env.code === 0 ? "mcc env didn't name a Claude Code folder" : `mcc env failed: ${firstLine(env.stderr) || `exit ${env.code}`}`;
+          return this.say("error", `The ${action.skill} skill isn't found for mcc (${why}). Install the skills from:`, IDD);
+        }
       }
     }
-    const skill = await findSkill(harness, action.skill, root, io);
-    if (!skill) return this.say("error", `The ${action.skill} skill isn't installed for ${name}. Install the skills from:`, IDD);
-    const text = promptFor(harness, skill, action);
+    let text = custom;
+    if (text === null) {
+      const skill = await findSkill(harness, action.skill, root, io);
+      if (!skill) return this.say("error", `The ${action.skill} skill isn't installed for ${name}. Install the skills from:`, IDD);
+      text = promptFor(harness, skill, action);
+    }
     const plan = buildLaunch(profile, text);
     const note = plan.warnings.length ? ` (${plan.warnings.join("; ")})` : "";
 
@@ -266,7 +299,15 @@ export default class GitHub extends View {
     try { text = await readTextFile(file); } catch (e) { failed = e?.message ?? String(e); }
     const parsed = parseStore(text);
     if (failed) { parsed.warnings.unshift(`Can't read ${file}: ${failed}`); parsed.readOnly = true; }
+    this.prompts = { ...parsed.store.prompts };
     return { file, text: text ?? null, ...parsed };
+  }
+
+  // A Resolve or Review button's tooltip: what it sends, and where that is set.
+  actTip(action) {
+    return this.prompts[action.key]
+      ? `Start an agent in a new tab with your ${PROMPT_LABELS[action.key]}, in place of the ${action.skill} skill (profile and prompt: ⚙)`
+      : `Start an agent in a new tab with the ${action.skill} skill (its profile: ⚙)`;
   }
 
   // ── Profiles ──────────────────────────────────────────────────────────────
@@ -275,10 +316,11 @@ export default class GitHub extends View {
   // while the file still holds what was read.
 
   openSettings(cx) {
-    const st = { mode: "list", sel: 0, field: 0, confirm: null, form: null, error: null, info: null, saving: false, loading: true, file: null, text: null, store: emptyStore(), warnings: [], readOnly: true };
+    const st = { mode: "list", sel: 0, field: 0, confirm: null, form: null, error: null, info: null, promptErrors: {}, saving: false, loading: true, file: null, text: null, store: emptyStore(), warnings: [], readOnly: true };
     this.settings = st;
     cx.spawn(async (cx) => {
       Object.assign(st, await this.readStore(), { loading: false });
+      if (this.settings === st) this.seedPrompts();
       cx.notify();
     });
     cx.notify();
@@ -322,7 +364,10 @@ export default class GitHub extends View {
         if (after) after();
       } catch (e) {
         const now = await this.readStore();
-        if (now.text !== st.text) Object.assign(st, now, { error: "The profiles changed elsewhere and were read again: make your change again", info: null });
+        if (now.text !== st.text) {
+          Object.assign(st, now, { error: "The profiles changed elsewhere and were read again: make your change again", info: null });
+          if (this.settings === st) this.seedPrompts();
+        }
         else Object.assign(st, { error: `Can't save ${st.file}: ${e?.message ?? e}`, info: null });
       } finally { st.saving = false; cx.notify(); }
     });
@@ -379,6 +424,27 @@ export default class GitHub extends View {
     this.change((s) => removeProfile(s, p.id), `Deleted ${p.name}`, cx, () => { st.confirm = null; if (this.settings === st) this.entries(); });
   }
 
+  // The prompt boxes, filled with what the store holds: empty for the default.
+  seedPrompts() {
+    const st = this.settings;
+    for (const action of ACTION_KEYS) this.promptInputs[action].set_value(resolvePrompt(st.store, action) ?? "");
+    st.promptErrors = {};
+  }
+
+  // A prompt box's enter or Save: its text, trimmed, becomes the action's prompt;
+  // empty goes back to the default. Why it can't be used shows under the box.
+  savePrompt(action, cx) {
+    const st = this.settings;
+    if (!st || st.mode !== "list" || st.loading) return;
+    const text = this.promptInputs[action].value().trim(), label = ACTION_LABELS[action];
+    try { setPrompt(st.store, action, text); }
+    catch (e) { st.promptErrors = { ...st.promptErrors, [action]: e?.message ?? String(e) }; st.info = null; return cx.notify(); }
+    st.promptErrors = { ...st.promptErrors, [action]: null };
+    this.change((s) => setPrompt(s, action, text), text ? `${label} now sends: ${text}` : `${label} now sends the default: ${DEFAULT_PROMPTS[action]}`, cx, () => {
+      if (this.settings === st) this.promptInputs[action].set_value(resolvePrompt(st.store, action) ?? "");
+    });
+  }
+
   assignTo(action, p, cx) {
     const st = this.settings;
     if ((st.store.assign[action] ?? DEFAULT_PROFILE.id) === p.id) { Object.assign(st, { error: null, info: `${ACTION_LABELS[action]} already starts ${p.name}` }); return cx.notify(); }
@@ -411,6 +477,13 @@ export default class GitHub extends View {
   // to the list, from the list to the rows.
   settingsKey(k, m, cx) {
     const st = this.settings;
+    // Esc in a prompt box leaves the box; the next one goes back to the rows.
+    if (k === "escape" && st.mode === "list" && this.inputFocus?.startsWith("prompt-")) {
+      this.inputFocus = null;
+      this.handle.focus();
+      cx.notify();
+      return true;
+    }
     if (k === "escape") { this.settingsBack(cx); return true; }
     if (st.mode === "edit") {
       if (k === "up" || k === "down") { this.moveField(k === "up" ? -1 : 1, cx); return true; }
@@ -420,6 +493,8 @@ export default class GitHub extends View {
       return false;
     }
     if (st.loading) return false;
+    // What you type into a prompt box stays there, enter included: it saves the box.
+    if (this.inputFocus?.startsWith("prompt-")) return false;
     const list = this.entries(), p = list[st.sel], fixed = p.id === DEFAULT_PROFILE.id;
     // A delete question: y deletes, any other key keeps the profile.
     if (st.confirm) {
@@ -531,7 +606,7 @@ export default class GitHub extends View {
         .child(div().id(`hg-${view}-act-${item.number}`).h(ACT_H).px(8).flex_none().flex().items_center().rounded(6).cursor_pointer().text_size(11.5)
           .border_1().border_color(t.border).bg(this.acting ? t.raised : t.background).text_color(this.acting ? t.dim : t.foreground)
           .hover((s) => s.bg(t.hover))
-          .tooltip(`Start an agent in a new tab with the ${action.skill} skill (its profile: ⚙)`)
+          .tooltip(this.actTip(action))
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => { cx.stop_propagation(); this.handle.focus(); this.act(cx, view, index); })
           .child(`${action.label} #${action.number}`))));
@@ -628,6 +703,23 @@ export default class GitHub extends View {
       .child(h_flex().flex_wrap().gap(4).items_center().children(buttons));
   }
 
+  // An action's prompt: a text box, empty for the default, its Save, and why it
+  // can't be used under it. Its press stops here, so the panel doesn't take the
+  // keyboard back from it.
+  promptField(t, action) {
+    const st = this.settings, why = st.promptErrors?.[action], key = `prompt-${action}`;
+    return v_flex().gap(4)
+      .child(div().text_size(11.5).text_color(this.inputFocus === key ? t.accent : t.dim).child(`${PROMPT_LABELS[action]} (optional)`))
+      .child(h_flex().gap(6).items_center()
+        .child(div().id(`hg-${key}`).flex_1().min_w(0).h(30).px(8).flex().items_center().rounded(6).border_1().cursor_text()
+          .border_color(why ? t.ansi1 : this.inputFocus === key ? t.accent : t.input).bg(t.background)
+          .tooltip(PROMPT_TIP)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .child(Input.new(this.promptInputs[action]).w_full().text_size(12.5).text_color(t.foreground)))
+        .child(this.chip(t, `hg-${key}-save`, "Save", false, (_e, cx) => this.savePrompt(action, cx))))
+      .when(Boolean(why), (el) => el.child(div().text_size(12).text_color(t.ansi1).child(why)));
+  }
+
   profileList(t) {
     const st = this.settings;
     if (st.loading) return div().flex_1().p(14).text_color(t.dim).child("Reading the profiles…");
@@ -635,6 +727,11 @@ export default class GitHub extends View {
       .child(div().px(2).text_size(11.5).text_color(t.muted)
         .child("Resolve and Review each start the profile they use. Without one, Claude Code starts through mcc run."))
       .children(this.entries().map((p, i) => this.profileCard(t, p, i)))
+      // What each action sends: the IDD skill, unless you write your own prompt.
+      .child(v_flex().id("hg-prompts").flex_none().gap(8).px(10).py(8).rounded(7).border_1().border_color(t.border)
+        .child(div().text_size(11.5).text_color(t.muted)
+          .child(`Resolve and Review send the IDD skill with the number, unless you write your own prompt: ${PROMPT_TOKEN} becomes the issue's or pull request's number, and it is sent as written, to every harness, instead of the skill.`))
+        .children(ACTION_KEYS.map((a) => this.promptField(t, a))))
       .child(h_flex().gap(6).items_center()
         .child(this.chip(t, "hg-new", "New profile", false, (_e, cx) => this.editProfile(null, cx)))
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(st.file ?? "")));
@@ -654,6 +751,7 @@ export default class GitHub extends View {
       : st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles";
     const hints = !st ? `↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · esc close`
       : st.mode === "edit" ? `↑↓ field · ${this.inputFocus === null ? "←→ choose" : "type to edit"} · ⏎ save · esc back`
+        : this.inputFocus?.startsWith("prompt-") ? "type to edit · ⏎ save · esc back"
         : st.confirm ? "y delete · any other key keeps it"
           : "↑↓ select · n new · e edit · d delete · R/V assign · esc back";
     const status = st && st.mode === "list" ? [
@@ -671,7 +769,7 @@ export default class GitHub extends View {
         .when(this.loading && !st, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
         .when(Boolean(action), (el) => el.child(div().id("hg-act").h(24).px(8).flex_none().flex().items_center().rounded(6).cursor_pointer().text_size(11.5)
           .bg(this.acting ? t.raised : t.solid).text_color(this.acting ? t.dim : t.solid_foreground)
-          .tooltip(`Start an agent in a new tab with the ${action.skill} skill (its profile: ⚙)`)
+          .tooltip(this.actTip(action))
           .on_click((_e, cx) => this.act(cx)).child(`${action.label} #${action.number}`)))
         .child(this.iconButton(t, "hg-profiles", "gear", st ? "Back to the list" : "Agent profiles", (_e, cx) => (st ? this.closeSettings(cx) : this.openSettings(cx)), Boolean(st)))
         .when(!st, (el) => el.child(this.iconButton(t, "hg-refresh", "refresh", "Refresh", (_e, cx) => this.refresh(cx))))
