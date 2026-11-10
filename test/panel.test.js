@@ -1733,6 +1733,104 @@ test("a prompt is not saved to a read-only or changed store, and fits a narrow p
   }
 });
 
+// A short pane, at the narrowest widths: the prompt being edited keeps its end in
+// view, the line you type on and its reason, rather than its start.
+test("a prompt being edited keeps the line you type on and its reason in view in a short pane", (t) => {
+  const dir = home(t);
+  const reasons = {
+    [`${"word ".repeat(40)}ZZEND`]: "Resolve prompt: must contain {number}, where the number goes",
+    [`-${"word ".repeat(60)}ZZEND`]: "Resolve prompt: must contain {number}, where the number goes; Resolve prompt: can't start with -, ! or #",
+  };
+  for (const cols of [28, 30, 40]) for (const rows of [8, 10, 12, 16]) for (const [typed, reason] of Object.entries(reasons)) {
+    useProfiles(dir, []);
+    setupGitHub("issues");
+    const at = (keys) => screenAt(cols, rows, () => onInput(Buffer.from(keys)));
+    at("sj");
+    let lines = at(`\r${typed}\r`);
+    const shown = `${cols}x${rows}:\n${lines.join("\n")}`;
+    assert.equal(ui.settings.mode, "prompt", shown);
+    fitsWithHints(lines, cols, rows, "type to edit", "esc back");
+    // The line you type on, with the end of what you typed.
+    assert.ok(lines.some((l) => /^▌ .*ZZEND $/.test(l)), shown);
+    // The reason, from its start: whole, or cut where the room ends, with "…".
+    const why = lines.filter((l) => /^ {4}\S/.test(l ?? ""));
+    assert.ok(why[0]?.startsWith("    Resolve prompt:"), shown);
+    assert.ok(shows(why, reason) || why.at(-1).trimEnd().endsWith("…"), shown);
+    // At 12 rows and more, the first reason is whole.
+    if (rows >= 12) assert.ok(shows(why, "Resolve prompt: must contain {number}, where the number goes"), shown);
+    // What you type next shows too.
+    lines = at(" MORE");
+    assert.ok(lines.some((l) => /^▌ .*MORE $/.test(l)), `${cols}x${rows}:\n${lines.join("\n")}`);
+    at("\x1b\x1b");
+  }
+});
+
+test("the wheel reaches the prompt rows and the prompt's buttons in a short pane", (t) => {
+  const dir = home(t);
+  const wheel = (down) => `\x1b[<${down ? 65 : 64};2;5M`;
+  for (const cols of [28, 30, 40]) for (const rows of [8, 10, 12, 16]) for (const n of [0, 2]) {
+    const profiles = Array.from({ length: n }, (_, i) => ({ id: `p${i}`, name: `Profile ${i}`, harness: "claude" }));
+    const file = usePrompts(dir, { resolve: "Go {number}" }, profiles);
+    setupGitHub("issues");
+    const at = (keys) => screenAt(cols, rows, () => onInput(Buffer.from(keys)));
+    const where = (lines) => `${cols}x${rows} n=${n}:\n${lines.join("\n")}`;
+    at("s");
+    // Down through the profiles to the prompt rows, the selected one on screen with its Edit.
+    let lines;
+    for (let i = 0; i <= n; i++) lines = at(wheel(true));
+    assert.equal(ui.settings.promptSel, "resolve", where(lines));
+    lines = at(wheel(true) + wheel(true));
+    assert.equal(ui.settings.promptSel, "review", where(lines));
+    assert.ok(lines.some((l) => /^▌ Review prompt +Edit $/.test(l ?? "")), where(lines));
+    fitsWithHints(lines, cols, rows, "↑↓ select", "esc back");
+    // And back up to the profiles.
+    for (let i = 0; i < 2; i++) lines = at(wheel(false));
+    assert.equal(ui.settings.promptSel, null, where(lines));
+    assert.equal(ui.settings.sel, n, where(lines));
+    lines = at(wheel(true));
+    assert.equal(ui.settings.promptSel, "resolve", where(lines));
+    // The Resolve prompt's editor: the wheel scrolls it down to its buttons, which work.
+    lines = at("\r");
+    assert.equal(ui.settings.mode, "prompt", where(lines));
+    for (let i = 0; i < 10 && find(lines, " Cancel ")[1] < 0; i++) lines = at(wheel(true));
+    fitsWithHints(lines, cols, rows, "type to edit", "esc back");
+    for (const label of [" Use default ", " Cancel "]) assert.ok(find(lines, label)[1] >= 0, `${label}\n${where(lines)}`);
+    // A key brings back the line you type on.
+    lines = at("Q");
+    assert.ok(lines.some((l) => /^▌ Go \{number\}Q $/.test(l ?? "")), where(lines));
+    for (let i = 0; i < 10 && find(lines, " Cancel ")[1] < 0; i++) lines = at(wheel(true));
+    const [x, y] = find(lines, " Use default ");
+    lines = at(`\x1b[<0;${x + 2};${y + 1}M`);
+    assert.equal(ui.settings.mode, "list", where(lines));
+    assert.equal(JSON.parse(fs.readFileSync(file, "utf8")).prompts, undefined, where(lines));
+    // A delete question waits for its key: the wheel neither answers nor moves it.
+    if (n) {
+      at("\x1b[Ad");
+      assert.equal(ui.settings.mode, "confirm");
+      at(wheel(true) + wheel(false));
+      assert.equal(ui.settings.mode, "confirm");
+      assert.equal(ui.settings.sel, n);
+      at("n");
+    }
+    at("\x1b");
+  }
+});
+
+test("with the last profile selected, the prompt rows under it show where there is room", (t) => {
+  const dir = home(t);
+  useProfiles(dir, [{ id: "p0", name: "Profile 0", harness: "claude" }]);
+  for (const [cols, rows] of [[28, 16], [30, 16], [40, 14]]) {
+    setupGitHub("issues");
+    const lines = screenAt(cols, rows, () => onInput(Buffer.from("sj")));
+    const where = `${cols}x${rows}:\n${lines.join("\n")}`;
+    assert.equal(ui.settings.sel, 1, where);
+    assert.ok(lines.some((l) => /^▌ Profile 0/.test(l ?? "")), where);
+    const review = lines.findIndex((l) => /^ {2}Review prompt$/.test(l?.trimEnd() ?? ""));
+    assert.ok(review > 0 && /^ {4}default: \/issue-pr-/.test(lines[review + 1]), where);
+    screenAt(cols, rows, () => onInput(Buffer.from("\x1b")));
+  }
+});
+
 test("a custom prompt from the profiles view is what Resolve then sends", async (t) => {
   claudeHome(t);
   setupGitHub("issues");

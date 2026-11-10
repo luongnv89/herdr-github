@@ -781,8 +781,9 @@ const PROMPT_FIELDS = P.ACTION_KEYS.map((a) => ({ key: "prompt", word: P.PROMPT_
 
 // `promptSel` is the action whose prompt row is selected, under the profiles; null
 // while a profile is. `prompt` is the prompt being edited: { action, text }.
+// `scroll` is how far the wheel moved the form or the prompt from where it shows.
 function openSettings() {
-  ui.settings = { mode: "list", sel: 0, promptSel: null, form: null, prompt: null, field: 0, error: null, fieldErrors: {}, info: null, ...readStore() };
+  ui.settings = { mode: "list", sel: 0, promptSel: null, form: null, prompt: null, field: 0, scroll: 0, error: null, fieldErrors: {}, info: null, ...readStore() };
   draw();
 }
 
@@ -802,7 +803,7 @@ function selectedEntry(st) {
 function settingsBack() {
   const st = ui.settings;
   if (st.mode === "list") return closeSettings();
-  Object.assign(st, { mode: "list", form: null, prompt: null, error: null, fieldErrors: {} });
+  Object.assign(st, { mode: "list", form: null, prompt: null, scroll: 0, error: null, fieldErrors: {} });
   draw();
 }
 
@@ -849,7 +850,7 @@ function change(fn, info) {
 function editProfile(p) {
   const st = ui.settings;
   st.form = { prev: p?.id ?? null, name: p?.name ?? "", id: p?.id ?? "", harness: p?.harness ?? "mcc", model: p?.model ?? "", thinking: p?.thinking ?? "" };
-  Object.assign(st, { mode: "edit", field: 0, error: null, fieldErrors: {}, info: null });
+  Object.assign(st, { mode: "edit", field: 0, scroll: 0, error: null, fieldErrors: {}, info: null });
   draw();
 }
 
@@ -866,7 +867,7 @@ function saveForm() {
 // A prompt row's Edit, e or enter: its text, to change; empty sends the default.
 function editPrompt(action) {
   const st = ui.settings;
-  Object.assign(st, { mode: "prompt", promptSel: action, prompt: { action, text: P.resolvePrompt(st.store, action) ?? "" }, error: null, fieldErrors: {}, info: null });
+  Object.assign(st, { mode: "prompt", promptSel: action, prompt: { action, text: P.resolvePrompt(st.store, action) ?? "" }, scroll: 0, error: null, fieldErrors: {}, info: null });
   draw();
 }
 
@@ -912,31 +913,53 @@ const UP = ["\x1b[A", "\x1bOA"], DOWN = ["\x1b[B", "\x1bOB"];
 function settingsKey(m) {
   const st = ui.settings, k = m[0];
   if (m[1] != null) {
-    if (Number(m[1]) === 0 && m[4] === "M") click(Number(m[2]) - 1, Number(m[3]) - 1);
+    const button = Number(m[1]);
+    if (button === 0 && m[4] === "M") click(Number(m[2]) - 1, Number(m[3]) - 1);
+    else if (button === 64 || button === 65) wheel(st, button === 64 ? -1 : 1);
     return;
   }
+  // A key brings the form or the prompt back to where it shows what you type.
+  st.scroll = 0;
   if (k === "\x03") return quit();
   if (st.mode === "confirm") return confirmDelete(k === "y" || k === "Y");
   if (st.mode === "edit") return formKey(st, k);
   if (st.mode === "prompt") return promptKey(st, k);
   selectedEntry(st);
   if (k === "\x1b" || k === "q" || k === "s") return closeSettings();
-  // ↑ and ↓ go from the last profile on to the prompt rows, and back.
   const at = P.ACTION_KEYS.indexOf(st.promptSel);
-  if (UP.includes(k) || k === "k") {
-    if (at >= 0) st.promptSel = P.ACTION_KEYS[at - 1] ?? null;
-    else st.sel = Math.max(0, st.sel - 1);
-  } else if (DOWN.includes(k) || k === "j") {
-    if (at >= 0) st.promptSel = P.ACTION_KEYS[Math.min(at + 1, P.ACTION_KEYS.length - 1)];
-    else if (st.sel === entries().length - 1) st.promptSel = P.ACTION_KEYS[0];
-    else st.sel += 1;
-  } else if (k === "n") return editProfile(null);
+  if (UP.includes(k) || k === "k") step(st, -1);
+  else if (DOWN.includes(k) || k === "j") step(st, 1);
+  else if (k === "n") return editProfile(null);
   else if (k === "e" || k === "\r" || k === "\n") return at >= 0 ? editPrompt(st.promptSel) : editSelected();
   else if (at >= 0 && (k === "d" || k === "R" || k === "V")) {
     Object.assign(st, { error: `The ${P.PROMPT_LABELS[st.promptSel]} isn't a profile: e or enter edits it`, info: null });
   } else if (k === "d") return askDelete();
   else if (k === "R" || k === "V") return assignTo(k === "R" ? "resolve" : "review");
   else return;
+  draw();
+}
+
+// ↑ and ↓ in the list, and the wheel: from the last profile on to the prompt rows,
+// and back.
+function step(st, by) {
+  const at = P.ACTION_KEYS.indexOf(st.promptSel);
+  if (by < 0) {
+    if (at >= 0) st.promptSel = P.ACTION_KEYS[at - 1] ?? null;
+    else st.sel = Math.max(0, st.sel - 1);
+  } else if (at >= 0) st.promptSel = P.ACTION_KEYS[Math.min(at + 1, P.ACTION_KEYS.length - 1)];
+  else if (st.sel === entries().length - 1) st.promptSel = P.ACTION_KEYS[0];
+  else st.sel += 1;
+}
+
+// The wheel: in the list it moves the selection, so it reaches the prompt rows; in
+// the form and the prompt it scrolls, so their buttons can be reached in a short
+// pane. A delete question waits for its key.
+function wheel(st, by) {
+  if (st.mode === "confirm") return;
+  if (st.mode === "list") {
+    selectedEntry(st);
+    step(st, by);
+  } else st.scroll = (st.scroll || 0) + 3 * by;
   draw();
 }
 
@@ -1092,9 +1115,10 @@ function settingsLines(cols, rows) {
     else lines.push(invert(" "));
     selStart = body.length;
     for (const l of lines) { body.push(`${accent("▌")} ${l}`); owner.push(null); }
-    // Its reason, whole, under it.
+    // Its reason under it: whole while the pane has room for it and the line you
+    // type on, cut there otherwise, ending in "…".
     const why = st.fieldErrors.prompt;
-    if (why) for (const l of wrap(why, cols - 4, Infinity)) { body.push("    " + red(l)); owner.push(null); }
+    if (why) for (const l of wrap(why, cols - 4, Math.max(1, height - 1))) { body.push("    " + red(l)); owner.push(null); }
     selEnd = body.length;
     body.push(""); owner.push(null);
     const noun = Object.values(ACTIONS).find((a) => a.key === action).noun;
@@ -1135,6 +1159,9 @@ function settingsLines(cols, rows) {
         selEnd = body.length;
       }
     });
+    // With the last profile selected, the prompt rows under it show too, as far as
+    // they fit: the wheel or ↓ goes on to them.
+    if (!st.promptSel && st.sel === entries().length - 1) selEnd = Infinity;
     // Each action's prompt, under the profiles: your own, or the default it sends
     // without one. The selected one's Edit sits at the right edge, so a click on the
     // row only selects it.
@@ -1154,8 +1181,13 @@ function settingsLines(cols, rows) {
       if (on) selEnd = body.length;
     }
   }
-  // Keep the selected entry (or field) in view.
-  const top = Math.min(selStart, Math.max(0, selEnd - height));
+  // Keep the selected entry (or field) in view. A prompt keeps its end in view: the
+  // line you type on, and its reason. The wheel scrolls the form and the prompt
+  // from there.
+  const most = Math.max(0, body.length - height);
+  const shown = st.mode === "prompt" ? Math.max(selStart, selEnd - height) : Math.min(selStart, Math.max(0, Math.min(selEnd, body.length) - height));
+  const top = editing ? Math.max(0, Math.min(most, shown + (st.scroll || 0))) : shown;
+  if (editing) st.scroll = top - shown;
   for (let r = 0; r < height; r++) {
     out.push(body[top + r] ?? "");
     for (const h of hits[top + r] ?? []) ui.buttons.push({ row: out.length - 1, from: h.from, to: h.to, action: h.action });
