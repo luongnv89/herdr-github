@@ -7,7 +7,7 @@
 // ./profiles.js (shared with the terminal panel); both are shared with the tests.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, v_virtual_list, VirtualListScrollHandle, Scrollbar, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { spaces, panes, focused, exec, theme, layout, window, run, home, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
 import { LIMIT, STALE, IDD, ago, firstLine, FORGES, ACTIONS, pickHost, forgesFor, load, actionFor, promptFor, findSkill, cantRun, tabStart, pathTo, shown } from "./forge.js";
 import {
@@ -73,7 +73,6 @@ export default class GitHub extends View {
     this.forges = new Map();
     this.loc = locate(null);
     this.handle = cx.focus_handle();
-    this.scroll = VirtualListScrollHandle.new();
     // The profile form's text fields, made once and refilled for each profile.
     this.inputFocus = null;
     this.inputs = {};
@@ -124,14 +123,15 @@ export default class GitHub extends View {
   selected() { return this.items()[this.sel[this.view]] ?? null; }
   action() { return actionFor(this.forge, this.view, this.selected()); }
 
-  refresh(cx) {
+  // From render, cx.notify() isn't allowed: render reads the new state right after.
+  refresh(cx, fromRender = false) {
     if (this.loading) return;
     const loc = this.loc, context = keyOf(loc);
     if (context !== this.context) {
       Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 } });
     }
     this.fetchedAt = Date.now();
-    if (!loc?.cwd) { this.error = "No folder"; cx.notify(); return; }
+    if (!loc?.cwd) { this.error = "No folder"; if (!fromRender) cx.notify(); return; }
     const { cwd, on } = loc;
     const current = () => keyOf(this.loc) === context;
     this.loading = true;
@@ -161,7 +161,7 @@ export default class GitHub extends View {
         if (current()) this.error = on ? `Can't reach ${on}: ${e?.message ?? e}` : `Can't read the repository: ${e?.message ?? e}`;
       } finally { this.loading = false; cx.notify(); }
     });
-    cx.notify();
+    if (!fromRender) cx.notify();
   }
 
   // Runs on this computer, so the browser is yours even for a space on another machine.
@@ -184,7 +184,6 @@ export default class GitHub extends View {
   pick(view, cx) {
     this.view = view;
     localStorage.setItem("view", view);
-    this.scroll.scroll_to_item(this.sel[view]);
     cx.notify();
   }
 
@@ -192,7 +191,6 @@ export default class GitHub extends View {
     const items = this.items();
     if (!items.length) return;
     this.sel[this.view] = Math.max(0, Math.min(items.length - 1, this.sel[this.view] + by));
-    this.scroll.scroll_to_item(this.sel[this.view]);
     cx.notify();
   }
 
@@ -752,12 +750,11 @@ export default class GitHub extends View {
   render(cx) {
     const loc = locate(this.loc);
     if (keyOf(loc) !== keyOf(this.loc) || loc?.tab !== this.loc?.tab || loc?.pane !== this.loc?.pane) this.loc = loc;
-    if (this.visible() && (keyOf(this.loc) !== this.context || Date.now() - this.fetchedAt > STALE)) this.refresh(cx);
+    if (this.visible() && (keyOf(this.loc) !== this.context || Date.now() - this.fetchedAt > STALE)) this.refresh(cx, true);
     const t = theme(), view = this.view, items = this.items(), focused = this.handle.is_focused() || this.inputFocus !== null;
     const st = this.settings, action = st ? null : this.action();
     const failed = this.error || this.errors[view];
     const empty = failed || (this.loading && !this.fetched ? "Loading…" : view === "prs" ? `No open ${this.forge?.pr ?? "pull request"}s` : "No open issues");
-    const sizes = items.map((x) => this.layoutRow(x, actionFor(this.forge, view, x)).height + 1);
     const tones = { info: t.blocked, ok: t.ansi2, error: t.ansi1 };
     const title = !st ? this.repo?.name ?? this.forge?.name ?? "Pull requests and issues"
       : st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles";
@@ -795,11 +792,11 @@ export default class GitHub extends View {
           .child(this.segment(t, "issues", "Issues", this.issues.length)))
         .child(div().flex_1().min_h(0).relative()
           .when(items.length > 0, (el) => el
-            .child(v_virtual_list(`hg-list-${view}`, items.length, sizes, (i) => `${view}-${items[i]?.number ?? i}`,
-              (range) => items.slice(range.start, range.end).map((x, k) => {
-                const i = range.start + k;
-                return div().pb(1).px(6).child(view === "prs" ? this.prRow(t, x, i) : this.issueRow(t, x, i));
-              })).track_scroll(this.scroll).size_full().pt(6))
+            // A plain scroll area, not a virtual list: a virtual list's rows can't have
+            // their own click handlers, and each row has two (open, and its button).
+            // At most LIMIT rows, so drawing them all is cheap.
+            .child(v_flex().id(`hg-list-${view}`).size_full().overflow_y_scroll().pt(6)
+              .children(items.map((x, i) => div().pb(1).px(6).child(view === "prs" ? this.prRow(t, x, i) : this.issueRow(t, x, i)))))
             .child(Scrollbar.vertical(`hg-list-${view}`).viewport_from_layout().absolute().inset_0()))
           .when(!items.length, (el) => el.child(div().p(14).text_color(failed ? t.ansi1 : t.dim).child(empty))))
         .when(items.length >= LIMIT, (el) => el.child(div().flex_none().px(14).py(4).text_size(11).text_color(t.dim).child(`Showing the ${LIMIT} most recent`)))
