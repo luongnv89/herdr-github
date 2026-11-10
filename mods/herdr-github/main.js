@@ -12,8 +12,8 @@ import { spaces, panes, focused, exec, theme, layout, window, run, home, readTex
 import { LIMIT, STALE, IDD, ago, firstLine, FORGES, ACTIONS, pickHost, forgesFor, load, actionFor, promptFor, findSkill, cantRun, tabStart, pathTo, shown } from "./forge.js";
 import {
   HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, validateProfile, buildLaunch, storePath, emptyStore,
-  parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, parseMccEnv,
-  PROMPT_TOKEN, PROMPT_LABELS, validatePrompt, expandPrompt, setPrompt, resolvePrompt,
+  parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, parseMccEnv,
+  PROMPT_TOKEN, PROMPT_LABELS, validatePrompt, expandPrompt, setPrompt, resolvePrompt, profileChoices, findChoice,
 } from "./profiles.js";
 
 const MOD = "herdr-github";
@@ -58,6 +58,10 @@ function clamp(text, lines, width, size) {
 }
 
 const TITLE_LH = 18, BODY_LH = 16, META_H = 16, PAD = 7, GAP = 4, ACT_H = 24;
+// The profile menu: its title line, and a 24 px line per profile, 2 px apart, in a
+// box with 4 px of padding and a 1 px border.
+const MENU_TITLE_H = 16, MENU_ITEM_H = 24;
+const menuHeight = (n) => 2 + 8 + MENU_TITLE_H + n * (MENU_ITEM_H + 2);
 
 export default class GitHub extends View {
   init(_props, cx) {
@@ -66,6 +70,10 @@ export default class GitHub extends View {
     this.sel = { prs: 0, issues: 0 };
     this.notice = null;
     this.acting = false;
+    // The profile menu of a Resolve or Review press, while it's open: { view, number,
+    // key, entries, sel, anchor }, anchor being "row" (under that row's button) or
+    // "header" (under the header).
+    this.menu = null;
     // The profiles view (⚙): null while the rows show.
     this.settings = null;
     // Each action's custom prompt as last read, for the buttons' tooltips.
@@ -107,7 +115,7 @@ export default class GitHub extends View {
         const c = await nextCommand();
         if (c === "focus") this.handle.focus();
         else if (c === "refresh") this.refresh(cx);
-        else if (c === "resolve" || c === "review" || c === "act") this.act(cx);
+        else if (c === "resolve" || c === "review" || c === "act") { this.handle.focus(); this.act(cx, this.view, this.sel[this.view], "header"); }
         else if (c === "settings") { if (this.settings) this.closeSettings(cx); else { this.handle.focus(); this.openSettings(cx); } }
         cx.notify();
       }
@@ -196,27 +204,78 @@ export default class GitHub extends View {
 
   // A Resolve or Review button, the header's or a row's, and the a key: a new tab in
   // the space you're in runs the agent of the action's profile in the repo's folder,
-  // with the skill and the number as its first message. One launch at a time.
-  act(cx, view = this.view, index = this.sel[view]) {
+  // with the skill and the number as its first message. With only the default
+  // profile it starts at once; with more, a menu of them opens under the button
+  // pressed (`anchor`: "row" or "header"), and the one you choose starts. One
+  // launch, or one menu, at a time.
+  act(cx, view = this.view, index = this.sel[view], anchor = "row") {
     const action = actionFor(this.forge, view, this.items(view)[index]);
-    if (!action || this.acting) return;
+    if (!action || this.acting || this.menu) return;
     this.sel[view] = index;
+    // Busy while the store is read, so a second press opens no second menu.
     this.acting = true;
     cx.spawn(async (cx) => {
-      try { await this.launch(action, cx); }
-      catch (e) { this.say("error", `Can't start an agent: ${e?.message ?? e}`); }
+      try {
+        // The store is read on every press: the terminal panel may have changed it.
+        const { store } = await this.readStore();
+        const { entries, sel } = profileChoices(store, action.key);
+        if (entries.length === 1) return await this.launch(action, entries[0], resolvePrompt(store, action.key), cx);
+        this.menu = { view, number: action.number, key: action.key, entries, sel, anchor };
+      } catch (e) { this.say("error", `Can't start an agent: ${e?.message ?? e}`); }
       finally { this.acting = false; cx.notify(); }
     });
     cx.notify();
   }
 
-  async launch(action, cx) {
+  // The menu's entry `i`, chosen: the store is read again, so a profile deleted since
+  // the menu opened, or a row gone in a refresh, starts nothing and says why. The
+  // action's custom prompt goes with whichever profile it is.
+  startChoice(i, cx) {
+    const m = this.menu;
+    if (!m || this.acting) return;
+    this.menu = null;
+    this.acting = true;
+    cx.spawn(async (cx) => {
+      try {
+        const { store } = await this.readStore();
+        const chosen = m.entries[i], profile = chosen ? findChoice(store, chosen.id) : null;
+        const action = actionFor(this.forge, m.view, this.items(m.view).find((x) => x.number === m.number));
+        if (!action) return this.say("error", `The ${ACTIONS[m.view].noun} #${m.number} isn't in the list any more, so nothing started.`);
+        if (!profile) return this.say("error", `The profile ${chosen?.name ?? ""} isn't there any more, so nothing started: press a or ${action.label} to choose another.`);
+        await this.launch(action, profile, resolvePrompt(store, m.key), cx);
+      } catch (e) { this.say("error", `Can't start an agent: ${e?.message ?? e}`); }
+      finally { this.acting = false; cx.notify(); }
+    });
+    cx.notify();
+  }
+
+  // Closes the menu, when it's open: true then. A click anywhere but on one of its
+  // profiles does only this.
+  closeMenu(cx) {
+    if (!this.menu) return false;
+    this.menu = null;
+    cx.notify();
+    return true;
+  }
+
+  // Keys while the menu is open: ↑↓ (or k and j) move, stopping at either end; enter
+  // starts the one chosen; esc or q closes it. It takes every other key too, so esc
+  // never reaches the rows' keys, which hide the panel.
+  menuKey(k, cx) {
+    const m = this.menu;
+    if (k === "up" || k === "k") m.sel = Math.max(0, m.sel - 1);
+    else if (k === "down" || k === "j") m.sel = Math.min(m.entries.length - 1, m.sel + 1);
+    else if (k === "enter") this.startChoice(m.sel, cx);
+    else if (k === "escape" || k === "q") this.menu = null;
+    cx.notify();
+  }
+
+  // `profile` and `template` are what the store held when the action was chosen:
+  // the profile to start, and its custom prompt, or null for the IDD skill's.
+  async launch(action, profile, template, cx) {
     const what = `${action.noun} #${action.number}`, loc = this.loc, root = this.root, on = loc?.on ?? null;
     if (!root) return this.say("error", "No repository to work in");
     if (!loc?.space) return this.say("error", `No space to open a tab in. Click a pane, then ${action.label} again.`);
-    // The store is read on every click: the terminal panel may have changed it.
-    const { store } = await this.readStore();
-    const profile = resolveProfile(store, action.key), template = resolvePrompt(store, action.key);
     // Checked before anything runs: an unchecked profile never reaches a command line.
     const invalid = validateProfile(profile);
     if (invalid.length) throw new Error(`Invalid profile: ${invalid.join("; ")}`);
@@ -314,6 +373,7 @@ export default class GitHub extends View {
   // while the file still holds what was read.
 
   openSettings(cx) {
+    this.menu = null;
     const st = { mode: "list", sel: 0, field: 0, confirm: null, form: null, error: null, info: null, promptErrors: {}, saving: false, loading: true, file: null, text: null, store: emptyStore(), warnings: [], readOnly: true };
     this.settings = st;
     cx.spawn(async (cx) => {
@@ -538,6 +598,12 @@ export default class GitHub extends View {
       if (this.settingsKey(k, m, cx)) cx.stop_propagation();
       return;
     }
+    // So does the profile menu.
+    if (this.menu) {
+      this.menuKey(k, cx);
+      cx.stop_propagation();
+      return;
+    }
     // Any key clears a notice, except the progress of a launch still under way.
     if (this.notice && !(this.acting && this.notice.tone === "info")) this.notice = null;
     if (k === "up" || k === "k") this.move(-1, cx);
@@ -551,7 +617,7 @@ export default class GitHub extends View {
     else if (k === "2") this.pick("issues", cx);
     else if (k === "enter") this.openUrl(this.selected()?.url, cx);
     else if (k === "o") this.openUrl(this.repo?.url, cx);
-    else if (k === "a") this.act(cx);
+    else if (k === "a") this.act(cx, this.view, this.sel[this.view], "header");
     else if (k === "s") this.openSettings(cx);
     else if (k === "r") this.refresh(cx);
     else if (k === "escape" || k === "q") {
@@ -565,7 +631,7 @@ export default class GitHub extends View {
   iconButton(t, id, name, tip, action, on = false) {
     return div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer().text_color(on ? t.foreground : t.dim)
       .when(on, (el) => el.bg(t.selected))
-      .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(action).tooltip(tip).child(svg(icon(name)).size(14));
+      .hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click((e, cx) => { if (!this.closeMenu(cx)) action(e, cx); }).tooltip(tip).child(svg(icon(name)).size(14));
   }
 
   // A small button: a choice (on when chosen), or an action (primary when it's the main one).
@@ -580,7 +646,7 @@ export default class GitHub extends View {
     const on = this.view === view;
     return h_flex().id(`hg-${view}`).flex_1().h(28).gap(6).items_center().justify_center().rounded(7).cursor_pointer().text_size(12)
       .bg(on ? t.selected : t.background).text_color(on ? t.foreground : t.muted).hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => this.pick(view, cx))
+      .on_click((_e, cx) => { if (!this.closeMenu(cx)) this.pick(view, cx); })
       .child(svg(icon(view === "prs" ? "pr" : "issue")).size(13))
       .child(label)
       .when(this.fetched && !this.errors[view], (el) => el.child(div().px(5).rounded(4).bg(t.raised).text_size(10.5).text_color(t.muted).child(String(count))));
@@ -589,19 +655,44 @@ export default class GitHub extends View {
   // Title up to 2 lines, description up to 3, then the meta line, and on GitHub the
   // row's Resolve or Review button. 46 px of the panel's width go to its border, the
   // list's and row's padding, and the icon column.
-  layoutRow(item, action = null) {
+  // With the profile menu open under its button, the row is that much taller.
+  layoutRow(item, action = null, menu = null) {
     const width = (this.width ?? 368) - 46;
     const title = clamp(item.title || "", 2, width, 13);
     const body = item.body ? clamp(item.body, 3, width, 11.5) : { text: "No description", lines: 1 };
-    return { title, body, height: PAD * 2 + title.lines * TITLE_LH + GAP + body.lines * BODY_LH + GAP + META_H + (action ? GAP + ACT_H : 0) + 2 };
+    return {
+      title, body,
+      height: PAD * 2 + title.lines * TITLE_LH + GAP + body.lines * BODY_LH + GAP + META_H + (action ? GAP + ACT_H : 0) + (menu ? GAP + menuHeight(menu.entries.length) : 0) + 2,
+    };
+  }
+
+  // The profile menu: each profile, the action's own highlighted, and what it starts.
+  // A press or click on one stops there, so the row's click doesn't run as well;
+  // nor does one on the box around them.
+  menuList(t) {
+    const m = this.menu, label = ACTIONS[m.view].label;
+    const hint = (p) => {
+      const h = p.id === DEFAULT_PROFILE.id ? "default" : describe(p);
+      return h && h !== p.name ? `${p.name} · ${h}` : p.name;
+    };
+    return v_flex().id("hg-menu").flex_none().gap(2).p(4).rounded(8).border_1().border_color(t.border).bg(t.raised)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => cx.stop_propagation())
+      .child(div().h(MENU_TITLE_H).px(4).flex().items_center().text_size(11).text_color(t.dim).child(`${label} #${m.number} with`))
+      .children(m.entries.map((p, i) => this.chip(t, `hg-menu-${i}`, hint(p), i === m.sel, (_e, cx) => {
+        cx.stop_propagation();
+        this.handle.focus();
+        this.startChoice(i, cx);
+      }).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).tooltip(describe(p))));
   }
 
   row(t, index, item, rowIcon, iconColor, meta, trailing) {
     const view = this.view, action = actionFor(this.forge, view, item);
-    const { title, body, height } = this.layoutRow(item, action), on = index === this.sel[view];
+    const menu = action && this.menu?.anchor === "row" && this.menu.view === view && this.menu.number === item.number ? this.menu : null;
+    const { title, body, height } = this.layoutRow(item, action, menu), on = index === this.sel[view];
     return v_flex().id(`${view}-${item.number}`).h(height).flex_none().px(8).py(PAD).gap(GAP).rounded(7).cursor_pointer()
       .when(on, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
-      .on_click((_e, cx) => { this.sel[this.view] = index; this.openUrl(item.url, cx); })
+      .on_click((_e, cx) => { if (this.closeMenu(cx)) return; this.sel[this.view] = index; this.openUrl(item.url, cx); })
       .tooltip(item.url || "Open in browser")
       .child(h_flex().gap(7).items_start()
         .child(svg(icon(rowIcon)).size(13).flex_none().mt(2).text_color(iconColor))
@@ -618,8 +709,10 @@ export default class GitHub extends View {
           .hover((s) => s.bg(t.hover))
           .tooltip(this.actTip(action))
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-          .on_click((_e, cx) => { cx.stop_propagation(); this.handle.focus(); this.act(cx, view, index); })
-          .child(`${action.label} #${action.number}`))));
+          .on_click((_e, cx) => { cx.stop_propagation(); this.handle.focus(); if (!this.closeMenu(cx)) this.act(cx, view, index, "row"); })
+          .child(`${action.label} #${action.number}`))))
+      // Its profile menu, under its button.
+      .when(Boolean(menu), (el) => el.child(div().pl(20).flex_none().child(this.menuList(t))));
   }
 
   prRow(t, p, i) {
@@ -752,13 +845,17 @@ export default class GitHub extends View {
     if (keyOf(loc) !== keyOf(this.loc) || loc?.tab !== this.loc?.tab || loc?.pane !== this.loc?.pane) this.loc = loc;
     if (this.visible() && (keyOf(this.loc) !== this.context || Date.now() - this.fetchedAt > STALE)) this.refresh(cx, true);
     const t = theme(), view = this.view, items = this.items(), focused = this.handle.is_focused() || this.inputFocus !== null;
+    // A menu whose row left the list, in a refresh, or of the other list, is closed:
+    // nothing would show it, and it would keep the keys.
+    if (this.menu && (this.menu.view !== view || !items.some((x) => x.number === this.menu.number))) this.menu = null;
     const st = this.settings, action = st ? null : this.action();
     const failed = this.error || this.errors[view];
     const empty = failed || (this.loading && !this.fetched ? "Loading…" : view === "prs" ? `No open ${this.forge?.pr ?? "pull request"}s` : "No open issues");
     const tones = { info: t.blocked, ok: t.ansi2, error: t.ansi1 };
     const title = !st ? this.repo?.name ?? this.forge?.name ?? "Pull requests and issues"
       : st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles";
-    const hints = !st ? `↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · esc close`
+    const hints = this.menu && !st ? "↑↓ choose · ⏎ start · esc cancel"
+      : !st ? `↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · esc close`
       : st.mode === "edit" ? `↑↓ field · ${this.inputFocus === null ? "←→ choose" : "type to edit"} · ⏎ save · esc back`
         : this.inputFocus?.startsWith("prompt-") ? "↑↓ prompts and profiles · type to edit · ⏎ save · esc back"
         : st.confirm ? "y delete · any other key keeps it"
@@ -779,10 +876,13 @@ export default class GitHub extends View {
         .when(Boolean(action), (el) => el.child(div().id("hg-act").h(24).px(8).flex_none().flex().items_center().rounded(6).cursor_pointer().text_size(11.5)
           .bg(this.acting ? t.raised : t.solid).text_color(this.acting ? t.dim : t.solid_foreground)
           .tooltip(this.actTip(action))
-          .on_click((_e, cx) => this.act(cx)).child(`${action.label} #${action.number}`)))
+          .on_click((_e, cx) => { cx.stop_propagation(); if (!this.closeMenu(cx)) this.act(cx, view, this.sel[view], "header"); }).child(`${action.label} #${action.number}`)))
         .child(this.iconButton(t, "hg-profiles", "gear", st ? "Back to the list" : "Agent profiles", (_e, cx) => (st ? this.closeSettings(cx) : this.openSettings(cx)), Boolean(st)))
         .when(!st, (el) => el.child(this.iconButton(t, "hg-refresh", "refresh", "Refresh", (_e, cx) => this.refresh(cx))))
         .when(!st && Boolean(this.repo?.url), (el) => el.child(this.iconButton(t, "hg-open", "external", `Open the repo on ${this.forge?.name ?? "the web"}`, (_e, cx) => this.openUrl(this.repo.url, cx)))))
+      // The profile menu of the header's button (or the a key), under the header.
+      .when(!st && this.menu?.anchor === "header", (el) => el.child(h_flex().flex_none().px(8).py(6).justify_end().border_b(1).border_color(t.border)
+        .child(this.menuList(t))))
       .when(Boolean(st), (el) => el.child(st.mode === "edit" ? this.profileForm(t) : this.profileList(t))
         .when(status.length > 0, (el) => el.child(v_flex().flex_none().px(14).py(8).gap(4).border_t(1).border_color(t.border).text_size(12)
           .children(status.map(([text, color]) => div().text_color(color).child(text))))))
@@ -803,7 +903,7 @@ export default class GitHub extends View {
         .when(Boolean(this.notice), (el) => el.child(v_flex().flex_none().px(14).py(8).gap(4).border_t(1).border_color(t.border).text_size(12)
           .child(div().text_color(tones[this.notice.tone] ?? t.foreground).child(this.notice.text))
           .when(Boolean(this.notice.url), (el) => el.child(div().id("hg-notice-url").text_color(t.accent).cursor_pointer().truncate()
-            .on_click((_e, cx) => this.openUrl(this.notice.url, cx)).child(this.notice.url))))))
+            .on_click((_e, cx) => { if (!this.closeMenu(cx)) this.openUrl(this.notice.url, cx); }).child(this.notice.url))))))
       // The profiles view's keys wrap onto a second line rather than being cut.
       .child(div().flex_none().min_h(24).px(14).flex().items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(focused ? t.muted : t.dim)
         .when(!st, (el) => el.h(24).truncate()).when(Boolean(st), (el) => el.py(4))
