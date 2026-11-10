@@ -20,7 +20,17 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Syntax
-        run: node --check panel.js && node --check toggle.js && node --check bind-key.js
+        run: |
+          node --check panel.js && node --check toggle.js && node --check bind-key.js
+          node --check profiles.cjs
+          node --check scripts/sync-profiles.mjs
+      - name: App mod syntax
+        run: |
+          # A check that passes broken code would pass everything below.
+          if printf 'export const x = ;\n' | node --input-type=module --check 2>/dev/null; then echo "node --check is vacuous"; exit 1; fi
+          for f in mods/herdr-github/*.js; do echo "$f"; node --input-type=module --check < "$f" || exit 1; done
+      - name: Profiles copy
+        run: node scripts/sync-profiles.mjs --check
       - name: Manifest
         run: |
           python3 - <<'PY'
