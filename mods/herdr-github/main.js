@@ -675,11 +675,13 @@ export default class GitHub extends View {
       const h = p.id === DEFAULT_PROFILE.id ? "default" : describe(p);
       return h && h !== p.name ? `${p.name} · ${h}` : p.name;
     };
-    return v_flex().id("hg-menu").flex_none().gap(2).p(4).rounded(8).border_1().border_color(t.border).bg(t.raised)
+    // It never grows past the pane: a long entry is cut, with "…", and the selected
+    // one starts with ▸, not only its color.
+    return v_flex().id("hg-menu").flex_none().min_w(0).max_w_full().gap(2).p(4).rounded(8).border_1().border_color(t.border).bg(t.raised)
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => cx.stop_propagation())
       .child(div().h(MENU_TITLE_H).px(4).flex().items_center().text_size(11).text_color(t.dim).child(`${label} #${m.number} with`))
-      .children(m.entries.map((p, i) => this.chip(t, `hg-menu-${i}`, hint(p), i === m.sel, (_e, cx) => {
+      .children(m.entries.map((p, i) => this.chip(t, `hg-menu-${i}`, div().min_w(0).truncate().child(`${i === m.sel ? "▸ " : ""}${hint(p)}`), i === m.sel, (_e, cx) => {
         cx.stop_propagation();
         this.handle.focus();
         this.startChoice(i, cx);

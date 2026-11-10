@@ -1527,7 +1527,8 @@ test("at 28 and 30 cells the notice of a started OpenCode keeps its note whole",
     assert.ok(ui.menu, `${cols}: a opened no menu`);
     for (const l of menu) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
     assert.ok(menu.some((l) => /│ ▸ P\b/.test(l ?? "")), `${cols}:\n${menu.join("\n")}`);
-    assert.match(menu[23], /^ ↑↓ choose/);
+    // Too narrow for the full key hints: the short ones, esc still in view.
+    assert.equal(menu[23].trimEnd(), " ↑↓ · ⏎ start · esc cancel", `${cols}:\n${menu.join("\n")}`);
     const lines = await screenAsync(() => onInput(Buffer.from("\r")), cols);
     const whole = "Started OpenCode in a new pane: Use the issue-resolver skill on issue #12. " +
       "(OpenCode ignores this profile's model and thinking level: it has no flag for them when it starts)";
@@ -2090,7 +2091,8 @@ test("at 28, 30, 40 and 60 cells the menu fits, with a 40-character name, and it
     const where = `${cols} ${anchor}:\n${lines.join("\n")}`;
     assert.equal(ui.menu?.anchor, anchor, where);
     for (const l of lines) assert.ok(width(l ?? "") <= cols, `${where}\n${l}`);
-    assert.match(lines[FOOTER], /^ ↑↓ choose/, where);
+    // The full key hints when they fit, else the short ones: esc cancel stays in view.
+    assert.match(lines[FOOTER], cols >= 33 ? /^ ↑↓ choose · ⏎ start · esc cancel/ : /^ ↑↓ · ⏎ start · esc cancel *$/, where);
     // The name, cut to the box when it must, ending in "…".
     const y = lines.findIndex((l) => l?.includes("│   Abcdefghij"));
     assert.ok(y > 0, where);

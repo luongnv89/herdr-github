@@ -762,6 +762,9 @@ function menuLines(m, cols, shown) {
   return { width: w, lines };
 }
 
+// The key hints while the menu is open: 33 cells, and 26 for a narrower pane.
+const MENU_KEYS = " ↑↓ choose · ⏎ start · esc cancel", MENU_KEYS_SHORT = " ↑↓ · ⏎ start · esc cancel";
+
 function draw() {
   const cols = process.stdout.columns || 60, rows = process.stdout.rows || 24;
   if (ui.settings) return paint(settingsLines(cols, rows), rows);
@@ -861,7 +864,9 @@ function draw() {
   }
   out.push(...notice);
 
-  const keys = ui.menu ? " ↑↓ choose · ⏎ start · esc cancel" : ` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · q close`;
+  // The menu's hints, shorter when the pane is too narrow for them, so esc stays in view.
+  const menuKeys = width(MENU_KEYS) <= cols ? MENU_KEYS : MENU_KEYS_SHORT;
+  const keys = ui.menu ? menuKeys : ` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · q close`;
   out.push(dim(fit(keys, cols)));
   paint(out, rows);
 }
