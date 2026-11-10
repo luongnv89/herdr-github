@@ -166,7 +166,9 @@ git clone https://github.com/luongnv89/herdr-github
 ln -s "$PWD/herdr-github/mods/herdr-github" "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/mods/herdr-github"
 ```
 
-Or copy the folder there instead of linking it. The first time the app sees the folder, it docks the panel on the right; saving a file in it reloads the panel. To update, `git pull` in the clone (copy the folder again if you copied it).
+Or copy the folder there instead of linking it. The first time the app sees the folder, it docks the panel on the right. In a copied folder, saving a file reloads the panel. The app doesn't see changes made through a link, so after editing a linked folder, or a `git pull` in the clone, make the link again (`ln -sfn` with the same two paths) or restart the app. To update, `git pull` in the clone and make the link again, or copy the folder again if you copied it.
+
+If you use your own layout, the app may dock the panel as a column of its own, or not show it. Check `~/.config/herdr-app/layouts/<your layout>.json` for a block with `"mod": "herdr-github"`, and put it where you want it, for example in place of another panel in the side stack.
 
 In the app, a Resolve or Review click opens a new tab in the space you're in, in the repo's folder. Claude Code, Codex, Pi and OpenCode start with the `run` the app's `programs.json` gives them, followed by the profile's flags, and get the prompt as their first message. mcc starts as `mcc run -- [flags] /issue-resolver 12`. With a custom prompt, that prompt takes the place of `/issue-resolver 12`, and `mcc env` runs only to check that mcc is there. For a space on another machine, the agent, `mcc env` and the skill lookup run on that machine, while the profiles and prompts come from your computer. The app doesn't say when mcc is ready, so for mcc the panel says it opened the tab, not that Claude Code started: if mcc asks something first, such as about a usage limit, answer it in the new tab.
 
