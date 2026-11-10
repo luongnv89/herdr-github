@@ -328,7 +328,11 @@ export default class GitHub extends View {
     for (const key of ["name", "id", "model"]) this.inputs[key].set_value(values[key]);
     Object.assign(st.form, { name: values.name, id: values.id, model: values.model });
     Object.assign(st, { mode: "edit", confirm: null, error: null, info: null });
+    // The field exists only once the form is drawn: focus it again after that, as
+    // Herdr's own mods do, unless you've clicked into a field meanwhile.
     this.inputs.name.focus();
+    const form = st.form;
+    cx.timer.after(600, () => { if (form && this.settings?.form === form && this.inputFocus === null) this.inputs.name.focus(); });
     cx.notify();
   }
 
