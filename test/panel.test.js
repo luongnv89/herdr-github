@@ -1816,6 +1816,29 @@ test("the wheel reaches the prompt rows and the prompt's buttons in a short pane
   }
 });
 
+test("a prompt saved with a click after the wheel shows its reason and the line you type on", (t) => {
+  const dir = home(t);
+  const wheel = `\x1b[<65;2;5M`;
+  for (const cols of [28, 30, 40]) for (const rows of [8, 10, 12]) {
+    useProfiles(dir, []);
+    setupGitHub("issues");
+    const at = (keys) => screenAt(cols, rows, () => onInput(Buffer.from(keys)));
+    let lines = at("sj\rNo number here ZZEND");
+    for (let i = 0; i < 10 && find(lines, " Cancel ")[1] < 0; i++) lines = at(wheel);
+    const [x, y] = find(lines, " Save ");
+    assert.ok(y >= 0, `${cols}x${rows}:\n${lines.join("\n")}`);
+    lines = at(`\x1b[<0;${x + 2};${y + 1}M`);
+    const shown = `${cols}x${rows}:\n${lines.join("\n")}`;
+    assert.equal(ui.settings.mode, "prompt", shown);
+    fitsWithHints(lines, cols, rows, "type to edit", "esc back");
+    assert.ok(lines.some((l) => /^▌ .*ZZEND $/.test(l ?? "")), shown);
+    const why = lines.filter((l) => /^ {4}\S/.test(l ?? ""));
+    assert.ok(why[0]?.startsWith("    Resolve prompt:"), shown);
+    assert.ok(shows(why, "Resolve prompt: must contain {number}, where the number goes") || why.at(-1).trimEnd().endsWith("…"), shown);
+    at("\x1b\x1b");
+  }
+});
+
 test("with the last profile selected, the prompt rows under it show where there is room", (t) => {
   const dir = home(t);
   useProfiles(dir, [{ id: "p0", name: "Profile 0", harness: "claude" }]);

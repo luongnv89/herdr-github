@@ -841,8 +841,9 @@ function splitErrors(message, inForm) {
 // Runs a change to the store, then shows what happened.
 function change(fn, info) {
   const st = ui.settings;
-  try { fn(); Object.assign(st, { error: null, fieldErrors: {}, info }); }
-  catch (e) { Object.assign(st, { info: null }, splitErrors(e.message, st.mode === "edit" || st.mode === "prompt")); }
+  // Back to where the form or the prompt shows what you type, and why it failed.
+  try { fn(); Object.assign(st, { error: null, fieldErrors: {}, info, scroll: 0 }); }
+  catch (e) { Object.assign(st, { info: null, scroll: 0 }, splitErrors(e.message, st.mode === "edit" || st.mode === "prompt")); }
   selectedEntry(st);
   draw();
 }
