@@ -1114,7 +1114,7 @@ test("a store changed elsewhere since it was read isn't overwritten", (t) => {
 
 test("a corrupt or newer store is shown read only, and actions use the default", async (t) => {
   const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
-  for (const bad of ["{ not json", JSON.stringify({ version: 2, profiles: [], assign: {} })]) {
+  for (const bad of ["{ not json", JSON.stringify({ version: 3, profiles: [], assign: {} })]) {
     const file = useProfiles(dir, []);
     fs.writeFileSync(file, bad);
     setupGitHub("issues");
@@ -1398,11 +1398,11 @@ test("at 28, 30 and 40 cells the profiles show each warning, note and question w
     assert.ok(lines.at(-1).trimEnd().endsWith("esc back"), `${cols}:\n${lines.join("\n")}`);
     at(() => onInput(Buffer.from("\x1b")));
 
-    // A file from another version.
-    fs.writeFileSync(useProfiles(dir, []), JSON.stringify({ version: 2, profiles: [], assign: {} }));
+    // A file from another version: 1 and 2 are read (2 since #20's prompts).
+    fs.writeFileSync(useProfiles(dir, []), JSON.stringify({ version: 3, profiles: [], assign: {} }));
     setupGitHub("issues");
     lines = at(() => onInput(Buffer.from("s")));
-    assert.ok(shows(lines, "The profiles file is version 2, not 1: it is read only here"), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(shows(lines, "The profiles file is version 3, not 1 or 2: it is read only here"), `${cols}:\n${lines.join("\n")}`);
     at(() => onInput(Buffer.from("\x1b")));
 
     // A 40-character name in what a change did, and in the delete question.

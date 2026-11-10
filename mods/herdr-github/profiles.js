@@ -33,15 +33,27 @@ export const ACTION_KEYS = ["resolve", "review"];
 // What an action starts when no profile is assigned to it, or its profile is gone.
 export const DEFAULT_PROFILE = Object.freeze({ id: "default", name: "Claude Code via mcc run", harness: "mcc" });
 
-export const STORE_VERSION = 1;
+// The newest store version this reads and writes. A store without custom prompts
+// is still written as version 1, so an older panel can keep using it.
+export const STORE_VERSION = 2;
+const READS = [1, 2];
 
 const ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const NAME = /^[^\x00-\x1f\x7f-\x9f\u2028\u2029]{1,40}$/;
 // A model name or alias: no spaces, quotes or shell metacharacters, and no leading
 // "-" that a harness would read as a flag. Aliases such as opus[1m] don't fit.
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
-// A prompt is built from a skill name and an integer: nothing else gets through.
-const PROMPT = /^[A-Za-z0-9 _.:/#-]{1,200}$/;
+// What a prompt can't hold: control, format (bidi, zero-width), private-use,
+// unassigned and surrogate characters, line and paragraph separators, and the
+// backslash, which some shells read inside quotes. Any other text is sent as is:
+// it is one argument, never read by a shell (see shellQuote).
+const PROMPT_BAD = /[\p{C}\u2028\u2029\\]/u;
+// How long a prompt can be, with the number filled in.
+export const PROMPT_MAX = 500;
+// Where a custom prompt takes the issue's or pull request's number.
+export const PROMPT_TOKEN = "{number}";
+// A custom prompt's field, as the views name it and its reasons start ("Resolve prompt: …").
+export const PROMPT_LABELS = { resolve: "Resolve prompt", review: "Review prompt" };
 const ALL_LEVELS = [...new Set(Object.values(THINKING).flat())];
 
 const blank = (v) => v === undefined || v === null || v === "";
@@ -74,6 +86,39 @@ export function normalizeProfile(p) {
   return out;
 }
 
+// ── Prompts ─────────────────────────────────────────────────────────────────
+// Resolve and Review send the IDD skill's prompt, unless the store holds a custom
+// one for the action: a template whose {number} becomes the row's number. Nothing
+// else from the row (its title, its description) ever goes into a prompt.
+
+// Why `text` can't be sent to an agent as its prompt, as a list of reasons; empty
+// when it can. It is checked as sent: trimmed, with the number filled in.
+export function validatePrompt(text) {
+  if (typeof text !== "string") return ["must be text"];
+  const t = text.trim(), errors = [];
+  if (!t) return ["can't be empty"];
+  if (PROMPT_BAD.test(t)) errors.push("no control, invisible or private-use characters, line breaks or backslashes");
+  if (/^[-!#]/.test(t)) errors.push("can't start with -, ! or #");
+  if ([...t].length > PROMPT_MAX) errors.push(`at most ${PROMPT_MAX} characters, with the number filled in`);
+  return errors;
+}
+
+// Why a custom prompt can't be saved: it needs {number}, and must still be a valid
+// prompt with the longest number filled in. Empty when it can.
+export function validatePromptTemplate(template) {
+  if (typeof template !== "string") return ["must be text"];
+  const errors = template.includes(PROMPT_TOKEN) ? [] : [`must contain ${PROMPT_TOKEN}, where the number goes`];
+  return [...errors, ...validatePrompt(expandPrompt(template, Number.MAX_SAFE_INTEGER))];
+}
+
+// The prompt for one issue or pull request: each {number} in `template` becomes
+// `number`, which must be a positive integer.
+export function expandPrompt(template, number) {
+  if (typeof template !== "string") throw new Error("No prompt");
+  if (!Number.isSafeInteger(number) || number <= 0) throw new Error("not a number");
+  return template.replaceAll(PROMPT_TOKEN, String(number));
+}
+
 // How to start a profile's agent with `prompt`. Checks its input again, so an
 // unchecked profile never reaches a command line:
 //   { mode: "agent", kind, extraArgs, warnings } — herdr starts `kind` itself,
@@ -83,7 +128,8 @@ export function normalizeProfile(p) {
 export function buildLaunch(profile, prompt) {
   const errors = validateProfile(profile);
   if (errors.length) throw new Error(`Invalid profile: ${errors.join("; ")}`);
-  if (typeof prompt !== "string" || !PROMPT.test(prompt)) throw new Error("Invalid prompt");
+  const bad = validatePrompt(prompt);
+  if (bad.length) throw new Error(`Invalid prompt: ${bad.join("; ")}`);
   const { harness } = profile, model = profile.model || "", thinking = profile.thinking || "";
   const flags = [], warnings = [];
   if (harness === "mcc" || harness === "claude") {
@@ -105,6 +151,9 @@ export function buildLaunch(profile, prompt) {
 
 // ── The store: one JSON file shared by the terminal panel and the app ───────
 //   { "version": 1, "profiles": [profile, …], "assign": { "resolve": id | null, "review": id | null } }
+// With a custom prompt for either action, it is version 2, and also holds
+//   "prompts": { "resolve": template | null, "review": template | null }
+// A panel from before version 2 shows such a file read only, so never loses them.
 
 // The same file on both surfaces, on the machine where herdr or the app runs.
 export function storePath(home) {
@@ -113,12 +162,13 @@ export function storePath(home) {
 }
 
 export function emptyStore() {
-  return { version: STORE_VERSION, profiles: [], assign: { resolve: null, review: null } };
+  return { version: STORE_VERSION, profiles: [], assign: { resolve: null, review: null }, prompts: { resolve: null, review: null } };
 }
 
-// The store in a file's text, read leniently: a bad profile is skipped with a
-// warning. A file that isn't valid JSON, is from another version, or holds a
-// profile that was skipped is read-only: saving would overwrite what it holds.
+// The store in a file's text, read leniently: a bad profile or prompt is skipped
+// with a warning. A file that isn't valid JSON, is from another version, or holds
+// a profile or prompt that was skipped is read-only: saving would overwrite what
+// it holds.
 // No file (null or "") is an empty store.
 export function parseStore(text) {
   const warnings = [];
@@ -130,8 +180,8 @@ export function parseStore(text) {
     return { store: emptyStore(), warnings, readOnly: true };
   }
   let readOnly = false;
-  if (data.version !== STORE_VERSION) {
-    warnings.push(`The profiles file is version ${JSON.stringify(data.version ?? null)}, not ${STORE_VERSION}: it is read only here`);
+  if (!READS.includes(data.version)) {
+    warnings.push(`The profiles file is version ${JSON.stringify(data.version ?? null)}, not ${READS.join(" or ")}: it is read only here`);
     readOnly = true;
   }
   const store = emptyStore();
@@ -147,26 +197,44 @@ export function parseStore(text) {
     if (store.profiles.some((q) => q.id === p.id)) return skip("its id is used twice");
     store.profiles.push(p);
   });
-  // Saving would drop what was skipped, and the actions assigned to it: first say why
-  // nothing is saved, as "Not saved: …" shows this first warning.
-  if (skipped && !readOnly) {
-    warnings.unshift("Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save");
-    readOnly = true;
-  }
   for (const action of ACTION_KEYS) {
     const id = data.assign?.[action];
     if (id === null || id === undefined) continue;
     if (typeof id === "string" && store.profiles.some((p) => p.id === id)) store.assign[action] = id;
     else warnings.push(`The ${action} action's profile isn't there, so it uses the default`);
   }
+  // A prompt that can't be used is skipped: its action sends the default prompt.
+  let badPrompt = data.prompts !== undefined && data.prompts !== null && (typeof data.prompts !== "object" || Array.isArray(data.prompts));
+  if (badPrompt) warnings.push("The profiles file's prompts aren't an object");
+  else for (const action of ACTION_KEYS) {
+    const raw = data.prompts?.[action];
+    if (raw === null || raw === undefined || (typeof raw === "string" && !raw.trim())) continue;
+    const why = typeof raw === "string" ? validatePromptTemplate(raw.trim()) : ["must be text"];
+    if (!why.length) store.prompts[action] = raw.trim();
+    else { badPrompt = true; warnings.push(`Skipped the ${PROMPT_LABELS[action]}: ${why[0]}`); }
+  }
+  // Saving would drop what was skipped, and the actions assigned to it: first say why
+  // nothing is saved, as "Not saved: …" shows this first warning.
+  if ((skipped || badPrompt) && !readOnly) {
+    warnings.unshift(skipped
+      ? "Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save"
+      : "A prompt in the file can't be used (see below), so it is read only here: fix or remove it to save");
+    readOnly = true;
+  }
   return { store, warnings, readOnly };
 }
 
+// Version 1, as before custom prompts, unless the store holds one: then version 2,
+// with its prompts.
 export function serializeStore(store) {
   const profiles = (store?.profiles ?? []).map(normalizeProfile);
-  const assign = {};
-  for (const action of ACTION_KEYS) assign[action] = store?.assign?.[action] ?? null;
-  return `${JSON.stringify({ version: STORE_VERSION, profiles, assign }, null, 2)}\n`;
+  const assign = {}, prompts = {};
+  for (const action of ACTION_KEYS) {
+    assign[action] = store?.assign?.[action] ?? null;
+    prompts[action] = resolvePrompt(store, action);
+  }
+  const data = ACTION_KEYS.some((a) => prompts[a] !== null) ? { version: 2, profiles, assign, prompts } : { version: 1, profiles, assign };
+  return `${JSON.stringify(data, null, 2)}\n`;
 }
 
 // Adds a profile, or replaces the one with id `previousId` (keeping its
@@ -205,6 +273,27 @@ export function assignProfile(store, action, id) {
 export function resolveProfile(store, action) {
   const id = store?.assign?.[action];
   return (id && store.profiles?.find((p) => p.id === id)) || DEFAULT_PROFILE;
+}
+
+// Sets the custom prompt of "resolve" or "review", trimmed; empty text or null
+// goes back to the default (the IDD skill). Returns a new store; throws, with the
+// field's name first ("Resolve prompt: …"), when the prompt can't be used.
+export function setPrompt(store, action, text) {
+  if (!ACTION_KEYS.includes(action)) throw new Error(`No action ${action}`);
+  const t = typeof text === "string" ? text.trim() : text;
+  let value = null;
+  if (t !== null && t !== undefined && t !== "") {
+    const errors = validatePromptTemplate(t);
+    if (errors.length) throw new Error(errors.map((e) => `${PROMPT_LABELS[action]}: ${e}`).join("; "));
+    value = t;
+  }
+  return { ...store, prompts: { resolve: null, review: null, ...store.prompts, [action]: value } };
+}
+
+// An action's custom prompt template, or null when it sends the default.
+export function resolvePrompt(store, action) {
+  const v = store?.prompts?.[action];
+  return typeof v === "string" && v ? v : null;
 }
 
 // ── Shell text ──────────────────────────────────────────────────────────────
