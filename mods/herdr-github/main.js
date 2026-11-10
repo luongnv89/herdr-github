@@ -495,8 +495,18 @@ export default class GitHub extends View {
       return false;
     }
     if (st.loading) return false;
+    // ↑ and ↓ go from the last profile on to the prompt boxes, and back, as in the
+    // terminal panel. Arrows only: j and k are text in a box.
+    const box = this.inputFocus?.startsWith("prompt-") ? this.inputFocus.slice("prompt-".length) : null;
+    if (!st.confirm && (k === "up" || k === "down") && (box || (k === "down" && st.sel === this.entries().length - 1))) {
+      const next = ACTION_KEYS[(box ? ACTION_KEYS.indexOf(box) : -1) + (k === "up" ? -1 : 1)];
+      if (next) this.promptInputs[next].focus();
+      else if (k === "up") { this.inputFocus = null; this.handle.focus(); }
+      cx.notify();
+      return true;
+    }
     // What you type into a prompt box stays there, enter included: it saves the box.
-    if (this.inputFocus?.startsWith("prompt-")) return false;
+    if (box) return false;
     const list = this.entries(), p = list[st.sel], fixed = p.id === DEFAULT_PROFILE.id;
     // A delete question: y deletes, any other key keeps the profile.
     if (st.confirm) {
@@ -753,9 +763,9 @@ export default class GitHub extends View {
       : st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles";
     const hints = !st ? `↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · esc close`
       : st.mode === "edit" ? `↑↓ field · ${this.inputFocus === null ? "←→ choose" : "type to edit"} · ⏎ save · esc back`
-        : this.inputFocus?.startsWith("prompt-") ? "type to edit · ⏎ save · esc back"
+        : this.inputFocus?.startsWith("prompt-") ? "↑↓ prompts and profiles · type to edit · ⏎ save · esc back"
         : st.confirm ? "y delete · any other key keeps it"
-          : "↑↓ select · n new · e edit · d delete · R/V assign · esc back";
+          : "↑↓ select, then the prompts · n new · e edit · d delete · R/V assign · esc back";
     const status = st && st.mode === "list" ? [
       ...st.warnings.map((w) => [w, t.blocked]),
       ...(st.error ? [[st.error, t.ansi1]] : []),
