@@ -56,21 +56,32 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
   - enter opens the selected row in your browser;
   - tab or `←`/`→` switches between pull requests and issues, `1` and `2` choose one;
   - `r` refreshes, `o` opens the repo on GitHub or GitLab;
-  - `a` resolves the selected issue, or reviews the selected pull request, with an agent (see [Resolve and review with an agent](#resolve-and-review-with-an-agent));
+  - `a` resolves the selected issue, or reviews the selected pull request, with an agent (see [Resolve and review with an agent](#resolve-and-review-with-an-agent)). With more than one profile it opens a menu of them: `↑`/`↓` or `j`/`k` choose, enter starts the one chosen, and esc or `q` closes the menu without starting anything;
   - `s` opens the agent profiles (see [Agent profiles](#agent-profiles));
   - `q` or esc closes the panel.
-- **Mouse:** click a row to open it, click the switch to change lists, click a row's `Resolve #N` or `Review #N` button, the same button in the header (for the selected row), `⚙`, `↻` or `↗` in the header, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. On a remote machine, Ctrl-click the selected row's URL instead (see [Remote machines](#remote-machines)).
+- **Mouse:** click a row to open it, click the switch to change lists, click a row's `Resolve #N` or `Review #N` button, the same button in the header (for the selected row), `⚙`, `↻` or `↗` in the header, a profile in the menu those buttons open, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. On a remote machine, Ctrl-click the selected row's URL instead (see [Remote machines](#remote-machines)).
 - **When a row can't be opened:** the panel shows why in red, a hint to Ctrl- or Cmd-click the URL, and the whole URL above the key hints. The URL is a terminal hyperlink too. Any key, or the next open, clears it.
 - **Fetching:** when the repo changes, every 2 minutes while the panel's tab is on screen, and on `r`. A panel in a tab you aren't looking at doesn't fetch.
 - **Lists:** the 50 most recently opened of each on GitHub, and the 50 most recently updated on GitLab. The panel remembers which list you chose.
 
 ## Resolve and review with an agent
 
-On GitHub, every issue row ends with a **Resolve #N** button and every pull request row with a **Review #N** button. The header shows the same button for the selected row, and `a` presses it. Resolve hands the issue to the `issue-resolver` skill, Review hands the pull request to `issue-pr-review`, unless you wrote your own prompt for the action (see [Custom prompts](#custom-prompts)). The agent that starts is the one in the action's profile; with no profile assigned, it's Claude Code started through `mcc run` (see [Agent profiles](#agent-profiles)).
+On GitHub, every issue row ends with a **Resolve #N** button and every pull request row with a **Review #N** button. The header shows the same button for the selected row, and `a` presses it. Resolve hands the issue to the `issue-resolver` skill, Review hands the pull request to `issue-pr-review`, unless you wrote your own prompt for the action (see [Custom prompts](#custom-prompts)). The agent that starts is the one in the profile you choose; with no profiles of your own, it's Claude Code started through `mcc run` (see [Agent profiles](#agent-profiles)).
 
-A click, or `a`, and the panel:
+### Choose the profile
 
-1. reads the profiles file and picks the profile assigned to the action, and its custom prompt if it has one;
+With no profiles of your own, only the built-in one, a click or `a` starts it right away. With one or more of your own, a click or `a` first opens a menu that lists every profile, the built-in **Claude Code via mcc run** first, with the one assigned to the action highlighted (the built-in one when none is):
+
+- **Terminal panel:** the menu opens under the button you clicked: under a row's **Resolve #N** or **Review #N** for that row (and for `a`, under the selected row's), or under the header for the header's button and for a row whose button is out of view. When there's no room under the button, it opens above it, and a menu longer than the room scrolls, with `↑` or `↓` on its border when there are more profiles that way. `↑`/`↓` or `j`/`k` move the highlight, enter starts the highlighted profile, and a click on a profile starts that one. Esc, `q`, the mouse wheel or a click anywhere else closes the menu and starts nothing: a click on a row then doesn't open it in your browser.
+- **Herdr app:** the menu opens under a row's button for that row, and under the header for the header's button, `a` and the `resolve`, `review` and `act` commands. The same keys work, and a click on a profile starts it. Esc, `q`, or a click on a row, the switch or a header button closes it and starts nothing.
+
+Whichever profile you choose, the action's custom prompt is sent, if it has one. The panel reads the profiles file again when you choose: if the profile was deleted meanwhile, or the row left the list in a refresh, nothing starts and the panel says why. Choosing doesn't change which profile is assigned to the action.
+
+### What it runs
+
+Once the profile is known, the panel:
+
+1. takes the action's custom prompt from the profiles file, if it has one;
 2. checks that the skill is installed for that agent: `issue-resolver` for an issue, `issue-pr-review` for a pull request (not with a custom prompt);
 3. opens a new pane below your agent, in the repo's folder: below the agent in the pane the panel follows, else one in the panel's tab, else below the pane the panel follows (`herdr agent list`, then `herdr pane split`);
 4. starts the profile's agent there, with its model and thinking level, and sends it the skill and the number: for Claude `/issue-resolver 12` or `/issue-pr-review 34`; other agents get "Use the issue-resolver skill on issue #12." With a custom prompt, it sends that prompt with the number filled in. Nothing from the title or description goes into the prompt.
@@ -120,7 +131,7 @@ A profile says which agent Resolve or Review starts:
 - **Model** (optional): left empty, the harness uses its own default.
 - **Thinking** (optional): only the levels the harness takes. Left empty, the harness uses its own default.
 
-Resolve and Review each have their own profile. With none assigned, or when the assigned profile is deleted, an action uses the built-in **Claude Code via mcc run** profile, with no model or thinking flag. The built-in profile can be assigned but not changed or deleted.
+Resolve and Review each have their own profile: the one their menu highlights, ready for enter (see [Choose the profile](#choose-the-profile)). With none assigned, or when the assigned profile is deleted, that is the built-in **Claude Code via mcc run** profile, with no model or thinking flag. The built-in profile can be assigned but not changed or deleted.
 
 How the fields become flags:
 
@@ -170,7 +181,7 @@ Or copy the folder there instead of linking it. The first time the app sees the 
 
 If you use your own layout, the app may dock the panel as a column of its own, or not show it. Check `~/.config/herdr-app/layouts/<your layout>.json` for a block with `"mod": "herdr-github"`, and put it where you want it, for example in place of another panel in the side stack.
 
-In the app, a Resolve or Review click opens a new tab in the space you're in, in the repo's folder. Claude Code, Codex, Pi and OpenCode start with the `run` the app's `programs.json` gives them, followed by the profile's flags, and get the prompt as their first message. mcc starts as `mcc run -- [flags] /issue-resolver 12`. With a custom prompt, that prompt takes the place of `/issue-resolver 12`, and `mcc env` runs only to check that mcc is there. For a space on another machine, the agent, `mcc env` and the skill lookup run on that machine, while the profiles and prompts come from your computer. The app doesn't say when mcc is ready, so for mcc the panel says it opened the tab, not that Claude Code started: if mcc asks something first, such as about a usage limit, answer it in the new tab.
+In the app, a Resolve or Review click (after you choose a profile, when there's more than one; see [Choose the profile](#choose-the-profile)) opens a new tab in the space you're in, in the repo's folder. Claude Code, Codex, Pi and OpenCode start with the `run` the app's `programs.json` gives them, followed by the profile's flags, and get the prompt as their first message. mcc starts as `mcc run -- [flags] /issue-resolver 12`. With a custom prompt, that prompt takes the place of `/issue-resolver 12`, and `mcc env` runs only to check that mcc is there. For a space on another machine, the agent, `mcc env` and the skill lookup run on that machine, while the profiles and prompts come from your computer. The app doesn't say when mcc is ready, so for mcc the panel says it opened the tab, not that Claude Code started: if mcc asks something first, such as about a usage limit, answer it in the new tab.
 
 Besides its own `localStorage` (which list you chose), the app mod writes only the profiles file, and runs `mkdir -p` for its folder the first time it saves one.
 
