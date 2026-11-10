@@ -18,20 +18,26 @@ require("node:child_process").spawn = (cmd, args) => {
   };
   return lastChild;
 };
-// Agent actions run herdr through execFile: answer from a scripted herdr instead,
-// recording each call. The panel follows pane w1:p1 from its own pane w1:p9.
-const calls = [];
-let herdr = () => ({ code: 1, stderr: "no herdr in tests" });
-require("node:child_process").execFile = (cmd, args, opts, cb) => {
-  calls.push([cmd, ...args]);
-  const r = herdr(args);
-  setImmediate(() => cb(r.error ?? (r.code ? Object.assign(new Error("exit"), { code: r.code }) : null), r.stdout ?? "", r.stderr ?? ""));
-};
-Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1" });
-const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, findSkill, promptFor, IDD } = require("../panel.js");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+// Agent actions run herdr and mcc through execFile: answer from a scripted herdr
+// and mcc instead, by the command's name, recording each call and its options.
+// The panel follows pane w1:p1 from its own pane w1:p9.
+const calls = [], callOpts = [];
+let herdr = () => ({ code: 1, stderr: "no herdr in tests" });
+let mcc = () => ({ code: 1, stderr: "no mcc in tests" });
+require("node:child_process").execFile = (cmd, args, opts, cb) => {
+  const name = path.basename(cmd);
+  calls.push([name, ...args]);
+  callOpts.push(opts);
+  const r = name === "herdr" ? herdr(args) : name === "mcc" ? mcc(args) : { code: 1, stderr: `no ${name} in tests` };
+  setImmediate(() => cb(r.error ?? (r.code ? Object.assign(new Error("exit"), { code: r.code }) : null), r.stdout ?? "", r.stderr ?? ""));
+};
+Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1" });
+const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow } = require("../panel.js");
+// A launch through mcc polls herdr for Claude Code in the new pane: quickly, here.
+Object.assign(TIMING, { pollMs: 1, appearMs: 40 });
 
 // Drops colors and OSC 8 hyperlinks, leaving the text a terminal shows.
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;[^\x07\x1b]*(?:\x1b\\|\x07)/g, "");
@@ -227,7 +233,9 @@ function setup(view) {
   Object.assign(ui, {
     view, prs: items("pull"), issues: items("issues"), errors: {}, error: null, repo: { name: "o/p", url: "https://x/o/p" },
     loading: false, fetched: true, follow: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, notice: null,
+    forge: null, root: null, settings: null, acting: null,
   });
+  follow("w1:p1");
   opened.length = 0;
   return screen(draw);
 }
@@ -497,6 +505,7 @@ function setupGitHub(view) {
   for (const v of ["prs", "issues"]) ui[v].forEach((x, i) => Object.assign(x, { ref: `#${10 + i}`, number: 10 + i }));
   Object.assign(ui, { forge: FORGES.github, root: "/repo", tab: "w1:t1", sel: { prs: 2, issues: 2 }, acting: null });
   calls.length = 0;
+  callOpts.length = 0;
   return screen(draw);
 }
 
@@ -513,12 +522,29 @@ function home(t, files = {}) {
   return dir;
 }
 
-// A herdr with these agents, where each step answers as `replies` says.
+// The profile store in a HOME, as the app and the panel share it.
+function useProfiles(dir, profiles, assign = {}) {
+  const file = path.join(dir, ".config/herdr/plugins/config/herdr-github/profiles.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, profiles, assign }));
+  return file;
+}
+// A HOME whose Resolve and Review start Claude Code itself, as herdr's claude agent.
+function claudeHome(t, files = {}) {
+  const dir = home(t, files);
+  useProfiles(dir, [{ id: "cc", name: "Claude Code", harness: "claude" }], { resolve: "cc", review: "cc" });
+  return dir;
+}
+
+// A herdr with these agents, where each step answers as `replies` says: a reply,
+// or a function of how many times the step ran before.
+const ok = (result) => ({ code: 0, stdout: JSON.stringify({ result }) });
 function fakeHerdr(agents, replies = {}) {
-  const ok = (result) => ({ code: 0, stdout: JSON.stringify({ result }) });
+  const seen = {};
   herdr = (args) => {
     const step = `${args[0]} ${args[1]}`;
-    if (replies[step]) return replies[step];
+    const n = seen[step] = (seen[step] ?? -1) + 1;
+    if (replies[step]) return typeof replies[step] === "function" ? replies[step](n, args) : replies[step];
     if (step === "agent list") return ok({ agents });
     if (step === "pane split") return ok({ pane: { pane_id: "w1:p7" } });
     return ok({});
@@ -526,18 +552,18 @@ function fakeHerdr(agents, replies = {}) {
 }
 const herdrFail = (code, message) => ({ code: 1, stderr: JSON.stringify({ error: { code, message } }) });
 const claudeHere = [{ agent: "claude", pane_id: "w1:p1", tab_id: "w1:t1" }];
-const herdrCalls = () => calls.map((c) => c.slice(1).join(" "));
+const herdrCalls = () => calls.filter((c) => c[0] === "herdr").map((c) => c.slice(1).join(" "));
 
 // Like screen, for a launch: stdout stays borrowed until the launch is over. Only
 // the panel's frames are taken; node --test reports through stdout meanwhile.
-async function screenAsync(fn) {
+async function screenAsync(fn, columns = 60) {
   const { write } = process.stdout, cols = process.stdout.columns, rows = process.stdout.rows;
   let frame = "";
   process.stdout.write = function (s, ...rest) {
     if (typeof s === "string" && s.startsWith("\x1b[?2026h")) { frame = s; return true; }
     return write.call(this, s, ...rest);
   };
-  process.stdout.columns = 60; process.stdout.rows = 24;
+  process.stdout.columns = columns; process.stdout.rows = 24;
   try { fn(); await ui.acting; } finally { Object.assign(process.stdout, { write, columns: cols, rows }); }
   const lines = [];
   for (const m of frame.matchAll(/\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K/g)) lines[m[1] - 1] = strip(m[2]);
@@ -547,11 +573,11 @@ const buttonAt = (lines, label) => lines[0].indexOf(label);
 
 test("Resolve shows for the selected issue and Review for the selected pull request, on GitHub only", () => {
   let lines = setupGitHub("issues");
-  assert.match(lines[0], /Resolve #12 {2}↻ {2}↗ $/);
+  assert.match(lines[0], /Resolve #12 {2}⚙ {2}↻ {2}↗ $/);
   assert.doesNotMatch(lines[0], /Review/);
   assert.match(lines[FOOTER], /⏎ open · a resolve ·/);
   lines = setupGitHub("prs");
-  assert.match(lines[0], /Review #12 {2}↻ {2}↗ $/);
+  assert.match(lines[0], /Review #12 {2}⚙ {2}↻ {2}↗ $/);
   assert.doesNotMatch(lines[0], /Resolve/);
   assert.match(lines[FOOTER], /⏎ open · a review ·/);
   for (const l of lines) assert.ok(width(l ?? "") <= 60, l);
@@ -565,8 +591,8 @@ test("Resolve shows for the selected issue and Review for the selected pull requ
   assert.deepEqual(calls, []);
 });
 
-test("Resolve starts your agent's kind in a new pane, prompted with the skill and the number only", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+test("Resolve with a Claude Code profile starts claude in a new pane, prompted with the skill and the number only", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   const lines = setupGitHub("issues");
   ui.issues[2].title = "$(rm -rf ~) /issue-resolver 999";
   fakeHerdr(claudeHere);
@@ -579,11 +605,12 @@ test("Resolve starts your agent's kind in a new pane, prompted with the skill an
   ]);
   assert.ok(calls.every((c) => c[0] === "herdr"));
   assert.deepEqual(opened, [], "the button opened the browser");
-  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-resolver 12")), after.join("\n"));
+  assert.ok(after.some((l) => l?.includes("Started Claude Code in a new pane: /issue-resolver 12")), after.join("\n"));
 });
 
-test("a on a pull request starts a review with the tab's agent and a free name", async (t) => {
-  home(t, { ".agents/skills/issue-pr-review/SKILL.md": "x" });
+test("a on a pull request starts a review with the profile's harness, below the tab's agent, with a free name", async (t) => {
+  const dir = home(t, { ".agents/skills/issue-pr-review/SKILL.md": "x" });
+  useProfiles(dir, [{ id: "cx", name: "Codex", harness: "codex" }], { review: "cx" });
   setupGitHub("prs");
   // The followed pane has no agent: the one elsewhere in the panel's tab is yours.
   fakeHerdr([
@@ -597,24 +624,39 @@ test("a on a pull request starts a review with the tab's agent and a free name",
     "agent start review-12-2 --kind codex --pane w1:p7 --timeout 55000",
     "agent prompt w1:p7 Use the issue-pr-review skill on pull request #12. --wait --until working --until blocked --until done --timeout 15000",
   ]);
-  assert.ok(after.some((l) => l?.includes("Started codex")));
+  assert.ok(after.some((l) => l?.includes("Started Codex in a new pane")));
 });
 
 test("without the skill, nothing starts and the notice points to the install page", async (t) => {
-  home(t);
+  claudeHome(t);
   setupGitHub("issues");
   fakeHerdr(claudeHere);
   const after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.deepEqual(herdrCalls(), ["agent list"]);
   assert.equal(IDD, "https://luongnv.com/idd");
-  assert.ok(after.some((l) => l?.includes("issue-resolver skill isn't installed for claude")), after.join("\n"));
+  // The harness by its name, as the profiles view shows it.
+  assert.ok(text(after).includes("issue-resolver skill isn't installed for Claude Code."), after.join("\n"));
   // The URL sits whole on a line of its own, so a Ctrl-click opens it.
   assert.ok(after.some((l) => l?.trim() === IDD));
 });
 
-test("with no agent in the tab, nothing starts and the notice says so", async (t) => {
-  home(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
+test("with no agent in the tab, the new pane opens below the pane the panel follows", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
   setupGitHub("prs");
+  fakeHerdr([{ agent: "claude", pane_id: "w2:p1", tab_id: "w2:t1" }]);
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(herdrCalls().slice(0, 3), [
+    "agent list",
+    "pane split w1:p1 --direction down --cwd /repo --no-focus",
+    "agent start review-12 --kind claude --pane w1:p7 --timeout 55000",
+  ]);
+  assert.ok(after.some((l) => l?.includes("Started Claude Code in a new pane: /issue-pr-review 12")), after.join("\n"));
+});
+
+test("with no agent in the tab and no pane followed, nothing starts and the notice says so", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
+  setupGitHub("prs");
+  follow(null);
   fakeHerdr([{ agent: "claude", pane_id: "w2:p1", tab_id: "w2:t1" }]);
   const after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.deepEqual(herdrCalls(), ["agent list"]);
@@ -635,16 +677,16 @@ test("a row without a valid number gets no button, and the prompt takes integers
 });
 
 test("a failed start shows herdr's reason and closes the new pane", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent start": herdrFail("agent_exited", "claude exited before it was ready") });
   const after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.deepEqual(herdrCalls().slice(2), ["agent start resolve-12 --kind claude --pane w1:p7 --timeout 55000", "pane close w1:p7"]);
-  assert.ok(after.some((l) => l?.includes("claude didn't start: claude exited before it was ready")), after.join("\n"));
+  assert.ok(after.map((l) => l?.trim()).join(" ").includes("Claude Code didn't start: claude exited before it was ready"), after.join("\n"));
 });
 
 test("an agent that asks something on start keeps its pane, waits for your answer, then gets the prompt", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent start": herdrFail("agent_not_ready", "trust dialog") });
   // What the panel shows while herdr waits for your answer.
@@ -658,8 +700,8 @@ test("an agent that asks something on start keeps its pane, waits for your answe
     "agent prompt w1:p7 /issue-resolver 12 --wait --until working --until blocked --until done --timeout 15000",
   ]);
   assert.equal(during?.tone, "info");
-  assert.equal(during?.text, "claude is asking you something in the new pane. Answer it, and the panel sends: /issue-resolver 12");
-  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-resolver 12")), after.join("\n"));
+  assert.equal(during?.text, "Claude Code is asking you something in the new pane. Answer it, and the panel sends: /issue-resolver 12");
+  assert.ok(after.some((l) => l?.includes("Started Claude Code in a new pane: /issue-resolver 12")), after.join("\n"));
   // No answer in time: the pane stays, and the notice says what to send.
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent start": herdrFail("agent_not_ready", "trust dialog"), "agent wait": herdrFail("timeout", "timed out") });
@@ -669,7 +711,7 @@ test("an agent that asks something on start keeps its pane, waits for your answe
 });
 
 test("a prompt left in the input box gets one more Enter; a failed prompt says what to send", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent prompt": herdrFail("agent_prompt_stalled", "no working state within 5000 ms") });
   let after = await screenAsync(() => onInput(Buffer.from("a")));
@@ -677,7 +719,7 @@ test("a prompt left in the input box gets one more Enter; a failed prompt says w
     "agent send-keys w1:p7 enter",
     "agent wait w1:p7 --until working --until blocked --until done --timeout 10000",
   ]);
-  assert.ok(after.some((l) => l?.includes("Started claude in a new pane: /issue-resolver 12")), after.join("\n"));
+  assert.ok(after.some((l) => l?.includes("Started Claude Code in a new pane: /issue-resolver 12")), after.join("\n"));
   // Still idle after the Enter.
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent prompt": herdrFail("agent_prompt_stalled", "stalled"), "agent wait": herdrFail("timeout", "timed out") });
@@ -692,7 +734,7 @@ test("a prompt left in the input box gets one more Enter; a failed prompt says w
 });
 
 test("herdr missing or failing shows a red reason and starts nothing", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent list": { code: 1, stderr: "connection refused\n" } });
   let after = await screenAsync(() => onInput(Buffer.from("a")));
@@ -702,7 +744,7 @@ test("herdr missing or failing shows a red reason and starts nothing", async (t)
   fakeHerdr(claudeHere, { "pane split": herdrFail("pane_not_found", "pane not found") });
   after = await screenAsync(() => onInput(Buffer.from("a")));
   assert.equal(herdrCalls().length, 2);
-  assert.ok(after.some((l) => l?.includes("Can't open a pane for claude: pane not found")), after.join("\n"));
+  assert.ok(after.some((l) => l?.includes("Can't open a pane for Claude Code: pane not found")), after.join("\n"));
   setupGitHub("issues");
   fakeHerdr(claudeHere, { "agent list": { error: Object.assign(new Error("spawn herdr ENOENT"), { code: "ENOENT" }) } });
   after = await screenAsync(() => onInput(Buffer.from("a")));
@@ -711,7 +753,7 @@ test("herdr missing or failing shows a red reason and starts nothing", async (t)
 });
 
 test("one launch at a time: a second press while starting does nothing", async (t) => {
-  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   setupGitHub("issues");
   fakeHerdr(claudeHere);
   let during;
@@ -729,6 +771,7 @@ test("a skill Claude has only from a plugin is found, under its plugin's name", 
     ".claude/plugins/synced/acct/abc123/issue-pr-review/SKILL.md": "x",
     ".claude/plugins/synced/acct/abc123/.claude-plugin/plugin.json": JSON.stringify({ name: "idd" }),
   });
+  useProfiles(dir, [{ id: "cc", name: "Claude Code", harness: "claude" }], { resolve: "cc" });
   // Cached but not installed: not found.
   assert.equal(findSkill("claude", "issue-resolver", "/repo"), null);
   const installed = { version: 2, plugins: { "idd@market": [{ scope: "user", installPath: path.join(dir, cache) }] } };
@@ -752,6 +795,7 @@ test("a skill from a disabled Claude plugin counts as missing: nothing starts", 
     [`${cache}/skills/issue-resolver/SKILL.md`]: "x",
     ".claude/settings.json": JSON.stringify({ enabledPlugins: { "idd@market": false } }),
   });
+  useProfiles(dir, [{ id: "cc", name: "Claude Code", harness: "claude" }], { resolve: "cc" });
   const installed = { version: 2, plugins: { "idd@market": [{ scope: "user", installPath: path.join(dir, cache) }] } };
   fs.writeFileSync(path.join(dir, ".claude/plugins/installed_plugins.json"), JSON.stringify(installed));
   assert.equal(findSkill("claude", "issue-resolver", "/repo"), null);
@@ -763,4 +807,702 @@ test("a skill from a disabled Claude plugin counts as missing: nothing starts", 
   // Enabled again, under the plugin's key name when it has no plugin.json.
   fs.writeFileSync(path.join(dir, ".claude/settings.json"), JSON.stringify({ enabledPlugins: { "idd@market": true } }));
   assert.equal(findSkill("claude", "issue-resolver", "/repo"), "idd:issue-resolver");
+});
+
+// ── Profiles: per-row buttons, harnesses, mcc ───────────────────────────────
+
+const PATH = process.env.PATH;
+// PATH set to exactly one new folder, holding an executable mcc unless `present`
+// is false; restored after the test.
+function mccOnPath(t, present = true) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-github-bin-"));
+  if (present) {
+    fs.writeFileSync(path.join(dir, "mcc"), "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(path.join(dir, "mcc"), 0o755);
+  }
+  process.env.PATH = dir;
+  t.after(() => { process.env.PATH = PATH; fs.rmSync(dir, { recursive: true, force: true }); });
+  return path.join(dir, "mcc");
+}
+// An mcc whose `env -q --shell bash` prints what it prints for a profile folder.
+const mccEnv = (dir) => { mcc = (args) => args[0] === "env" ? { code: 0, stdout: `export CLAUDE_CONFIG_DIR='${dir}'\nunset MCC_PROFILE\n` } : { code: 1, stderr: "unexpected" }; };
+const mccCalls = () => calls.filter((c) => c[0] === "mcc").map((c) => c.slice(1).join(" "));
+// Claude Code showing up in the new pane w1:p7 on the given agent-list poll, in `status`.
+const appears = (status, on = 1) => (n) => ok({ agents: [...claudeHere, ...(n >= on ? [{ agent: "claude", pane_id: "w1:p7", tab_id: "w1:t1", agent_status: status }] : [])] });
+const text = (lines) => lines.map((l) => l?.trim()).join(" ");
+
+test("with no profile assigned, Resolve starts Claude Code through mcc run, with the skills of mcc's profile", async (t) => {
+  const dir = home(t, { ".mcc/profiles/work/skills/issue-resolver/SKILL.md": "x" });
+  const bin = mccOnPath(t);
+  mccEnv(path.join(dir, ".mcc/profiles/work"));
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent list": appears("working", 2) });
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(herdrCalls(), [
+    "agent list",
+    "pane split w1:p1 --direction down --cwd /repo --no-focus",
+    `pane run w1:p7 '${bin}' 'run' '--' '/issue-resolver 12'`,
+    "agent list",
+    "agent list",
+    "agent wait w1:p7 --until idle --until working --until blocked --timeout 30000",
+    "agent list",
+  ]);
+  // mcc env runs in the repo, so it names the profile `mcc run` starts there.
+  assert.deepEqual(mccCalls(), ["env -q --shell bash"]);
+  assert.equal(callOpts[calls.findIndex((c) => c[0] === "mcc")].cwd, "/repo");
+  assert.ok(text(after).includes("Started Claude Code via mcc run in a new pane: /issue-resolver 12"), after.join("\n"));
+});
+
+test("an mcc profile's model and thinking level go to claude after --, in one quoted line", async (t) => {
+  const dir = home(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
+  useProfiles(dir, [{ id: "deep", name: "Deep", harness: "mcc", model: "opus", thinking: "max" }], { review: "deep" });
+  const bin = mccOnPath(t);
+  mccEnv(path.join(dir, ".claude"));
+  setupGitHub("prs");
+  fakeHerdr(claudeHere, { "agent list": appears("idle") });
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.equal(herdrCalls()[2], `pane run w1:p7 '${bin}' 'run' '--' '--model' 'opus' '--effort' 'max' '/issue-pr-review 12'`);
+  assert.equal(calls.find((c) => c[1] === "pane" && c[2] === "run").length, 5, "the command line is one argument");
+  assert.ok(after.some((l) => l?.includes("Started Claude Code via mcc run")), after.join("\n"));
+});
+
+test("mcc that never shows Claude Code, or shows it blocked, gets the waiting notice, never Started", async (t) => {
+  const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  mccOnPath(t);
+  mccEnv(path.join(dir, ".claude"));
+  // What to do comes first.
+  const waiting = "Answer mcc in the new pane: it is waiting there, maybe asking about a usage limit.";
+  // Never there: polls until the deadline, then no wait.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  let after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(herdrCalls().filter((c) => c === "agent list").length > 2);
+  assert.ok(!herdrCalls().some((c) => c.startsWith("agent wait")));
+  assert.ok(text(after).includes(waiting), after.join("\n"));
+  assert.ok(!text(after).includes("Started"), after.join("\n"));
+  // There, but blocked: asking something.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent list": appears("blocked") });
+  after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(herdrCalls().some((c) => c.startsWith("agent wait w1:p7")));
+  assert.ok(text(after).includes(waiting) && !text(after).includes("Started"), after.join("\n"));
+  // Gone by the time herdr waits on it.
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "agent list": appears("working"), "agent wait": herdrFail("agent_not_found", "agent target w1:p7 not found") });
+  after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(text(after).includes(waiting) && !text(after).includes("Started"), after.join("\n"));
+});
+
+test("without mcc on PATH, the default profile starts nothing and says so", async (t) => {
+  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  mccOnPath(t, false);
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(calls, []);
+  assert.ok(text(after).includes("mcc isn't on your PATH"), after.join("\n"));
+});
+
+test("when mcc env names no folder, the skill isn't found and nothing starts", async (t) => {
+  home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  mccOnPath(t);
+  mcc = () => ({ code: 0, stdout: "something else\n" });
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  let after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(herdrCalls(), ["agent list"]);
+  assert.ok(text(after).includes("issue-resolver skill isn't found for mcc"), after.join("\n"));
+  assert.ok(after.some((l) => l?.trim() === IDD));
+  mcc = () => ({ code: 2, stderr: "no such profile\n" });
+  setupGitHub("issues");
+  after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(text(after).includes("mcc env failed: no such profile"), after.join("\n"));
+});
+
+test("each harness starts with its own model and thinking flags; empty ones add none", async (t) => {
+  const dir = home(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  const cases = [
+    [{ harness: "claude", model: "sonnet", thinking: "high" }, "--kind claude --pane w1:p7 --timeout 55000 -- --model sonnet --effort high"],
+    [{ harness: "codex", model: "gpt-5", thinking: "high" }, `--kind codex --pane w1:p7 --timeout 55000 -- -m gpt-5 -c model_reasoning_effort="high"`],
+    [{ harness: "pi", model: "anthropic/claude-x", thinking: "minimal" }, "--kind pi --pane w1:p7 --timeout 55000 -- --model anthropic/claude-x --thinking minimal"],
+    [{ harness: "pi" }, "--kind pi --pane w1:p7 --timeout 55000"],
+    [{ harness: "opencode", model: "x" }, "--kind opencode --pane w1:p7 --timeout 55000"],
+  ];
+  for (const [p, start] of cases) {
+    useProfiles(dir, [{ id: "p", name: "P", ...p }], { resolve: "p" });
+    setupGitHub("issues");
+    fakeHerdr(claudeHere);
+    const after = await screenAsync(() => onInput(Buffer.from("a")));
+    assert.equal(herdrCalls()[2], `agent start resolve-12 ${start}`, JSON.stringify(p));
+    assert.equal(text(after).includes("OpenCode ignores this profile's model and thinking level"), p.harness === "opencode", after.join("\n"));
+  }
+});
+
+test("each issue row has its own Resolve button, which resolves that issue", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  const lines = setupGitHub("issues");
+  const y = lines.findIndex((l) => l?.trim() === "Resolve #11");
+  assert.ok(y > LIST.from, lines.join("\n"));
+  fakeHerdr(claudeHere);
+  const x = lines[y].indexOf("Resolve");
+  // Beside the button the line is the row's, and opens it.
+  screen(() => click(lines[y].length + 2, y));
+  assert.deepEqual(opened, ["https://x/issues/1"]);
+  assert.deepEqual(calls, []);
+  opened.length = 0;
+  const after = await screenAsync(() => click(x, y));
+  assert.deepEqual(opened, []);
+  assert.equal(ui.sel.issues, 1);
+  assert.equal(herdrCalls()[2], "agent start resolve-11 --kind claude --pane w1:p7 --timeout 55000");
+  assert.ok(text(after).includes("Started Claude Code in a new pane: /issue-resolver 11"), after.join("\n"));
+  // Pull requests get Review buttons; GitLab rows get none.
+  assert.ok(setupGitHub("prs").some((l) => l?.trim() === "Review #10"));
+  setup("issues");
+  ui.forge = FORGES.gitlab;
+  assert.ok(!screen(draw).some((l) => /Resolve|Review/.test(l ?? "")));
+});
+
+test("a profile with shell text in it is refused before anything runs", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  mccOnPath(t);
+  mccEnv("/nowhere");
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  const action = { label: "Resolve", key: "resolve", skill: "issue-resolver", noun: "issue", number: 12 };
+  const bad = ["$(id)", "a;id", "a`id`", "a'b", "a\nb", "a b"];
+  for (const harness of ["claude", "codex", "mcc"]) {
+    for (const v of bad) {
+      for (const field of ["model", "thinking"]) {
+        calls.length = 0;
+        await assert.rejects(launch(action, "/repo", { id: "x", name: "X", harness, [field]: v }), /Invalid profile/, `${harness} ${field} ${JSON.stringify(v)}`);
+        assert.deepEqual(calls, [], `${harness} ${field} ${JSON.stringify(v)} ran something`);
+      }
+    }
+  }
+  // Through a button too: the stored file can't carry it to a command line.
+  const dir = process.env.HOME;
+  useProfiles(dir, [{ id: "x", name: "X", harness: "claude", model: "$(id)" }], { resolve: "x" });
+  calls.length = 0;
+  setupGitHub("issues");
+  mccOnPath(t, false);
+  await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(!calls.some((c) => c.join(" ").includes("$(id)")));
+});
+
+// ── The profile views ───────────────────────────────────────────────────────
+
+// Runs fn with process.exit recorded rather than done.
+function noExit(fn) {
+  const { exit } = process;
+  let code = null;
+  process.exit = (c) => { code = c ?? 0; };
+  try { fn(); } finally { process.exit = exit; }
+  return code;
+}
+const storeFile = () => readStore().file;
+
+test("s opens the profiles; a new profile is typed, saved and assigned, then used", async (t) => {
+  claudeHome(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  fs.rmSync(storeFile());
+  setupGitHub("issues");
+  let lines = screen(() => onInput(Buffer.from("s")));
+  assert.match(lines[0], /Agent profiles/);
+  assert.match(lines.join("\n"), /Claude Code via mcc run +default · Resolve · Review/);
+  // In the form, q and j are text, and Esc goes back without closing the panel.
+  const exit = noExit(() => screen(() => {
+    onInput(Buffer.from("n"));
+    onInput(Buffer.from("Quick job"));
+    onInput(Buffer.from("\x1b[B"));
+    onInput(Buffer.from("qj"));
+    onInput(Buffer.from("\x1b[B\x1b[C\x1b[C"));
+    onInput(Buffer.from("\x1b[B"));
+    onInput(Buffer.from("gpt-5"));
+    onInput(Buffer.from("\x1b[B\x1b[C"));
+  }));
+  assert.equal(exit, null, "a key in the form closed the panel");
+  assert.equal(ui.settings.mode, "edit");
+  assert.deepEqual({ ...ui.settings.form, prev: undefined }, { prev: undefined, name: "Quick job", id: "qj", harness: "codex", model: "gpt-5", thinking: "low" });
+  lines = screen(() => onInput(Buffer.from("\r")));
+  assert.equal(ui.settings.mode, "list");
+  assert.ok(lines.some((l) => l?.includes("Saved Quick job")), lines.join("\n"));
+  screen(() => onInput(Buffer.from("R")));
+  assert.deepEqual(JSON.parse(fs.readFileSync(storeFile(), "utf8")), {
+    version: 1, profiles: [{ id: "qj", name: "Quick job", harness: "codex", model: "gpt-5", thinking: "low" }], assign: { resolve: "qj", review: null },
+  });
+  assert.equal(noExit(() => screen(() => onInput(Buffer.from("\x1b")))), null);
+  assert.equal(ui.settings, null);
+  fakeHerdr(claudeHere);
+  await screenAsync(() => onInput(Buffer.from("a")));
+  assert.equal(herdrCalls()[2], `agent start resolve-12 --kind codex --pane w1:p7 --timeout 55000 -- -m gpt-5 -c model_reasoning_effort="low"`);
+});
+
+test("a click inside the profile views opens nothing and starts nothing", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from("s")));
+  for (const mode of ["list", "edit"]) {
+    if (mode === "edit") {
+      screen(() => onInput(Buffer.from("n")));
+      assert.equal(ui.settings.mode, "edit", "the list's clicks left n anywhere but the form");
+    }
+    for (let y = 0; y < 24; y++) {
+      if (y === 0) continue; // ✕ goes back
+      screen(() => onInput(Buffer.from(press(y))));
+      assert.deepEqual(opened, [], `${mode} line ${y}`);
+      assert.deepEqual(calls, [], `${mode} line ${y}`);
+      assert.ok(ui.settings, `${mode} line ${y} closed the view`);
+    }
+  }
+  // ✕ goes back: to the list, then to the rows.
+  screen(() => onInput(Buffer.from(press(0).replace("<0;5;", "<0;60;"))));
+  assert.equal(ui.settings.mode, "list");
+  screen(() => onInput(Buffer.from(press(0).replace("<0;5;", "<0;60;"))));
+  assert.equal(ui.settings, null);
+});
+
+test("the header's ⚙ opens the profiles; e edits and d deletes, and the default stays", (t) => {
+  const dir = claudeHome(t);
+  const lines = setupGitHub("issues");
+  screen(() => click(lines[0].indexOf("⚙"), 0));
+  assert.equal(ui.settings?.mode, "list");
+  // The default can't be edited or deleted.
+  let shown = screen(() => onInput(Buffer.from("e")));
+  assert.ok(text(shown).includes("default profile can't be changed"));
+  assert.equal(ui.settings.mode, "list");
+  // Rename cc's id: its assignments follow it.
+  screen(() => onInput(Buffer.from("je\x1b[B\x7f\x7fmine\r")));
+  let store = JSON.parse(fs.readFileSync(storeFile(), "utf8"));
+  assert.deepEqual(store.profiles.map((p) => p.id), ["mine"]);
+  assert.deepEqual(store.assign, { resolve: "mine", review: "mine" });
+  // An invalid model stays in the form with the reason.
+  shown = screen(() => onInput(Buffer.from("e\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
+  assert.equal(ui.settings.mode, "edit");
+  assert.ok(text(shown).includes("Model:"), shown.join("\n"));
+  screen(() => onInput(Buffer.from("\x1b")));
+  assert.equal(ui.settings.mode, "list");
+  // d asks first; n keeps it, y deletes it and its assignments.
+  screen(() => onInput(Buffer.from("dn")));
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).profiles.length, 1);
+  screen(() => onInput(Buffer.from("dy")));
+  store = JSON.parse(fs.readFileSync(storeFile(), "utf8"));
+  assert.deepEqual(store, { version: 1, profiles: [], assign: { resolve: null, review: null } });
+  // It was the last one listed: the selection moves up to what's left, and the
+  // next keys work rather than throw.
+  assert.equal(ui.settings.sel, 0);
+  assert.equal(noExit(() => assert.doesNotThrow(() => screen(() => onInput(Buffer.from("j"))))), null);
+  assert.equal(ui.settings?.mode, "list");
+  assert.equal(noExit(() => assert.doesNotThrow(() => screen(() => onInput(Buffer.from("\x1b"))))), null);
+  assert.equal(ui.settings, null);
+  assert.ok(dir);
+});
+
+test("a store changed elsewhere since it was read isn't overwritten", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from("s")));
+  const theirs = JSON.stringify({ version: 1, profiles: [{ id: "app", name: "From the app", harness: "pi" }], assign: { resolve: "app" } });
+  fs.writeFileSync(storeFile(), theirs);
+  const shown = screen(() => onInput(Buffer.from("jR")));
+  assert.equal(fs.readFileSync(storeFile(), "utf8"), theirs);
+  assert.ok(text(shown).includes("changed elsewhere"), shown.join("\n"));
+  // Read again, so the next change goes through.
+  assert.match(shown.join("\n"), /From the app/);
+  screen(() => onInput(Buffer.from("V")));
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).assign.review, "app");
+  assert.ok(!fs.readdirSync(path.dirname(storeFile())).some((f) => f.endsWith(".tmp")));
+});
+
+test("a corrupt or newer store is shown read only, and actions use the default", async (t) => {
+  const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  for (const bad of ["{ not json", JSON.stringify({ version: 2, profiles: [], assign: {} })]) {
+    const file = useProfiles(dir, []);
+    fs.writeFileSync(file, bad);
+    setupGitHub("issues");
+    const shown = screen(() => onInput(Buffer.from("s")));
+    assert.ok(/isn't valid JSON|read only/.test(text(shown)), shown.join("\n"));
+    const after = screen(() => onInput(Buffer.from("R")));
+    assert.ok(text(after).includes("Not saved"), after.join("\n"));
+    assert.equal(fs.readFileSync(file, "utf8"), bad);
+    screen(() => onInput(Buffer.from("\x1b")));
+  }
+  // An assigned profile that's gone: the default, through mcc.
+  useProfiles(dir, [], { resolve: "gone" });
+  mccOnPath(t, false);
+  setupGitHub("issues");
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(text(after).includes("mcc isn't on your PATH"), after.join("\n"));
+});
+
+// Like screen, at another size.
+function screenAt(cols, rows, fn) {
+  const { columns, rows: before } = process.stdout;
+  process.stdout.columns = cols; process.stdout.rows = rows;
+  const { write } = process.stdout;
+  let frame = "";
+  process.stdout.write = (x) => { frame = x; return true; };
+  try { fn(); } finally { Object.assign(process.stdout, { write, columns, rows: before }); }
+  const lines = [];
+  for (const m of frame.matchAll(/\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K/g)) lines[m[1] - 1] = strip(m[2]);
+  return lines;
+}
+// Where a button's label sits on the screen: [x, y].
+const find = (lines, label) => {
+  const y = lines.findIndex((l) => l?.includes(label));
+  return [lines[y]?.indexOf(label), y];
+};
+
+test("a store with a profile it can't use is read only, so saving doesn't erase that profile", (t) => {
+  const dir = home(t);
+  const file = useProfiles(dir, [
+    { id: "good", name: "Good", harness: "pi" },
+    { id: "bad", name: "Bad", harness: "claude", model: "opus[1m]" },
+  ], { resolve: "bad" });
+  const before = fs.readFileSync(file, "utf8");
+  setupGitHub("issues");
+  let shown = screen(() => onInput(Buffer.from("s")));
+  assert.ok(text(shown).includes("read only here"), shown.join("\n"));
+  assert.ok(text(shown).includes('Skipped profile "bad"'), shown.join("\n"));
+  shown = screen(() => onInput(Buffer.from("jR")));
+  assert.ok(text(shown).includes("Not saved: Some profiles in the file can't be used"), shown.join("\n"));
+  screen(() => onInput(Buffer.from("dy")));
+  screen(() => onInput(Buffer.from("n")));
+  screen(() => onInput(Buffer.from("New\x1b[Bnew\r")));
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+});
+
+test("the selected profile has buttons, the header a + New, and the form a Save", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  let lines = screen(() => onInput(Buffer.from("s")));
+  // The default is selected: it can be assigned, not edited or deleted.
+  assert.match(lines.join("\n"), / Use for Resolve {3}Use for Review \n/);
+  assert.ok(!lines.some((l) => /Edit |Delete /.test(l ?? "")), lines.join("\n"));
+  let [x, y] = find(lines, "Use for Resolve");
+  lines = screen(() => click(x + 1, y));
+  assert.deepEqual(JSON.parse(fs.readFileSync(storeFile(), "utf8")).assign, { resolve: null, review: "cc" });
+  assert.ok(text(lines).includes("Resolve now starts Claude Code via mcc run"), lines.join("\n"));
+  // cc: assigned to Review, so that one shows ✓; Edit opens the form.
+  lines = screen(() => onInput(Buffer.from("j")));
+  assert.match(lines.join("\n"), / Use for Resolve {3}Review ✓ {3}Edit {3}Delete \n/);
+  [x, y] = find(lines, "Edit ");
+  lines = screen(() => click(x + 1, y));
+  assert.equal(ui.settings.mode, "edit");
+  assert.equal(ui.settings.form.prev, "cc");
+  // The form's Save saves, as enter does.
+  screen(() => onInput(Buffer.from("!")));
+  lines = screen(draw);
+  [x, y] = find(lines, " Save ");
+  lines = screen(() => click(x + 2, y));
+  assert.equal(ui.settings.mode, "list");
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).profiles[0].name, "Claude Code!");
+  // Delete asks first, with buttons: Keep keeps it, Delete deletes it.
+  [x, y] = find(lines, "Delete ");
+  lines = screen(() => click(x + 1, y));
+  assert.equal(ui.settings.mode, "confirm");
+  assert.match(lines.join("\n"), / Delete {3}Keep \n/);
+  [x, y] = find(lines, " Keep ");
+  lines = screen(() => click(x + 1, y));
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).profiles.length, 1);
+  [x, y] = find(lines, "Delete ");
+  lines = screen(() => click(x + 1, y));
+  [x, y] = find(lines, " Delete ");
+  lines = screen(() => click(x + 1, y));
+  assert.equal(JSON.parse(fs.readFileSync(storeFile(), "utf8")).profiles.length, 0);
+  assert.equal(ui.settings.sel, 0);
+  // + New in the header opens an empty form; ✕ stays at the right edge.
+  assert.match(lines[0], /\+ New {2}✕ $/);
+  lines = screen(() => click(lines[0].indexOf("+ New"), 0));
+  assert.equal(ui.settings.mode, "edit");
+  assert.equal(ui.settings.form.prev, null);
+  assert.doesNotMatch(lines[0], /\+ New/);
+});
+
+test("the profiles footer goes onto two lines when it doesn't fit, rather than being cut", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  for (const cols of [60, 40]) {
+    let lines = screenAt(cols, 24, () => { ui.settings = null; onInput(Buffer.from("s")); });
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    let foot = lines.slice(-2).join(" ");
+    for (const hint of ["↑↓ select", "n new", "e edit", "d delete", "R/V assign", "esc back"]) assert.ok(foot.includes(hint), `${cols}: ${foot}`);
+    assert.ok(!foot.includes("…"), foot);
+    lines = screenAt(cols, 24, () => onInput(Buffer.from("n")));
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    foot = lines.slice(-2).join(" ");
+    for (const hint of ["↑↓ field", "⏎ save", "esc back"]) assert.ok(foot.includes(hint), `${cols}: ${foot}`);
+    screenAt(cols, 24, () => onInput(Buffer.from("\x1b")));
+  }
+  // Wide enough: one line.
+  const lines = screenAt(100, 24, draw);
+  assert.match(lines[23], /^ ↑↓ select · n new · e edit · d delete · R\/V assign · esc back/);
+  assert.equal(lines[22], "");
+});
+
+test("the form names the id's rule, fits a narrow pane, and shows each field's reason under it", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from("s")));
+  let lines = screen(() => onInput(Buffer.from("n")));
+  // The id's rule is the empty field's hint, beside a short label.
+  assert.ok(lines.some((l) => /^ {2}Id {7}a-z 0-9 -/.test(l ?? "")), lines.join("\n"));
+  // Two bad fields: both reasons show, each under its own field.
+  lines = screen(() => onInput(Buffer.from("\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
+  assert.equal(ui.settings.mode, "edit");
+  const at = (label) => lines.findIndex((l) => l?.trimStart().replace(/^▌ /, "").startsWith(label));
+  const name = at("Name"), id = at("Id"), model = at("Model");
+  assert.ok(lines[name + 1].includes("Name: 1-40 printable characters"), lines.join("\n"));
+  assert.ok(id > name + 1 && lines.slice(id + 1, at("Harness")).join(" ").includes("Id:"), lines.join("\n"));
+  assert.ok(lines.slice(model + 1, at("Thinking")).join(" ").replace(/\s+/g, " ").includes("Model: letters, digits"), lines.join("\n"));
+  for (const l of lines) assert.ok(width(l ?? "") <= 60, l);
+  // Typing in a field takes its reason away.
+  lines = screen(() => onInput(Buffer.from("\x7f")));
+  assert.ok(!text(lines).includes("Model: letters"), lines.join("\n"));
+  // A narrow pane puts a wide choice under its label, and cuts its name, not its ›.
+  lines = screenAt(28, 24, () => onInput(Buffer.from("\x1b[B\x1b[B\x1b[B\x1b[B")));
+  for (const l of lines) assert.ok(width(l ?? "") <= 28, l);
+  const harness = lines.findIndex((l) => l?.includes("Harness"));
+  assert.ok(!lines[harness].includes("‹"), lines.join("\n"));
+  assert.match(lines[harness + 1], /^[▌ ] {2}‹ Claude Code via.*… ›$/, lines.join("\n"));
+  // An empty form too, its placeholders included, and the key hints whole.
+  lines = screenAt(28, 24, () => onInput(Buffer.from("\x1bn")));
+  for (const l of lines) assert.ok(width(l ?? "") <= 28, l);
+  assert.ok(text(lines.slice(-3)).endsWith("esc back"), lines.join("\n"));
+});
+
+test("at 30 and 40 cells the form shows each reason whole, and each choice with its ›", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  const rules = {
+    id: "Id: 1-32 lowercase letters, digits or -, not starting with -",
+    model: "Model: letters, digits and . _ : / @ + - only, starting with a letter or digit",
+  };
+  for (const cols of [30, 40]) {
+    screenAt(cols, 24, () => { ui.settings = null; onInput(Buffer.from("sn")); });
+    let lines = screenAt(cols, 24, () => onInput(Buffer.from("\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
+    assert.equal(ui.settings.mode, "edit");
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    const all = text(lines).replace(/\s+/g, " ");
+    for (const rule of Object.values(rules)) assert.ok(all.includes(rule), `${cols}:\n${lines.join("\n")}`);
+    // Each reason under its own field, never cut.
+    const at = (label) => lines.findIndex((l) => l?.trimStart().replace(/^▌ /, "").startsWith(label));
+    assert.ok(text(lines.slice(at("Id") + 1, at("Harness"))).replace(/\s+/g, " ").includes(rules.id), lines.join("\n"));
+    assert.ok(text(lines.slice(at("Model") + 1, at("Thinking"))).replace(/\s+/g, " ").includes(rules.model), lines.join("\n"));
+    assert.ok(!lines.some((l) => /^ {4}\S/.test(l ?? "") && l.includes("…")), lines.join("\n"));
+    // The harness and thinking choices whole, ending in ›.
+    assert.ok(lines.some((l) => l?.trimEnd().endsWith("‹ Claude Code via mcc run ›")), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(lines.some((l) => l?.includes("Thinking") && l.trimEnd().endsWith("‹ harness default ›")), `${cols}:\n${lines.join("\n")}`);
+    screenAt(cols, 24, () => onInput(Buffer.from("\x1b\x1b")));
+  }
+});
+
+test("at 30 cells a profile keeps its name, its Resolve and Review tags move down, and notices wrap", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  const cols = 30;
+  let lines = screenAt(cols, 24, () => { ui.settings = null; onInput(Buffer.from("sj")); });
+  for (const l of lines) assert.ok(width(l ?? "") <= cols, l);
+  // cc, used by both: its whole name and id on top, the tags on the line under it.
+  const y = lines.findIndex((l) => l?.includes("Claude Code") && l.trimEnd().endsWith("cc"));
+  assert.ok(y > 0, lines.join("\n"));
+  assert.match(lines[y + 1], /^▌ {3}Resolve · Review · Claude/, lines.join("\n"));
+  // The confirm question and its keys, whole.
+  lines = screenAt(cols, 24, () => onInput(Buffer.from("d")));
+  for (const l of lines) assert.ok(width(l ?? "") <= cols, l);
+  assert.ok(text(lines).includes("Delete Claude Code? y deletes it, any other key keeps it"), lines.join("\n"));
+  assert.deepEqual(lines.slice(-2).map((l) => l.trim()), ["y delete", "any other key keeps it"]);
+  assert.match(screenAt(60, 24, draw).at(-1), /^ y delete · any other key keeps it/);
+  assert.ok(!text(lines.slice(-2)).includes("n new"), lines.join("\n"));
+  // What a change did, whole.
+  lines = screenAt(cols, 24, () => onInput(Buffer.from("nkV")));
+  for (const l of lines) assert.ok(width(l ?? "") <= cols, l);
+  assert.ok(text(lines).includes("Review now starts Claude Code via mcc run"), lines.join("\n"));
+  // The default, used by both now: at 40 cells its name keeps 12 cells.
+  lines = screenAt(40, 24, () => onInput(Buffer.from("R")));
+  const d = lines.findIndex((l) => l?.includes("default"));
+  assert.match(lines[d], /^▌ Claude Code via mcc run +default$/, lines.join("\n"));
+  assert.match(lines[d + 1], /^▌ {3}Resolve · Review · Claude Code via/, lines.join("\n"));
+  screenAt(cols, 24, () => onInput(Buffer.from("\x1b")));
+});
+
+test("launch notices name the harness, and lead with what to do", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  setupGitHub("issues");
+  const seen = [];
+  fakeHerdr(claudeHere, { "pane split": () => { seen.push(ui.notice?.text); return ok({ pane: { pane_id: "w1:p7" } }); } });
+  const started = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.deepEqual(seen, ["Starting Claude Code to resolve issue #12…"]);
+  assert.ok(text(started).includes("Started Claude Code in a new pane: /issue-resolver 12"), started.join("\n"));
+  assert.ok(!text(started).includes("Started claude"), started.join("\n"));
+  // mcc missing: the remedy first, the whole of it on screen.
+  const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
+  assert.ok(dir);
+  mccOnPath(t, false);
+  setupGitHub("issues");
+  const after = await screenAsync(() => onInput(Buffer.from("a")));
+  assert.ok(text(after).includes("mcc isn't on your PATH: press s to pick another profile for Resolve, or install mcc."), after.join("\n"));
+  // A long notice shows whole while the room allows it, above the key hints.
+  ui.notice = { tone: "info", text: `${"word ".repeat(60)}end`, url: null };
+  let lines = screen(draw);
+  assert.equal(text(lines).match(/\bword\b/g).length, 60, lines.join("\n"));
+  assert.ok(text(lines).includes("word end"), lines.join("\n"));
+  assert.ok(!lines.some((l) => l?.startsWith(" word") && l.includes("…")), lines.join("\n"));
+  assert.match(lines[23], /^ ↑↓ select/);
+  // One too long for the room is cut there, ending in "…": the list keeps a line,
+  // the URL under the message stays whole, and so do the key hints.
+  ui.notice = { tone: "error", text: "word ".repeat(400), url: "https://x/install" };
+  lines = screen(draw);
+  assert.ok(!lines[4].startsWith(" word") && lines[5].startsWith("─"), lines.join("\n"));
+  assert.ok(lines[21].endsWith("…"), lines.join("\n"));
+  assert.equal(lines[22], " https://x/install");
+  assert.match(lines[23], /^ ↑↓ select/);
+});
+
+// The same text, however a narrow pane broke it: a word too long for a line is
+// split without a space.
+const squash = (s) => s.replace(/\s+/g, "");
+const shows = (lines, message) => squash(text(lines)).includes(squash(message));
+// A 40-character name, the longest there is, with no space to break at.
+const LONG_NAME = "Abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+
+test("at 28, 30 and 40 cells the profiles show each warning, note and question whole", (t) => {
+  const dir = home(t);
+  const note = "OpenCode ignores this profile's model and thinking level: it has no flag for them when it starts";
+  for (const cols of [28, 30, 40]) {
+    const at = (fn) => {
+      const lines = screenAt(cols, 24, fn);
+      for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+      return lines;
+    };
+    // The OpenCode note, in the form, under an OpenCode profile with a model.
+    useProfiles(dir, []);
+    setupGitHub("issues");
+    let lines = at(() => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[Bx")));
+    assert.equal(ui.settings.form.harness, "opencode");
+    assert.ok(shows(lines, note), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(lines.at(-1).trimEnd().endsWith("esc back"), `${cols}:\n${lines.join("\n")}`);
+    at(() => onInput(Buffer.from("\x1b\x1b")));
+
+    // A skipped profile: why the file is read only, and the rule it broke.
+    useProfiles(dir, [{ id: "bad", name: "Bad", harness: "claude", model: "opus[1m]" }], { resolve: "bad" });
+    setupGitHub("issues");
+    lines = at(() => onInput(Buffer.from("s")));
+    for (const w of [
+      "Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save",
+      'Skipped profile "bad": Model: letters, digits and . _ : / @ + - only, starting with a letter or digit',
+      "The resolve action's profile isn't there, so it uses the default",
+    ]) assert.ok(shows(lines, w), `${cols}: ${w}\n${lines.join("\n")}`);
+    assert.ok(lines.at(-1).trimEnd().endsWith("esc back"), `${cols}:\n${lines.join("\n")}`);
+    // And why a change isn't saved.
+    lines = at(() => onInput(Buffer.from("R")));
+    assert.ok(shows(lines, "Not saved: Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save"), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(lines.at(-1).trimEnd().endsWith("esc back"), `${cols}:\n${lines.join("\n")}`);
+    at(() => onInput(Buffer.from("\x1b")));
+
+    // A file from another version.
+    fs.writeFileSync(useProfiles(dir, []), JSON.stringify({ version: 2, profiles: [], assign: {} }));
+    setupGitHub("issues");
+    lines = at(() => onInput(Buffer.from("s")));
+    assert.ok(shows(lines, "The profiles file is version 2, not 1: it is read only here"), `${cols}:\n${lines.join("\n")}`);
+    at(() => onInput(Buffer.from("\x1b")));
+
+    // A 40-character name in what a change did, and in the delete question.
+    useProfiles(dir, [{ id: "long", name: LONG_NAME, harness: "pi" }]);
+    setupGitHub("issues");
+    lines = at(() => onInput(Buffer.from("sjR")));
+    assert.ok(shows(lines, `Resolve now starts ${LONG_NAME}`), `${cols}:\n${lines.join("\n")}`);
+    lines = at(() => onInput(Buffer.from("d")));
+    assert.ok(shows(lines, `Delete ${LONG_NAME}? y deletes it, any other key keeps it`), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(lines.at(-1).trimEnd().endsWith("any other key keeps it"), `${cols}:\n${lines.join("\n")}`);
+    lines = at(() => onInput(Buffer.from("y")));
+    assert.ok(shows(lines, `Deleted ${LONG_NAME}`), `${cols}:\n${lines.join("\n")}`);
+    at(() => onInput(Buffer.from("\x1b")));
+  }
+});
+
+test("at 28 and 30 cells the notice of a started OpenCode keeps its note whole", async (t) => {
+  const dir = home(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  for (const cols of [28, 30]) {
+    useProfiles(dir, [{ id: "p", name: "P", harness: "opencode", model: "x" }], { resolve: "p" });
+    setupGitHub("issues");
+    fakeHerdr(claudeHere);
+    const lines = await screenAsync(() => onInput(Buffer.from("a")), cols);
+    const whole = "Started OpenCode in a new pane: Use the issue-resolver skill on issue #12. " +
+      "(OpenCode ignores this profile's model and thinking level: it has no flag for them when it starts)";
+    assert.ok(shows(lines, whole), `${cols}:\n${lines.join("\n")}`);
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    assert.match(lines[23], /^ ↑↓ select/);
+  }
+});
+
+// A frame of `rows` lines, none wider than `cols`, whose last lines are `footer`'s
+// key hints in full: paint drops lines from the bottom, so they come last.
+function fitsWithHints(lines, cols, rows, first, last) {
+  const shown = `${cols}x${rows}:\n${lines.join("\n")}`;
+  assert.equal(lines.length, rows, shown);
+  for (const l of lines) assert.ok(width(l ?? "") <= cols, `${shown}\n${l}`);
+  assert.ok(lines.at(-1).trimEnd().endsWith(last), shown);
+  assert.ok(lines.slice(-3).some((l) => l.startsWith(` ${first}`)), shown);
+}
+// The status line right above the key hints.
+const aboveHints = (lines, first) => lines[lines.findIndex((l) => l?.startsWith(` ${first}`)) - 1];
+
+test("the profiles keep their key hints however much there is to say, and cut it with …", (t) => {
+  const dir = home(t);
+  const notSaved = "Not saved: Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save";
+  // Three profiles it can't use, Resolve on one: their warnings fill a 24-row pane.
+  const bad = [0, 1, 2].map((i) => ({ id: `bad${i}`, name: `Bad ${i}`, harness: "claude", model: "opus[1m]" }));
+  for (const cols of [28, 30]) {
+    useProfiles(dir, bad, { resolve: "bad0" });
+    setupGitHub("issues");
+    let lines = screenAt(cols, 24, () => onInput(Buffer.from("s")));
+    fitsWithHints(lines, cols, 24, "↑↓ select", "esc back");
+    assert.ok(text(lines).includes('Skipped profile "bad0"'), lines.join("\n"));
+    assert.ok(aboveHints(lines, "↑↓ select").endsWith("…"), lines.join("\n"));
+    // Why R saved nothing comes first, whole; the warnings under it are cut.
+    lines = screenAt(cols, 24, () => onInput(Buffer.from("R")));
+    fitsWithHints(lines, cols, 24, "↑↓ select", "esc back");
+    assert.ok(shows(lines, notSaved), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(text(lines).includes('Skipped profile "bad0"'), lines.join("\n"));
+    assert.ok(aboveHints(lines, "↑↓ select").endsWith("…"), lines.join("\n"));
+    screenAt(cols, 24, () => onInput(Buffer.from("\x1b")));
+  }
+  // One it can't use, on a short pane: the key hints whole, why R saved nothing
+  // first, and the warnings after it cut where the room ends.
+  for (const [cols, rows] of [[30, 16], [40, 12]]) {
+    useProfiles(dir, [bad[0]], { resolve: "bad0" });
+    setupGitHub("issues");
+    screenAt(cols, rows, () => onInput(Buffer.from("s")));
+    const lines = screenAt(cols, rows, () => onInput(Buffer.from("R")));
+    fitsWithHints(lines, cols, rows, "↑↓ select", "esc back");
+    assert.ok(shows(lines, notSaved), `${cols}x${rows}:\n${lines.join("\n")}`);
+    assert.ok(aboveHints(lines, "↑↓ select").endsWith("…"), `${cols}x${rows}:\n${lines.join("\n")}`);
+    screenAt(cols, rows, () => onInput(Buffer.from("\x1b")));
+  }
+  // The OpenCode form on a 28x10 pane: the field, the note cut, the key hints whole.
+  useProfiles(dir, []);
+  setupGitHub("issues");
+  const lines = screenAt(28, 10, () => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[Bx")));
+  assert.equal(ui.settings.form.harness, "opencode");
+  fitsWithHints(lines, 28, 10, "↑↓ field", "esc back");
+  assert.ok(lines.some((l) => l?.startsWith("▌ Model")), lines.join("\n"));
+  assert.ok(text(lines).includes("OpenCode ignores"), lines.join("\n"));
+  assert.ok(aboveHints(lines, "↑↓ field").endsWith("…"), lines.join("\n"));
+  screenAt(28, 10, () => onInput(Buffer.from("\x1b\x1b")));
+});
+
+test("on a short pane a failed open keeps the whole URL, before its reason", () => {
+  setup("prs");
+  const url = "https://github.com/luongnv89/herdr-github/issues/12";
+  ui.prs[0].url = url;
+  // 30x9: three lines for the notice, all the URL's.
+  let lines = screenAt(30, 9, () => { onInput(Buffer.from("\r")); lastChild.emit("exit", 3, null); });
+  assert.deepEqual(opened, [url]);
+  fitsWithHints(lines, 30, 9, "↑↓ select", "…");
+  assert.ok(shows(lines, url), lines.join("\n"));
+  assert.ok(!text(lines).includes(`${lastChild.cmd} exited 3`), lines.join("\n"));
+  // With room for the reason too, it sits above the URL.
+  lines = screenAt(30, 11, draw);
+  assert.ok(shows(lines, url), lines.join("\n"));
+  assert.ok(text(lines).includes(`${lastChild.cmd} exited 3`), lines.join("\n"));
+  assert.match(lines[10], /^ ↑↓ select/);
 });

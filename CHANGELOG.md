@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- A **Resolve #N** button under every issue and a **Review #N** button under every pull request, on GitHub (#18). Each acts on its own row; the header button and `a` still act on the selected one. There are no buttons on GitLab, since both skills work through `gh`.
+- Agent profiles (#18). A profile has a name, an id, a harness (Claude Code via `mcc run`, Claude Code, Codex, Pi or OpenCode) and an optional model and thinking level; an empty one leaves the harness's own default. Resolve and Review each get their own profile. Models with shell characters or brackets (such as `opus[1m]`) are refused. OpenCode has no model or thinking flag when it starts, so the panel says it ignores them.
+- A profiles view in the terminal panel (`s`, or `⚙` in the header) and in the app (the gear, or `s`) to add, edit, delete and assign profiles. Both read and write `~/.config/herdr/plugins/config/herdr-github/profiles.json` on the machine where they run, and never overwrite a change the other made meanwhile, nor a file they can't read or that holds a profile they can't use. Both views work from the keyboard and the mouse.
+- With mcc, the skills are looked up in the Claude Code folder `mcc env` names for the repo. The terminal panel says "Started" only once herdr sees Claude Code idle or working, and otherwise says mcc is waiting in the new pane, for example asking about a usage limit; the app says it opened the tab.
+- The Herdr app mod is now in the repo, in `mods/herdr-github`, with the same buttons, profiles and default. Link or copy it into `~/.config/herdr-app/mods/herdr-github` to install it.
+
+### Changed
+
+- **Behavior change:** with no profile assigned, Resolve and Review start Claude Code through `mcc run`, instead of the same kind of agent as the one in your tab. Assign a profile to keep using another agent. The terminal panel no longer needs an agent in the tab: with none, the new pane opens below the pane the panel follows. In the app, the new tab opens in the space you're in.
+
+### Fixed
+
+- The app mod's `forge.js` no longer fails to load as a module (as on Node 26): a regular expression held raw line-separator characters. They are written as escapes now (#18).
+
 ## 0.4.0 (2026-11-04)
 
 ### Added
