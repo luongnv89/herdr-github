@@ -18,6 +18,8 @@
 
 ### Fixed
 
+- The app mod's list is no longer empty in a repo with open issues or pull requests. Its rows were in a virtual list, whose rows can't have click handlers, and each row has two (open it, and its Resolve or Review button). The rows are now in a plain scrolling list. The failed frame also left the header's icons blank until the app restarted.
+- The app mod no longer asks for a redraw while it is drawing, which `herdr-app check` refused.
 - The app mod's `forge.js` no longer fails to load as a module (as on Node 26): a regular expression held raw line-separator characters. They are written as escapes now (#18).
 
 ## 0.4.0 (2026-11-04)
