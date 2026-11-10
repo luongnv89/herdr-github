@@ -225,6 +225,10 @@ const ui = {
   sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, frame: 0,
   rows: [], buttons: [], visible: true, notice: null,
   root: null, tab: null, acting: null, settings: null,
+  // The profile menu of a Resolve or Review press, while it's open: { view, number,
+  // key, entries, sel, top, anchor }, anchor being "row" (under that row's button)
+  // or "header" (under the header's).
+  menu: null,
 };
 let cwd = process.env.HERDR_GITHUB_CWD || process.cwd();
 let target = process.env.HERDR_GITHUB_PANE || null;
@@ -435,15 +439,77 @@ function readStore() {
   return { file, text, ...parsed };
 }
 
-// A Resolve or Review button, the header's or a row's, and the a key. One launch at a time.
-function act(view = ui.view, index = ui.sel[view]) {
+// A Resolve or Review button, the header's or a row's, and the a key. With only the
+// default profile it starts at once; with more, it opens a menu of them under the
+// button pressed (`anchor`: "row" or "header"), and the one you choose starts. One
+// launch, or one menu, at a time.
+function act(view = ui.view, index = ui.sel[view], anchor = "row") {
   const action = actionFor(view, index);
-  if (!action || ui.acting) return ui.acting;
+  if (!action || ui.acting || ui.menu) return ui.acting;
   const { store } = readStore();
-  ui.acting = launch(action, ui.root || cwd, P.resolveProfile(store, action.key), P.resolvePrompt(store, action.key))
+  const { entries, sel } = P.profileChoices(store, action.key);
+  if (entries.length === 1) return start(action, entries[0], P.resolvePrompt(store, action.key));
+  ui.menu = { view, number: action.number, key: action.key, entries, sel, top: 0, anchor };
+  ui.follow = true;
+  draw();
+  return ui.acting;
+}
+
+function start(action, profile, template) {
+  ui.acting = launch(action, ui.root || cwd, profile, template)
     .catch((e) => say("error", `Can't start an agent: ${e.message}`))
     .finally(() => { ui.acting = null; });
   return ui.acting;
+}
+
+// The menu's entry `i`, chosen: the store is read again, so a profile deleted since
+// the menu opened, or a row gone in a refresh, starts nothing and says why. The
+// action's custom prompt goes with whichever profile it is.
+function startChoice(i) {
+  const m = ui.menu;
+  if (!m || ui.acting) return ui.acting;
+  ui.menu = null;
+  const { store } = readStore();
+  const chosen = m.entries[i], profile = chosen ? P.findChoice(store, chosen.id) : null;
+  const index = ui[m.view].findIndex((x) => x.number === m.number);
+  const action = index >= 0 ? actionFor(m.view, index) : null;
+  if (!action) { gone(m); return null; }
+  if (!profile) {
+    say("error", `The profile ${chosen?.name ?? ""} isn't there any more, so nothing started: press a or ${action.label} to choose another.`);
+    return null;
+  }
+  return start(action, profile, P.resolvePrompt(store, m.key));
+}
+
+// The menu's row left the list, in a refresh: nothing starts.
+function gone(m) {
+  const { noun } = ACTIONS[m.view];
+  say("error", `The ${noun} #${m.number} isn't in the list any more, so nothing started.`);
+}
+
+function closeMenu() {
+  ui.menu = null;
+  draw();
+}
+
+// Keys and the mouse while the menu is open: ↑↓ (or k and j) move, stopping at either
+// end; enter starts the one chosen; esc or q closes it, as does the wheel or a click
+// anywhere but on a profile. Ctrl-C still closes the panel. Other keys do nothing.
+function menuKey(m) {
+  const k = m[0], menu = ui.menu;
+  if (m[1] != null) {
+    const button = Number(m[1]);
+    if (button === 0 && m[4] === "M") click(Number(m[2]) - 1, Number(m[3]) - 1);
+    else if (button === 64 || button === 65) closeMenu();
+    return;
+  }
+  if (k === "\x03") return quit();
+  if (UP.includes(k) || k === "k") menu.sel = Math.max(0, menu.sel - 1);
+  else if (DOWN.includes(k) || k === "j") menu.sel = Math.min(menu.entries.length - 1, menu.sel + 1);
+  else if (k === "\r" || k === "\n") return startChoice(menu.sel);
+  else if (k === "\x1b" || k === "q") return closeMenu();
+  else return;
+  draw();
 }
 
 // How long a launch through mcc waits: for Claude Code to show up in the new pane,
@@ -670,6 +736,32 @@ function noticeLines(notice, cols, room) {
   return lines.slice(0, room);
 }
 
+// The profile menu as a box: its title on the top border, then one line per profile
+// from `m.top`, `shown` of them, an arrow on a border when more are above or below.
+// Each profile is its name, and what it starts when that fits beside it; the chosen
+// one is marked ▸. At most `cols` cells wide. Returns { width, lines: [{ text, entry }] }.
+function menuLines(m, cols, shown) {
+  const title = `${ACTIONS[m.view].label} #${m.number} with`;
+  const hint = (p) => {
+    const h = p.id === P.DEFAULT_PROFILE.id ? "default" : describe(p);
+    return h && h !== p.name ? h : "";
+  };
+  const full = (p) => width(p.name) + (hint(p) ? 3 + width(hint(p)) : 0), most = cols - 6;
+  // As wide as the widest line it shows: a name without its hint when both don't fit.
+  const tw = Math.max(1, Math.min(most, Math.max(width(title), ...m.entries.map((p) => full(p) <= most ? full(p) : width(p.name))))), w = tw + 6;
+  const head = fit(title, w - 5);
+  const lines = [{ text: dim(`┌ ${head} ${"─".repeat(Math.max(0, w - 5 - width(head)))}${m.top > 0 ? "↑" : "─"}┐`), entry: null }];
+  for (let i = m.top; i < Math.min(m.entries.length, m.top + shown); i++) {
+    const p = m.entries[i], on = i === m.sel, h = hint(p);
+    const name = full(p) <= tw ? p.name : fit(p.name, tw);
+    const text = (on ? bold(name) : name) + (full(p) <= tw && h ? dim(` · ${h}`) : "");
+    const pad = " ".repeat(Math.max(0, tw - (full(p) <= tw ? full(p) : width(name))));
+    lines.push({ text: `${dim("│")}${on ? accent(" ▸ ") : "   "}${text}${pad} ${dim("│")}`, entry: i });
+  }
+  lines.push({ text: dim(`└${"─".repeat(w - 3)}${m.top + shown < m.entries.length ? "↓" : "─"}┘`), entry: null });
+  return { width: w, lines };
+}
+
 function draw() {
   const cols = process.stdout.columns || 60, rows = process.stdout.rows || 24;
   if (ui.settings) return paint(settingsLines(cols, rows), rows);
@@ -686,7 +778,7 @@ function draw() {
   const gap = " ".repeat(Math.max(0, cols - 1 - width(title) - (spin ? 2 : 0) - width(button) - width(right)));
   out.push(` ${link(ui.repo?.url, bold(title))}${gap}${spin}${button ? invert(button) : ""}${dim(right)}`);
   const at = cols - width(right);
-  if (button) ui.buttons.push({ row: 0, from: at - width(button), to: at, action: () => act() });
+  if (button) ui.buttons.push({ row: 0, from: at - width(button), to: at, action: () => act(ui.view, ui.sel[ui.view], "header") });
   ui.buttons.push({ row: 0, from: at, to: at + 3, action: () => openSettings() });
   ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => refresh() });
   if (ui.repo?.url) ui.buttons.push({ row: 0, from: at + 6, to: at + 9, action: () => openUrl(ui.repo.url) });
@@ -736,11 +828,41 @@ function draw() {
     ui.rows[listTop + r] = owner[ui.top[view] + r] ?? -1;
     // A row's own Resolve or Review button acts on that row.
     const hit = hits[ui.top[view] + r];
-    if (hit) ui.buttons.push({ row: listTop + r, from: hit.from, to: hit.to, action: () => { ui.sel[view] = hit.index; draw(); return act(view, hit.index); } });
+    if (hit) ui.buttons.push({ row: listTop + r, from: hit.from, to: hit.to, action: () => { ui.sel[view] = hit.index; draw(); return act(view, hit.index, "row"); } });
+  }
+
+  // The profile menu, over the list: under the button pressed, or above it when
+  // there's more room there. Only its profiles take a click while it's open.
+  if (ui.menu) {
+    const m = ui.menu, index = ui[m.view].findIndex((x) => x.number === m.number);
+    if (m.view !== view || index < 0) { ui.menu = null; return gone(m); }
+    // A row's button where it's drawn; the header's when the row's is out of view.
+    let y = 0, x = button ? at - width(button) : cols;
+    if (m.anchor === "row") {
+      for (let r = 0; r < height; r++) {
+        const hit = hits[ui.top[view] + r];
+        if (hit?.index === index) { y = listTop + r; x = hit.from; break; }
+      }
+    }
+    const n = m.entries.length, limit = listTop + height, below = limit - y - 1, above = y - 1;
+    const down = y === 0 || below >= n + 2 || (above < n + 2 && below >= above);
+    const shown = Math.max(1, Math.min(n, (down ? below : above) - 2));
+    m.top = Math.max(0, Math.min(m.top, m.sel, n - shown), m.sel - shown + 1);
+    const box = menuLines(m, cols, shown), left = Math.max(0, Math.min(x, cols - box.width));
+    const first = down ? y + 1 : y - box.lines.length;
+    ui.buttons = [];
+    box.lines.forEach((l, k) => {
+      const row = first + k;
+      // Never over the header, the notice or the key hints, however short the pane.
+      if (row < 1 || row >= limit) return;
+      out[row] = " ".repeat(left) + l.text;
+      if (l.entry !== null) ui.buttons.push({ row, from: left, to: left + box.width, action: () => startChoice(l.entry) });
+    });
   }
   out.push(...notice);
 
-  out.push(dim(fit(` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · q close`, cols)));
+  const keys = ui.menu ? " ↑↓ choose · ⏎ start · esc cancel" : ` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · q close`;
+  out.push(dim(fit(keys, cols)));
   paint(out, rows);
 }
 
@@ -1219,6 +1341,8 @@ function move(by) {
 function click(x, y) {
   const button = ui.buttons.find((b) => b.row === y && x >= b.from && x < b.to);
   if (button) return button.action();
+  // Anywhere but on one of its profiles, a click closes the menu, and nothing else.
+  if (ui.menu) return closeMenu();
   if (ui.settings) return;
   const i = ui.rows[y];
   if (i == null || i < 0) return;
@@ -1239,6 +1363,8 @@ function onInput(data) {
     const k = m[0];
     // The profile views take every key and click while they're open.
     if (ui.settings) { settingsKey(m); continue; }
+    // So does the profile menu: esc and q close it, not the panel.
+    if (ui.menu) { menuKey(m); continue; }
     if (m[1] != null) {
       const button = Number(m[1]), x = Number(m[2]) - 1, y = Number(m[3]) - 1;
       if (button === 64) { ui.top[ui.view] -= 3; draw(); }
@@ -1260,7 +1386,7 @@ function onInput(data) {
     else if (k === "2") pick("issues");
     else if (k === "\r" || k === "\n") openUrl(ui[ui.view][ui.sel[ui.view]]?.url);
     else if (k === "o") openUrl(ui.repo?.url);
-    else if (k === "a") act();
+    else if (k === "a") act(ui.view, ui.sel[ui.view], "row");
     else if (k === "s") openSettings();
     else if (k === "r") refresh();
   }
@@ -1305,7 +1431,7 @@ if (require.main === module) main();
 else {
   module.exports = {
     width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput,
-    act, launch, findSkill, promptFor, readStore, IDD, TIMING,
+    act, startChoice, launch, findSkill, promptFor, readStore, IDD, TIMING,
     // Tests point the panel at another followed pane, or none.
     follow: (pane) => { target = pane; },
   };
