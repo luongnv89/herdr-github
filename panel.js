@@ -1437,6 +1437,8 @@ else {
   module.exports = {
     width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput,
     act, startChoice, launch, findSkill, promptFor, readStore, IDD, TIMING,
+    // scripts/capture-screenshots.mjs reads the repo once, as the panel does.
+    refresh,
     // Tests point the panel at another followed pane, or none.
     follow: (pane) => { target = pane; },
   };

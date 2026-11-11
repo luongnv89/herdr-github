@@ -2,7 +2,9 @@
 
 The open pull requests and issues of the repo you're in, in a side pane of [herdr](https://herdr.dev). Works with GitHub and GitLab, including self-hosted GitLab and GitHub Enterprise.
 
-![The GitHub panel in herdr](docs/preview.svg)
+![The panel in herdr, showing this repo's open issues: the selected issue with its Resolve button and its URL](docs/preview.svg)
+
+*The issues list, on this repo. The selected issue shows its Resolve button and its URL.*
 
 Each row shows the title (up to 2 lines), the description (up to 3 lines) and a meta line:
 
@@ -18,6 +20,22 @@ Click a pull request or issue, or select it and press enter, to open it in your 
 On GitHub, each issue has a **Resolve** button and each pull request a **Review** button, which start an agent on it. Which agent, model and thinking level is up to you: see [Agent profiles](#agent-profiles). So is the prompt it gets: see [Custom prompts](#custom-prompts).
 
 The repo also holds the same panel for the Herdr desktop app, in `mods/herdr-github` (see [Herdr app](#herdr-app)). The terminal panel is the twin of the GitHub panel in [Whole Herdr](https://github.com/luongnv89/whole-herdr), a layout for the Herdr desktop app.
+
+## Screenshots
+
+These are of the terminal panel on this repo, taken by a script (see [Take the screenshots again](#take-the-screenshots-again)). The issues list is at the top of this page.
+
+![The panel's pull requests list for this repo](docs/screenshots/pull-requests.svg)
+
+*The pull requests list. A pull request's row is like an issue's, with a Review button instead of Resolve. With none open, the list says so.*
+
+![The profile menu that a Resolve click opens under the button, listing the built-in Claude Code via mcc run and three example profiles](docs/screenshots/resolve.svg)
+
+*A Resolve click, with profiles of your own: a menu of them opens under the button, the profile assigned to Resolve chosen. Enter starts it; esc starts nothing.*
+
+![The agent profiles view, listing the built-in profile, three example profiles with what each starts and which action uses it, and the Resolve and Review prompts](docs/screenshots/profiles.svg)
+
+*The profiles view (`s`, or `⚙` in the header): what each profile starts, which one Resolve and Review use, and the prompt each sends. The profiles are examples.*
 
 ## Install
 
@@ -259,10 +277,23 @@ A linked plugin runs straight from your folder, so a change shows the next time 
 - `bind-key.js`: binds a key to `toggle` in herdr's config.
 - `panel.js`: the panel itself. Plain Node, no npm packages.
 - `mods/herdr-github/`: the Herdr app mod. `main.js` is the panel, `forge.js` its rules for rows, forges and agent actions, and `profiles.js` the agent profiles, shared with `panel.js`.
+- `scripts/capture-screenshots.mjs`: takes the README's pictures of the panel (see [Take the screenshots again](#take-the-screenshots-again)). `scripts/ansi-svg.mjs` turns a frame of the panel into an SVG.
 - `profiles.cjs`: the terminal panel's copy of `mods/herdr-github/profiles.js`, generated. Edit `profiles.js`, then run `node scripts/sync-profiles.mjs`. CI fails when the two differ (`node scripts/sync-profiles.mjs --check`).
-- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, for what Resolve and Review run for each harness, with stand-ins for `herdr` and `mcc`, for the profiles and their file, for the app mod's rules, and for which key `bind-key` picks and how it edits the config.
+- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, for what Resolve and Review run for each harness, with stand-ins for `herdr` and `mcc`, for the profiles and their file, for the app mod's rules, for which key `bind-key` picks and how it edits the config, and for how a frame of the panel becomes an SVG.
 
 `mods/herdr-github/gpui-kit.d.ts` is written by the app's runtime each time the mod runs, and is not in git.
+
+### Take the screenshots again
+
+`docs/preview.svg` and the pictures in `docs/screenshots/` are of the terminal panel on this repo. To take them again:
+
+```sh
+node scripts/capture-screenshots.mjs
+```
+
+It needs `gh`, logged in. It reads this repo's open issues and pull requests live, draws each view 64 columns wide, and writes it as an SVG: nothing is edited by hand. It runs only `git` and `gh`, so it never starts an agent or opens a browser. The Resolve menu and the profiles view show example profiles from a temporary home folder, never yours. The Resolve menu needs at least one open issue or pull request: with none, or when `gh` can't read the repo, the script writes nothing, says why and exits 1. Ages, such as `3d`, are as of when you run it.
+
+The Herdr app's panel isn't captured by the script: take that picture by hand. Install the mod (see [Herdr app](#herdr-app)), open a space on this repo in the app, then on macOS press Cmd+Shift+4 and drag over the panel. Save the picture in `docs/screenshots/`.
 
 ## License
 

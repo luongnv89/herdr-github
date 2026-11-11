@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Screenshots in the README (#24): the issues list at the top of the page, then the pull requests list, the menu a Resolve click opens and the profiles view, each with a caption. They are of this repo, and `node scripts/capture-screenshots.mjs` takes them again from its open issues and pull requests, read live with `gh`. It runs only `git` and `gh`, and shows example profiles, never yours. The Herdr app's panel is captured by hand; the README says how.
+
 ## 0.5.0 (2026-11-11)
 
 ### Added
