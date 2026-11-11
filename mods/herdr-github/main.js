@@ -8,8 +8,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { spaces, panes, focused, exec, theme, layout, window, run, home, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
-import { LIMIT, STALE, IDD, ago, firstLine, FORGES, ACTIONS, pickHost, forgesFor, load, actionFor, promptFor, findSkill, cantRun, tabStart, pathTo, shown } from "./forge.js";
+import { spaces, panes, terminals, focused, exec, hc, theme, layout, window, run, home, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
+import { LIMIT, STALE, IDD, ago, firstLine, FORGES, ACTIONS, pickHost, forgesFor, load, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, isReadyToSend, nextNotice, keepsNotice, pathTo, shown } from "./forge.js";
 import {
   HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, validateProfile, buildLaunch, storePath, emptyStore,
   parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, parseMccEnv,
@@ -31,6 +31,9 @@ const TEXT_FIELDS = ["name", "id", "model"];
 // What an action sends with no custom prompt, as Claude Code takes it.
 const DEFAULT_PROMPTS = Object.fromEntries(Object.values(ACTIONS).map((a) => [a.key, `/${a.skill} ${PROMPT_TOKEN}`]));
 const PROMPT_TIP = `A custom prompt replaces the IDD skill: it is sent as written to every harness, with ${PROMPT_TOKEN} as the number. Empty sends the default.`;
+// How long a new agent may take to be ready for its prompt, such as while it asks
+// whether you trust the folder, as in the terminal panel. Clicks aren't held meanwhile.
+const ANSWER_MS = 300000;
 
 // Where the panel looks: the focused terminal's folder and machine. While the
 // panel itself (or another mod pane) has the keyboard, it keeps the last one.
@@ -70,6 +73,9 @@ export default class GitHub extends View {
     this.sel = { prs: 0, issues: 0 };
     this.notice = null;
     this.acting = false;
+    // Launches so far, to tell whose notice is whose, and prompts still to be sent.
+    this.launches = 0;
+    this.delivering = 0;
     // The profile menu of a Resolve or Review press, while it's open: { view, number,
     // key, entries, sel, anchor }, anchor being "row" (under that row's button) or
     // "header" (under the header).
@@ -187,7 +193,7 @@ export default class GitHub extends View {
     cx.notify();
   }
 
-  say(tone, text, url = null) { this.notice = { tone, text, url }; }
+  say(tone, text, url = null, from = null) { this.notice = nextNotice(this.notice, { tone, text, url, from }); }
 
   pick(view, cx) {
     this.view = view;
@@ -202,12 +208,13 @@ export default class GitHub extends View {
     cx.notify();
   }
 
-  // A Resolve or Review button, the header's or a row's, and the a key: a new tab in
-  // the space you're in runs the agent of the action's profile in the repo's folder,
-  // with the skill and the number as its first message. With only the default
-  // profile it starts at once; with more, a menu of them opens under the button
-  // pressed (`anchor`: "row" or "header"), and the one you choose starts. One
-  // launch, or one menu, at a time.
+  // A Resolve or Review button, the header's or a row's, and the a key: a new pane
+  // to the right of the one you're in, in the same tab (as Cmd+D splits), runs the agent of the action's profile
+  // in the repo's folder, with the skill and the number as its first message. With
+  // only the default profile it starts at once; with more, a menu of them opens under
+  // the button pressed (`anchor`: "row" or "header"), and the one you choose starts.
+  // One launch, or one menu, at a time until its pane is open; the prompt is sent
+  // after that.
   act(cx, view = this.view, index = this.sel[view], anchor = "row") {
     const action = actionFor(this.forge, view, this.items(view)[index]);
     if (!action || this.acting || this.menu) return;
@@ -274,8 +281,11 @@ export default class GitHub extends View {
   // the profile to start, and its custom prompt, or null for the IDD skill's.
   async launch(action, profile, template, cx) {
     const what = `${action.noun} #${action.number}`, loc = this.loc, root = this.root, on = loc?.on ?? null;
-    if (!root) return this.say("error", "No repository to work in");
-    if (!loc?.space) return this.say("error", `No space to open a tab in. Click a pane, then ${action.label} again.`);
+    const id = ++this.launches, say = (tone, text, url = null) => this.say(tone, text, url, id);
+    // Starting one is seen as reading the last notice: its own progress shows.
+    this.notice = null;
+    if (!root) return say("error", "No repository to work in");
+    if (!chooseAnchor(loc, panes())) return say("error", `No pane to split. Click a pane, then ${action.label} again.`);
     // Checked before anything runs: an unchecked profile never reaches a command line.
     const invalid = validateProfile(profile);
     if (invalid.length) throw new Error(`Invalid profile: ${invalid.join("; ")}`);
@@ -285,7 +295,7 @@ export default class GitHub extends View {
     const custom = template === null ? null : expandPrompt(template, action.number);
     const bad = custom === null ? [] : validatePrompt(custom);
     if (bad.length) throw new Error(`Invalid prompt: ${bad.join("; ")}`);
-    this.say("info", `Getting ${name} ready to ${action.key} ${what}…`); cx.notify();
+    say("info", `Getting ${name} ready to ${action.key} ${what}…`); cx.notify();
 
     // Where the skills are: only the IDD skill's prompt needs them.
     let base = home(), io = null;
@@ -293,7 +303,7 @@ export default class GitHub extends View {
       if (on) {
         const r = await exec("printenv", ["HOME"], { on }).catch(() => null);
         base = r?.code === 0 ? r.stdout.trim() : null;
-        if (!base) return this.say("error", `Can't find your home folder on ${on}`);
+        if (!base) return say("error", `Can't find your home folder on ${on}`);
       }
       io = {
         home: base,
@@ -312,21 +322,21 @@ export default class GitHub extends View {
       try { env = await exec("mcc", ["env", "-q", "--shell", "bash"], { cwd: root, on, timeout: 10000 }); }
       catch (e) {
         const why = cantRun("mcc", e);
-        if (why !== "mcc isn't installed") return this.say("error", why);
-        return this.say("error", `mcc isn't on your PATH${on ? ` on ${on}` : ""}: click ⚙ to pick another profile for ${action.label}, or install mcc.`);
+        if (why !== "mcc isn't installed") return say("error", why);
+        return say("error", `mcc isn't on your PATH${on ? ` on ${on}` : ""}: click ⚙ to pick another profile for ${action.label}, or install mcc.`);
       }
       if (io) {
         io.claudeDir = env.code === 0 ? parseMccEnv(env.stdout, base) : null;
         if (!io.claudeDir) {
           const why = env.code === 0 ? "mcc env didn't name a Claude Code folder" : `mcc env failed: ${firstLine(env.stderr) || `exit ${env.code}`}`;
-          return this.say("error", `The ${action.skill} skill isn't found for mcc (${why}). Install the skills from:`, IDD);
+          return say("error", `The ${action.skill} skill isn't found for mcc (${why}). Install the skills from:`, IDD);
         }
       }
     }
     let text = custom;
     if (text === null) {
       const skill = await findSkill(harness, action.skill, root, io);
-      if (!skill) return this.say("error", `The ${action.skill} skill isn't installed for ${name}. Install the skills from:`, IDD);
+      if (!skill) return say("error", `The ${action.skill} skill isn't installed for ${name}. Install the skills from:`, IDD);
       text = promptFor(harness, skill, action);
     }
     const plan = buildLaunch(profile, text);
@@ -336,16 +346,54 @@ export default class GitHub extends View {
     let known = null;
     if (plan.mode === "agent") {
       known = (await knownAgents({ on }).catch(() => [])).find((k) => k.key === plan.kind) ?? null;
-      if (known?.installed === false) return this.say("error", `${known.name ?? name} isn't installed${on ? ` on ${on}` : ""}: click ⚙ to pick another profile for ${action.label}, or install it.`);
+      if (known?.installed === false) return say("error", `${known.name ?? name} isn't installed${on ? ` on ${on}` : ""}: click ⚙ to pick another profile for ${action.label}, or install it.`);
     }
     const start = tabStart(plan, known?.run, text);
-    this.say("info", `Starting ${name} to ${action.key} ${what}…`); cx.notify();
-    run("tab.new", { space: loc.space, folder: root, argv: start.argv, ...(start.task ? { task: start.task } : {}), name: `${action.key}-${action.number}` });
+    // Checked again: the pane may have closed while the profile was read.
+    const anchor = chooseAnchor(loc, panes());
+    if (!anchor) return say("error", `No pane to split. Click a pane, then ${action.label} again.`);
+    say("info", `Starting ${name} to ${action.key} ${what}…`); cx.notify();
+    // The new pane is the terminal that wasn't there before, in the anchor's tab.
+    const before = start.task ? terminals().map((t) => t.address) : [];
+    run("pane.focus", { pane: anchor.pane });
+    run("terminal.open", { argv: start.argv, folder: root, place: "right" });
     // The app doesn't say when mcc is ready: it may first ask about a usage limit.
     if (plan.mode === "command") {
-      return this.say("info", `Opened mcc in a new tab to ${action.key} ${what}. If mcc asks something first, such as about a usage limit, answer it there; Claude Code then works on: ${text}`);
+      return say("info", `Opened mcc in a new pane to ${action.key} ${what}. If mcc asks something first, such as about a usage limit, answer it there; Claude Code then works on: ${text}`);
     }
-    this.say("ok", `Started ${known?.name ?? name} in a new tab: ${text}${note}`);
+    const who = known?.name ?? name;
+    let terminal = null;
+    for (let i = 0; i < 8 && !terminal; i++) {
+      await cx.sleep(250);
+      terminal = pickNewTerminal(before, terminals(), anchor.tab);
+    }
+    if (!terminal) return say("error", `Started ${who} in a new pane, but can't tell which terminal it is. Send it yourself in the new pane: ${text}`);
+    // The pane is open: another launch can start now, while this one waits to send.
+    this.delivering++;
+    cx.spawn(async (cx) => {
+      try { await this.deliver(who, terminal.address, start.task, note, say, cx); }
+      catch (e) { say("error", `${who} started, but the prompt wasn't sent (${e?.message ?? e}). Send it yourself in the new pane: ${start.task}`); }
+      finally { this.delivering--; cx.notify(); }
+    });
+  }
+
+  // Sends a new agent its first message once it is idle twice in a row: not while
+  // it starts, nor while it asks something, such as whether you trust the folder.
+  async deliver(who, address, task, note, say, cx) {
+    say("info", `Started ${who} in a new pane. Its prompt goes once it is ready: ${task}`); cx.notify();
+    const until = Date.now() + ANSWER_MS;
+    let ready = 0;
+    while (ready < 2) {
+      if (Date.now() > until) return say("error", `${who} isn't ready in the new pane. When it is, send it: ${task}`);
+      await cx.sleep(500);
+      const t = terminals().find((x) => x.address === address);
+      if (!t) return say("error", `${who} closed in the new pane before it got its prompt: ${task}`);
+      ready = isReadyToSend(t.status) ? ready + 1 : 0;
+    }
+    // --if idle: nothing is typed if the agent started working or asking meanwhile.
+    const sent = await hc(["send", "--if", "idle", address, task]);
+    if (sent.code !== 0) return say("error", `Started ${who} in a new pane, but ${firstLine(sent.stderr).replace(/\.$/, "") || `hc send exited ${sent.code}`}. Send it yourself in the new pane: ${task}`);
+    say("ok", `Started ${who} in a new pane: ${task}${note}`);
   }
 
   // The profile store, read again on every use: the terminal panel may have changed
@@ -363,8 +411,8 @@ export default class GitHub extends View {
   // A Resolve or Review button's tooltip: what it sends, and where that is set.
   actTip(action) {
     return this.prompts[action.key]
-      ? `Start an agent in a new tab with your ${PROMPT_LABELS[action.key]}, in place of the ${action.skill} skill (profile and prompt: ⚙)`
-      : `Start an agent in a new tab with the ${action.skill} skill (its profile: ⚙)`;
+      ? `Start an agent in a new pane with your ${PROMPT_LABELS[action.key]}, in place of the ${action.skill} skill (profile and prompt: ⚙)`
+      : `Start an agent in a new pane with the ${action.skill} skill (its profile: ⚙)`;
   }
 
   // ── Profiles ──────────────────────────────────────────────────────────────
@@ -604,8 +652,8 @@ export default class GitHub extends View {
       cx.stop_propagation();
       return;
     }
-    // Any key clears a notice, except the progress of a launch still under way.
-    if (this.notice && !(this.acting && this.notice.tone === "info")) this.notice = null;
+    // Any key clears a notice, except the progress of a launch or of a prompt not yet sent.
+    if (this.notice && !keepsNotice(this.notice, this.acting || this.delivering > 0)) this.notice = null;
     if (k === "up" || k === "k") this.move(-1, cx);
     else if (k === "down" || k === "j") this.move(1, cx);
     else if (k === "pageup") this.move(-5, cx);

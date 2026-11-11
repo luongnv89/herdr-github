@@ -120,3 +120,148 @@ test("main.js imports only what forge.js and profiles.js export", () => {
     for (const n of names) assert.ok(n in mod, `${file} exports ${n}`);
   }
 });
+
+// ── Opening the agent in a split of the current tab (#26) ──────────────────
+
+const pane = (id, tab, extra = {}) => ({ pane: id, tab, terminal: `t-${id}`, ...extra });
+
+test("chooseAnchor: the pane the panel follows, else a terminal pane in its tab, never a mod pane", () => {
+  const list = [pane("p1", "tab1"), pane("p2", "tab1"), pane("p9", "tab2"), { pane: "m1", tab: "tab1", terminal: null, mod: "herdr-github" }];
+  // The followed pane.
+  assert.equal(F.chooseAnchor({ tab: "tab1", pane: "p2" }, list), list[1]);
+  // A mod pane is skipped for the first terminal pane in its tab.
+  assert.equal(F.chooseAnchor({ tab: "tab1", pane: "m1" }, list), list[0]);
+  // No pane followed, or it closed: the first terminal pane in the tab, not another tab's.
+  assert.equal(F.chooseAnchor({ tab: "tab2", pane: null }, list), list[2]);
+  assert.equal(F.chooseAnchor({ tab: "tab2", pane: "gone" }, list), list[2]);
+  // Nothing to split.
+  assert.equal(F.chooseAnchor({ tab: "tab3", pane: null }, list), null);
+  assert.equal(F.chooseAnchor({ tab: "tab1", pane: null }, [list[3]]), null);
+  assert.equal(F.chooseAnchor(null, list), null);
+  assert.equal(F.chooseAnchor({ tab: "tab1", pane: "p1" }, undefined), null);
+});
+
+test("localId: a remote id loses its machine/ prefix, a local one stays", () => {
+  assert.equal(F.localId("tab7"), "tab7");
+  assert.equal(F.localId("omachi/tab7"), "tab7");
+  assert.equal(F.localId(null), null);
+});
+
+test("pickNewTerminal: the one new terminal labelled with the tab, on its machine, or null", () => {
+  const t = (address, tab) => ({ address, labels: { "herdr.space": "s1", "herdr.tab": tab } });
+  const before = ["t1", "t2"];
+  const old = [t("t1", "tab1"), t("t2", "tab1")];
+  // One new terminal in the tab.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab1")], "tab1").address, "t3");
+  // None new.
+  assert.equal(F.pickNewTerminal(before, old, "tab1"), null);
+  // Two new: never a guess.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab1"), t("t4", "tab1")], "tab1"), null);
+  // A new terminal in another tab doesn't count.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab2")], "tab1"), null);
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab2"), t("t4", "tab1")], "tab1").address, "t4");
+  // A remote tab: its id has the machine/ prefix, the labels don't, the address does.
+  assert.equal(F.pickNewTerminal(["omachi/t1"], [t("omachi/t1", "tab1"), t("omachi/t5", "tab1")], "omachi/tab1").address, "omachi/t5");
+  // The same local tab id on another machine isn't the tab.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab1")], "omachi/tab1"), null);
+  assert.equal(F.pickNewTerminal([], [t("omachi/t5", "tab1")], "tab1"), null);
+  // No tab, no labels.
+  assert.equal(F.pickNewTerminal(before, [...old, t("t3", "tab1")], null), null);
+  assert.equal(F.pickNewTerminal(before, [...old, { address: "t3" }], "tab1"), null);
+});
+
+test("isReadyToSend: only an idle agent takes its first message", () => {
+  assert.equal(F.isReadyToSend("idle"), true);
+  for (const status of ["working", "blocked", "done", null, undefined]) assert.equal(F.isReadyToSend(status), false, String(status));
+});
+
+test("main.js splits the current tab to the right of the anchor pane, and opens no tab", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  assert.doesNotMatch(main, /run\("tab\.new"/);
+  assert.match(main, /run\("pane\.focus", \{ pane: anchor\.pane \}\);\s*run\("terminal\.open", \{ argv: start\.argv, folder: root, place: "right" \}\)/);
+  // The prompt is sent only to an idle agent.
+  assert.match(main, /hc\(\["send", "--if", "idle", address, task\]\)/);
+});
+
+test("nextNotice: another launch's progress never hides an error; an error or the same launch replaces it", () => {
+  const n = (tone, from, text = tone) => ({ tone, text, url: null, from });
+  const errA = n("error", 1, "Send it yourself in the new pane: /issue-resolver 12");
+  // Nothing up yet.
+  assert.equal(F.nextNotice(null, n("info", 1)).tone, "info");
+  // Info or ok from launch 2 over launch 1's error: the error stays.
+  assert.equal(F.nextNotice(errA, n("info", 2)), errA);
+  assert.equal(F.nextNotice(errA, n("ok", 2)), errA);
+  // So does an error not from a launch, such as "Can't start an agent".
+  const errNone = n("error", null);
+  assert.equal(F.nextNotice(errNone, n("info", 3)), errNone);
+  // An error replaces info, and a newer error an older one.
+  const errB = n("error", 2);
+  assert.equal(F.nextNotice(n("info", 1), errB), errB);
+  assert.equal(F.nextNotice(errA, errB), errB);
+  // A launch's own later message replaces its own earlier one, even an error.
+  const okA = n("ok", 1);
+  assert.equal(F.nextNotice(n("info", 1), okA), okA);
+  assert.equal(F.nextNotice(errA, okA), okA);
+  // Info replaces info or ok, whoever said it.
+  const infoB = n("info", 2);
+  assert.equal(F.nextNotice(okA, infoB), infoB);
+});
+
+test("keepsNotice: a key leaves up only progress, while a launch or a prompt is still under way", () => {
+  const info = { tone: "info", text: "Its prompt goes once it is ready: /issue-resolver 12" };
+  assert.equal(F.keepsNotice(info, true), true);
+  assert.equal(F.keepsNotice(info, false), false);
+  assert.equal(F.keepsNotice({ tone: "error", text: "x" }, true), false);
+  assert.equal(F.keepsNotice({ tone: "ok", text: "x" }, true), false);
+  assert.equal(F.keepsNotice(null, true), false);
+});
+
+test("several launches in a row all split the same tab, and each picks only its own new terminal (#26)", () => {
+  const t = (address, tab) => ({ address, labels: { "herdr.space": "s1", "herdr.tab": tab } });
+  // Another tab's terminal pane comes first, so a split that ignored the tab would go there.
+  const panesNow = [pane("q1", "tab2"), pane("p1", "tab1"), { pane: "m1", tab: "tab1", terminal: null, mod: "herdr-github" }];
+  const termsNow = [t("t-q1", "tab2"), t("t-p1", "tab1")];
+  // What terminal.open does: a new pane right of the anchor, in its tab, focused,
+  // so the panel follows it.
+  const open = (anchor, id) => {
+    panesNow.push(pane(id, anchor.tab));
+    termsNow.push(t(`t-${id}`, anchor.tab));
+    return { tab: anchor.tab, pane: id };
+  };
+  // The panel has the keyboard: it follows no pane, only its tab.
+  let loc = { tab: "tab1", pane: null };
+  const picked = [];
+  let firstBefore = null;
+  for (const id of ["p2", "p3", "p4"]) {
+    const anchor = F.chooseAnchor(loc, panesNow);
+    assert.ok(anchor, `an anchor for ${id}`);
+    assert.equal(anchor.tab, "tab1", `${id} splits tab1`);
+    const before = termsNow.map((x) => x.address);
+    firstBefore ??= before;
+    loc = open(anchor, id);
+    const terminal = F.pickNewTerminal(before, termsNow, anchor.tab);
+    assert.equal(terminal?.address, `t-${id}`, `${id}'s own terminal`);
+    picked.push(terminal.address);
+    // The second launch follows the new pane; the third is pressed from the panel again.
+    if (id === "p3") loc = { tab: "tab1", pane: "m1" };
+  }
+  assert.deepEqual(picked, ["t-p2", "t-p3", "t-p4"]);
+  // Every new pane is in tab1, and no tab was added.
+  assert.deepEqual(panesNow.filter((p) => p.tab === "tab1" && !p.mod).map((p) => p.pane), ["p1", "p2", "p3", "p4"]);
+  assert.deepEqual([...new Set(panesNow.map((p) => p.tab))], ["tab2", "tab1"]);
+  // Without a fresh snapshot per launch, the earlier launches' terminals look new too.
+  assert.equal(F.pickNewTerminal(firstBefore, termsNow, "tab1"), null);
+});
+
+test("main.js keeps every notice through nextNotice, by launch, and counts prompts still to be sent", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  assert.match(main, /say\(tone, text, url = null, from = null\) \{ this\.notice = nextNotice\(this\.notice, \{ tone, text, url, from \}\); \}/);
+  assert.match(main, /this\.delivering\+\+;\s*cx\.spawn\(/);
+  assert.match(main, /finally \{ this\.delivering--; cx\.notify\(\); \}/);
+  assert.match(main, /keepsNotice\(this\.notice, this\.acting \|\| this\.delivering > 0\)/);
+  // A new launch clears the notice before its first word, so its progress shows.
+  assert.match(main, /const id = \+\+this\.launches, say = [^\n]*\n(\s*\/\/[^\n]*\n)*\s*this\.notice = null;\n\s*if \(!root\) return say\(/);
+  // Inside a launch, every notice carries the launch's id: this.say is called only by its say.
+  const body = main.slice(main.indexOf("async launch("), main.indexOf("async readStore("));
+  assert.deepEqual(body.match(/this\.say\([^)]*\)/g), ["this.say(tone, text, url, id)"]);
+});

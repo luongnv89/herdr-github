@@ -162,7 +162,7 @@ export function cantRun(cli, e) {
 
 // ── Agent actions ───────────────────────────────────────────────────────────
 // The selected issue can be handed to the issue-resolver skill, the selected pull
-// request to issue-pr-review: a new tab runs the agent of the action's profile
+// request to issue-pr-review: a new pane runs the agent of the action's profile
 // (profiles.js), prompted with the skill and the bare number, nothing else from the row.
 
 export const ACTIONS = {
@@ -187,10 +187,10 @@ export function promptFor(kind, skill, action) {
   return claudeStyle(kind) ? `/${skill} ${action.number}` : `Use the ${skill} skill on ${action.noun} #${action.number}.`;
 }
 
-// What the app's new tab runs for a launch plan (profiles.js buildLaunch, which
+// What the app's new pane runs for a launch plan (profiles.js buildLaunch, which
 // checked the profile): mcc's own command line, prompt last, with no first message
 // to send; or an agent's programs.json `run` with the profile's flags after it,
-// the prompt sent as the tab's first message. Throws when herdr has no `run` for it.
+// the prompt sent as the agent's first message. Throws when herdr has no `run` for it.
 export function tabStart(plan, run, text) {
   if (plan.mode === "command") return { argv: plan.argv.slice(), task: null };
   if (!Array.isArray(run) || !run.length || !run.every((w) => typeof w === "string" && w)) {
@@ -198,6 +198,50 @@ export function tabStart(plan, run, text) {
   }
   return { argv: [...run, ...plan.extraArgs], task: text };
 }
+
+// The pane the app splits for a new agent: the one the panel follows, else the
+// first terminal pane in its tab. A mod pane (the panel itself) is never split.
+// Returns that pane from panes(), or null.
+export function chooseAnchor(loc, panes) {
+  const ok = (p) => p && p.terminal != null && !p.mod;
+  const list = Array.isArray(panes) ? panes : [];
+  const own = loc?.pane ? list.find((p) => p.pane === loc.pane) : null;
+  if (ok(own)) return own;
+  return (loc?.tab && list.find((p) => ok(p) && p.tab === loc.tab)) || null;
+}
+
+// A space, tab or terminal id without its "machine/" prefix: labels on a machine
+// use the ids local to it. machineOf gives that prefix, or null for this computer.
+export const localId = (id) => (typeof id === "string" && id.includes("/") ? id.slice(id.indexOf("/") + 1) : id);
+const machineOf = (id) => (typeof id === "string" && id.includes("/") ? id.slice(0, id.indexOf("/")) : null);
+
+// The terminal a split just opened in tab `tabId`: the one in `after` (terminals())
+// whose address isn't in `before`, on the tab's machine, labelled with the tab.
+// Null when there is none or more than one: the prompt never goes to a guess.
+export function pickNewTerminal(before, after, tabId) {
+  if (!tabId) return null;
+  const old = new Set(before ?? []), tab = localId(tabId), machine = machineOf(tabId);
+  const found = (after ?? []).filter((t) => typeof t?.address === "string" && !old.has(t.address)
+    && machineOf(t.address) === machine && t.labels?.["herdr.tab"] === tab);
+  return found.length === 1 ? found[0] : null;
+}
+
+// The panel's one notice, after `incoming`: { tone, text, url, from }, `from` being
+// the launch that said it (null for anything else). An error stays until a newer
+// error or a message from its own launch replaces it (a key or a new launch clears
+// it), so another launch's progress never hides a prompt that wasn't sent.
+export function nextNotice(current, incoming) {
+  if (current?.tone === "error" && incoming.tone !== "error" && current.from !== incoming.from) return current;
+  return incoming;
+}
+
+// Whether a key leaves the notice up: only the progress of a launch, or of a
+// prompt still waiting to be sent.
+export const keepsNotice = (notice, busy) => Boolean(notice && busy && notice.tone === "info");
+
+// Whether an agent can take its first message: idle only. A blocked one is asking
+// something, such as whether you trust the folder, and pasted text would answer it.
+export const isReadyToSend = (status) => status === "idle";
 
 const safeName = (n) => typeof n === "string" && /^[\w.-]+$/.test(n) ? n : null;
 const join = (...parts) => parts.join("/").replace(/\/+/g, "/");
