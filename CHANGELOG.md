@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 (2026-11-11)
+
 ### Added
 
 - Choose the profile when you start Resolve or Review (#25). With one or more profiles of your own, a **Resolve #N** or **Review #N** click, or `a`, opens a menu of every profile, the built-in **Claude Code via mcc run** first, with the action's assigned profile highlighted. Enter or a click starts the one chosen, with the action's custom prompt if it has one; esc, `q` or a click elsewhere closes the menu and starts nothing. In the terminal panel the menu opens under the button clicked (above it when there's no room), in the app under the row's button or the header. With only the built-in profile, the button starts it right away, as before. A profile deleted, or a row gone in a refresh, while the menu is open starts nothing and says why.
@@ -25,6 +27,7 @@
 - The app mod's list is no longer empty in a repo with open issues or pull requests. Its rows were in a virtual list, whose rows can't have click handlers, and each row has two (open it, and its Resolve or Review button). The rows are now in a plain scrolling list. The failed frame also left the header's icons blank until the app restarted.
 - The app mod no longer asks for a redraw while it is drawing, which `herdr-app check` refused.
 - The app mod's `forge.js` no longer fails to load as a module (as on Node 26): a regular expression held raw line-separator characters. They are written as escapes now (#18).
+- The terminal panel's notices are no longer cut at three lines, or at one for why a row failed to open: they show whole while the pane has room (#18). On a short pane, a row that failed to open keeps its whole URL, and the reason gets the room left; the URL used to be the first thing cut.
 
 ## 0.4.0 (2026-11-04)
 
