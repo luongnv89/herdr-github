@@ -376,6 +376,46 @@ test("shellJoin quotes every word so a shell reads back the same words", () => {
   assert.equal(P.shellJoin(P.buildLaunch(P.DEFAULT_PROFILE, PROMPT).argv), "'mcc' 'run' '--' '/issue-resolver 12'");
 });
 
+// ── Refresh interval (#44) ──────────────────────────────────────────────────
+
+test("refresh intervals: 30s, 1m, 5m, 15m or manual, 1m by default; anything else read back is the default", () => {
+  assert.deepEqual(P.REFRESH_CHOICES, ["30s", "1m", "5m", "15m", "manual"]);
+  assert.equal(P.DEFAULT_REFRESH, "1m");
+  for (const c of P.REFRESH_CHOICES) assert.equal(P.parseRefresh(c), c);
+  assert.equal(P.parseRefresh("5m\n"), "5m");
+  for (const bad of [null, undefined, "", "2m", "MANUAL", "0", 30000, {}]) assert.equal(P.parseRefresh(bad), "1m", String(bad));
+});
+
+test("nextRefresh steps through every choice, back to the first after manual", () => {
+  const seen = [];
+  let c = "30s";
+  for (let i = 0; i < P.REFRESH_CHOICES.length; i++) { seen.push(c); c = P.nextRefresh(c); }
+  assert.deepEqual(seen, P.REFRESH_CHOICES);
+  assert.equal(c, "30s");
+  assert.equal(P.nextRefresh("junk"), "5m");
+});
+
+test("refreshDue: due once the chosen interval has passed since the last fetch, and never in manual", () => {
+  const now = 10_000_000;
+  for (const [c, ms] of [["30s", 30000], ["1m", 60000], ["5m", 300000], ["15m", 900000]]) {
+    assert.equal(P.refreshDue(c, now - ms + 1, now), false, c);
+    assert.equal(P.refreshDue(c, now - ms, now), true, c);
+  }
+  assert.equal(P.refreshDue("manual", 0, now), false);
+  assert.equal(P.refreshDue("manual", -Infinity, now), false);
+  // An unknown choice is the default's minute.
+  assert.equal(P.refreshDue("junk", now - 60000, now), true);
+});
+
+test("the interval's label and notice say what it does", () => {
+  assert.equal(P.refreshLabel("5m"), "interval: 5m");
+  assert.equal(P.refreshLabel("manual"), "interval: manual");
+  assert.equal(P.refreshLabel("junk"), "interval: 1m");
+  assert.match(P.refreshNotice("30s"), /^Refreshes every 30 seconds while on screen, and on r/);
+  assert.match(P.refreshNotice("1m"), /every minute/);
+  assert.match(P.refreshNotice("manual"), /^Refreshes only when you ask: r or the refresh button\. A new folder still loads\.$/);
+});
+
 test("the CommonJS copy behaves as the app mod's module", async () => {
   const E = await esm();
   assert.deepEqual(Object.keys(E).sort(), Object.keys(P).sort());

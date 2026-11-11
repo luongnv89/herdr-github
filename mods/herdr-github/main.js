@@ -9,11 +9,12 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, focused, exec, hc, theme, layout, window, run, home, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
-import { LIMIT, STALE, IDD, ago, firstLine, ACTIONS, readRepo, refreshGate, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, unpickedNotice, isReadyToSend, nextNotice, keepsNotice, pathTo, shown } from "./forge.js";
+import { LIMIT, IDD, ago, firstLine, ACTIONS, readRepo, refreshGate, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, unpickedNotice, isReadyToSend, nextNotice, keepsNotice, pathTo, shown } from "./forge.js";
 import {
   HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, validateProfile, buildLaunch, storePath, emptyStore,
   parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, parseMccEnv,
   PROMPT_TOKEN, PROMPT_LABELS, validatePrompt, expandPrompt, setPrompt, resolvePrompt, profileChoices, findChoice,
+  parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice,
 } from "./profiles.js";
 
 const MOD = "herdr-github";
@@ -34,6 +35,12 @@ const PROMPT_TIP = `A custom prompt replaces the IDD skill: it is sent as writte
 // How long a new agent may take to be ready for its prompt, such as while it asks
 // whether you trust the folder, as in the terminal panel. Clicks aren't held meanwhile.
 const ANSWER_MS = 300000;
+// How often the timer looks whether the lists are due for a refresh (#44): the
+// shortest interval is 30 s, so a refresh is at most this late.
+const TICK_MS = 5000;
+// Below this panel width the header leaves out its interval button, so the title and
+// the other buttons keep their room; t and the interval command still change it.
+const INTERVAL_MIN_W = 340;
 
 // Where the panel looks: the focused terminal's folder and machine. While the
 // panel itself (or another mod pane) has the keyboard, it keeps the last one.
@@ -70,6 +77,8 @@ export default class GitHub extends View {
   init(_props, cx) {
     Object.assign(this, { prs: [], issues: [], errors: {}, repo: null, forge: null, root: null, error: null, loading: false, fetched: false, fetchedAt: 0, context: null });
     this.view = localStorage.getItem("view") === "issues" ? "issues" : "prs";
+    // How often the lists refresh on their own, or "manual" (#44), kept as the view is.
+    this.every = parseRefresh(localStorage.getItem("refresh"));
     this.sel = { prs: 0, issues: 0 };
     this.notice = null;
     this.acting = false;
@@ -115,13 +124,15 @@ export default class GitHub extends View {
       this.promptInputs[action] = input;
     }
     cx.spawn(async (cx) => { await this.readStore(); cx.notify(); });
-    cx.timer.every(STALE, (cx) => { if (this.visible()) this.refresh(cx); });
-    // keys.json can send "herdr-github:<command>": focus, refresh, resolve, settings.
+    // The timer's refresh, when the lists are due at the chosen interval; never in manual.
+    cx.timer.every(TICK_MS, (cx) => { if (this.visible() && refreshDue(this.every, this.fetchedAt, Date.now())) this.refresh(cx); });
+    // keys.json can send "herdr-github:<command>": focus, refresh, interval, resolve, settings.
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
         if (c === "focus") this.handle.focus();
         else if (c === "refresh") this.refresh(cx, false, true);
+        else if (c === "interval") this.cycleRefresh(cx);
         else if (c === "resolve" || c === "review" || c === "act") { this.handle.focus(); this.act(cx, this.view, this.sel[this.view], "header"); }
         else if (c === "settings") { if (this.settings) this.closeSettings(cx); else { this.handle.focus(); this.openSettings(cx); } }
         cx.notify();
@@ -139,13 +150,14 @@ export default class GitHub extends View {
   action() { return actionFor(this.forge, this.view, this.selected()); }
 
   // From render, cx.notify() isn't allowed: render reads the new state right after.
-  // force: the refresh button, r or the refresh command, which start one even while
-  // another runs (#42). A new folder does too: the old one's answer isn't wanted.
+  // force: the refresh button, r or the refresh command, which replace a running
+  // refresh once it has had its grace (#42, #45). A new folder replaces it at once:
+  // the old one's answer isn't wanted.
   refresh(cx, fromRender = false, force = false) {
     const loc = this.loc, context = keyOf(loc), moved = context !== this.context;
     // A refresh that never ends (a cancelled task's promise stays pending) would
     // otherwise keep the spinner on and stop every later one, for good.
-    const n = this.gate.begin(Date.now(), force || moved);
+    const n = this.gate.begin(Date.now(), { press: force, moved });
     if (n === null) return;
     if (moved) {
       Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 } });
@@ -195,6 +207,15 @@ export default class GitHub extends View {
   pick(view, cx) {
     this.view = view;
     localStorage.setItem("view", view);
+    cx.notify();
+  }
+
+  // t, the header's interval button or the interval command: the next refresh
+  // interval, or manual (#44), kept for the next time the panel opens.
+  cycleRefresh(cx) {
+    this.every = nextRefresh(this.every);
+    localStorage.setItem("refresh", this.every);
+    this.say("ok", refreshNotice(this.every));
     cx.notify();
   }
 
@@ -665,6 +686,7 @@ export default class GitHub extends View {
     else if (k === "a") this.act(cx, this.view, this.sel[this.view], "header");
     else if (k === "s") this.openSettings(cx);
     else if (k === "r") this.refresh(cx, false, true);
+    else if (k === "t") this.cycleRefresh(cx);
     else if (k === "escape" || k === "q") {
       const id = this.block()?.at(-1)?.id;
       if (id) run("layout.hide", { id }); else run("pane.go", { direction: "left" });
@@ -890,7 +912,7 @@ export default class GitHub extends View {
   render(cx) {
     const loc = locate(this.loc);
     if (keyOf(loc) !== keyOf(this.loc) || loc?.tab !== this.loc?.tab || loc?.pane !== this.loc?.pane) this.loc = loc;
-    if (this.visible() && (keyOf(this.loc) !== this.context || Date.now() - this.fetchedAt > STALE)) this.refresh(cx, true);
+    if (this.visible() && (keyOf(this.loc) !== this.context || refreshDue(this.every, this.fetchedAt, Date.now()))) this.refresh(cx, true);
     const t = theme(), view = this.view, items = this.items(), focused = this.handle.is_focused() || this.inputFocus !== null;
     // A menu whose row left the list, in a refresh, or of the other list, is closed:
     // nothing would show it, and it would keep the keys.
@@ -902,7 +924,7 @@ export default class GitHub extends View {
     const title = !st ? this.repo?.name ?? this.forge?.name ?? "Pull requests and issues"
       : st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles";
     const hints = this.menu && !st ? "↑↓ choose · ⏎ start · esc cancel"
-      : !st ? `↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · esc close`
+      : !st ? `↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · t ${refreshLabel(this.every)} · o repo · esc close`
       : st.mode === "edit" ? `↑↓ field · ${this.inputFocus === null ? "←→ choose" : "type to edit"} · ⏎ save · esc back`
         : this.inputFocus?.startsWith("prompt-") ? "↑↓ prompts and profiles · type to edit · ⏎ save · esc back"
         : st.confirm ? "y delete · any other key keeps it"
@@ -925,6 +947,10 @@ export default class GitHub extends View {
           .tooltip(this.actTip(action))
           .on_click((_e, cx) => { cx.stop_propagation(); if (!this.closeMenu(cx)) this.act(cx, view, this.sel[view], "header"); }).child(`${action.label} #${action.number}`)))
         .child(this.iconButton(t, "hg-profiles", "gear", st ? "Back to the list" : "Agent profiles", (_e, cx) => (st ? this.closeSettings(cx) : this.openSettings(cx)), Boolean(st)))
+        // How often the lists refresh (#44): a click steps to the next interval, or manual.
+        .when(!st && (this.width ?? 368) >= INTERVAL_MIN_W, (el) => el.child(this.chip(t, "hg-interval", this.every === "manual" ? "Manual" : this.every, false,
+          (_e, cx) => { if (!this.closeMenu(cx)) this.cycleRefresh(cx); }).tooltip(`${refreshNotice(this.every)} Click to change.`)
+          .accessibility_label(`Refresh interval: ${this.every}. Activate to change it.`)))
         .when(!st, (el) => el.child(this.iconButton(t, "hg-refresh", "refresh", "Refresh", (_e, cx) => this.refresh(cx, false, true))))
         .when(!st && Boolean(this.repo?.url), (el) => el.child(this.iconButton(t, "hg-open", "external", `Open the repo on ${this.forge?.name ?? "the web"}`, (_e, cx) => this.openUrl(this.repo.url, cx)))))
       // The profile menu of the header's button (or the a key), under the header.

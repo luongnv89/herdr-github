@@ -14,7 +14,6 @@ const HERDR = process.env.HERDR_BIN_PATH || "herdr";
 const SELF = process.env.HERDR_PANE_ID || null;
 // Outside herdr (node panel.js) there is no state dir; never write into the plugin root.
 const STATE = process.env.HERDR_PLUGIN_STATE_DIR || path.join(os.tmpdir(), "herdr-github");
-const STALE = 120000;
 const LIMIT = 50;
 const POLL = 2000;
 
@@ -222,6 +221,8 @@ function run(cmd, args, opts = {}) {
 const ui = {
   view: "prs", prs: [], issues: [], errors: {}, repo: null, forge: null, error: null,
   loading: false, fetched: false, fetchedAt: 0, context: null,
+  // How often the lists refresh on their own (#44): one of P.REFRESH_CHOICES.
+  every: P.DEFAULT_REFRESH,
   sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, frame: 0,
   rows: [], buttons: [], visible: true, notice: null,
   root: null, tab: null, acting: null, settings: null,
@@ -256,19 +257,26 @@ async function locate() {
 
 // How long a refresh may run before the panel stops waiting for it (#42): git
 // rev-parse, git remote, then each forge's calls for an unknown host, four steps of at
-// most run()'s 60 s timeout. Only a refresh that will never end runs longer. Tests
-// shorten it. The app's mod has the same rule, in forge.js.
-const REFRESH = { hungMs: 300000 };
+// most run()'s 60 s timeout. Only a refresh that will never end runs longer. graceMs:
+// how long a running refresh is left alone by the refresh button and r (#45), so
+// pressing them again, or holding r, starts at most one refresh per grace instead of
+// one per press. Tests shorten both. The app's mod has the same rule, in forge.js.
+const REFRESH = { hungMs: 300000, graceMs: 3000 };
 
 // Which refresh is the panel's own. begin() numbers a new refresh, or returns null
-// while one is running that hasn't hung; force starts one anyway. Only the latest
-// number is current, and only its end() says the spinner can stop, so a refresh that
-// ends after another replaced it changes nothing.
+// while one is running that it mustn't replace:
+//   - moved (a new folder): always replaces it; its answer isn't wanted any more.
+//   - press (the refresh button, r, the refresh command): replaces it once it has run
+//     graceMs, so a refresh that never ends is still replaced by the next press (#42).
+//   - neither (the timer): replaces it only once it has hung.
+// With none running, any of them starts one at once. Only the latest number is
+// current, and only its end() says the spinner can stop, so a refresh that ends after
+// another replaced it changes nothing.
 function refreshGate() {
   let latest = 0, since = 0, running = false;
   return {
-    begin(now, force = false, hungMs = REFRESH.hungMs) {
-      if (running && !force && now - since < hungMs) return null;
+    begin(now, { press = false, moved = false } = {}, hungMs = REFRESH.hungMs, graceMs = REFRESH.graceMs) {
+      if (running && !moved && now - since < (press ? graceMs : hungMs)) return null;
       running = true;
       since = now;
       return ++latest;
@@ -279,17 +287,19 @@ function refreshGate() {
       running = false;
       return true;
     },
+    get running() { return running; },
   };
 }
 const gate = refreshGate();
 
-// force: the refresh button or r, which start one even while another runs (#42). A
-// new folder does too: the old one's answer isn't wanted any more.
+// force: the refresh button or r, which replace a running refresh once it has had
+// its grace (#42, #45). A new folder replaces it at once: the old one's answer isn't
+// wanted any more.
 async function refresh(force = false) {
   const context = cwd, moved = context !== ui.context;
   // A refresh that never ends would otherwise keep the spinner on and stop every
   // later one, for good.
-  const n = gate.begin(Date.now(), force || moved);
+  const n = gate.begin(Date.now(), { press: force, moved });
   if (n === null) return;
   if (moved) {
     Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 } });
@@ -907,7 +917,7 @@ function draw() {
 
   // The menu's hints, shorter when the pane is too narrow for them, so esc stays in view.
   const menuKeys = width(MENU_KEYS) <= cols ? MENU_KEYS : MENU_KEYS_SHORT;
-  const keys = ui.menu ? menuKeys : ` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · o repo · q close`;
+  const keys = ui.menu ? menuKeys : ` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · t ${P.refreshLabel(ui.every)} · o repo · q close`;
   out.push(dim(fit(keys, cols)));
   paint(out, rows);
 }
@@ -1369,11 +1379,28 @@ function settingsLines(cols, rows) {
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
+// What the panel keeps from one run to the next, in its state folder: the list it
+// shows, and how often it refreshes (#44).
+function keep(name, value) {
+  try { fs.mkdirSync(STATE, { recursive: true }); fs.writeFileSync(path.join(STATE, name), value); } catch {}
+}
+function restore() {
+  try { if (fs.readFileSync(path.join(STATE, "view"), "utf8").trim() === "issues") ui.view = "issues"; } catch {}
+  try { ui.every = P.parseRefresh(fs.readFileSync(path.join(STATE, "refresh"), "utf8")); } catch {}
+}
+
 function pick(view) {
   ui.view = view;
-  try { fs.mkdirSync(STATE, { recursive: true }); fs.writeFileSync(path.join(STATE, "view"), view); } catch {}
+  keep("view", view);
   ui.follow = true;
   draw();
+}
+
+// t: the next refresh interval, or manual (#44), kept for the next run.
+function cycleRefresh() {
+  ui.every = P.nextRefresh(ui.every);
+  keep("refresh", ui.every);
+  say("ok", P.refreshNotice(ui.every));
 }
 
 function move(by) {
@@ -1435,13 +1462,22 @@ function onInput(data) {
     else if (k === "a") act(ui.view, ui.sel[ui.view], "row");
     else if (k === "s") openSettings();
     else if (k === "r") refresh(true);
+    else if (k === "t") cycleRefresh();
   }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
+// Every POLL: follow the focused pane, and fetch only while the panel's tab is on
+// screen (a hidden panel keeps running), when the folder changed or the lists are due
+// at the chosen interval (#44). In manual, only a new folder fetches.
+async function poll() {
+  await locate();
+  if (ui.visible && (cwd !== ui.context || P.refreshDue(ui.every, ui.fetchedAt, Date.now()))) return refresh();
+}
+
 function main() {
-  try { if (fs.readFileSync(path.join(STATE, "view"), "utf8").trim() === "issues") ui.view = "issues"; } catch {}
+  restore();
 
   registry = SELF ? path.join(STATE, "panes", SELF.replace(/[^\w.-]/g, "_")) : null;
   if (registry) {
@@ -1463,11 +1499,7 @@ function main() {
   });
 
   setInterval(() => { if (ui.loading) { ui.frame++; draw(); } }, 100);
-  setInterval(async () => {
-    await locate();
-    // Fetch only while the panel's tab is on screen: a hidden panel keeps running.
-    if (ui.visible && (cwd !== ui.context || Date.now() - ui.fetchedAt > STALE)) refresh();
-  }, POLL);
+  setInterval(poll, POLL);
 
   draw();
   locate().then(() => refresh());
@@ -1480,6 +1512,8 @@ else {
     act, startChoice, launch, findSkill, promptFor, readStore, IDD, TIMING,
     // scripts/capture-screenshots.mjs reads the repo once, as the panel does.
     refresh, REFRESH,
+    // The refresh interval (#44): kept in the state folder, and checked every POLL.
+    restore, poll, STATE,
     // Tests point the panel at another followed pane, or none.
     follow: (pane) => { target = pane; },
   };

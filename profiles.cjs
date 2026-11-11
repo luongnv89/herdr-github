@@ -348,4 +348,47 @@ function parseMccEnv(text, home) {
   return null;
 }
 
-module.exports = { HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, shellQuote, shellJoin, parseMccEnv };
+// ── Refresh interval ────────────────────────────────────────────────────────
+
+// Not a profile, but a setting both panels share the rules of (#44): how often a
+// panel refreshes on its own while it's on screen, or "manual", only when you ask (the
+// refresh button, r, the refresh command). Either way a new folder is read at once,
+// so the lists are never another repo's. Each panel keeps its own choice, as it keeps
+// the list it shows; t steps through them.
+const REFRESH_CHOICES = ["30s", "1m", "5m", "15m", "manual"];
+const DEFAULT_REFRESH = "1m";
+const REFRESH_MS = { "30s": 30000, "1m": 60000, "5m": 300000, "15m": 900000 };
+const REFRESH_WORDS = { "30s": "every 30 seconds", "1m": "every minute", "5m": "every 5 minutes", "15m": "every 15 minutes" };
+
+// A kept choice, as read back from a file or the app's storage: the default unless
+// it's one of the choices.
+function parseRefresh(value) {
+  const v = typeof value === "string" ? value.trim() : "";
+  return REFRESH_CHOICES.includes(v) ? v : DEFAULT_REFRESH;
+}
+
+// The choice after this one, back to the first after the last.
+function nextRefresh(choice) {
+  return REFRESH_CHOICES[(REFRESH_CHOICES.indexOf(parseRefresh(choice)) + 1) % REFRESH_CHOICES.length];
+}
+
+// Whether the lists, read at fetchedAt, are due for a refresh at now. Never in manual.
+function refreshDue(choice, fetchedAt, now) {
+  const ms = REFRESH_MS[parseRefresh(choice)];
+  return ms !== undefined && now - fetchedAt >= ms;
+}
+
+// The key hint for t: what it changes, then the choice in use.
+function refreshLabel(choice) {
+  return `interval: ${parseRefresh(choice)}`;
+}
+
+// What the panel says when the choice changes.
+function refreshNotice(choice) {
+  const c = parseRefresh(choice);
+  return c === "manual"
+    ? "Refreshes only when you ask: r or the refresh button. A new folder still loads."
+    : `Refreshes ${REFRESH_WORDS[c]} while on screen, and on r or the refresh button.`;
+}
+
+module.exports = { HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice };

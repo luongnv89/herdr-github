@@ -41,9 +41,13 @@ require("node:child_process").execFile = (cmd, args, opts, cb) => {
   const r = name === "herdr" ? herdr(args) : name === "mcc" ? mcc(args) : name === "git" ? git(args) : { code: 1, stderr: `no ${name} in tests` };
   setImmediate(() => answer(cb, r));
 };
-Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1" });
+// The panel keeps its view and refresh interval in a state folder of its own here,
+// never in the real one.
+const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-github-state-"));
+process.on("exit", () => fs.rmSync(stateDir, { recursive: true, force: true }));
+Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1", HERDR_PLUGIN_STATE_DIR: stateDir });
 const P = require("../profiles.cjs");
-const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow, refresh, REFRESH } = require("../panel.js");
+const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow, refresh, REFRESH, restore, poll, STATE } = require("../panel.js");
 // A launch through mcc polls herdr for Claude Code in the new pane: quickly, here.
 Object.assign(TIMING, { pollMs: 1, appearMs: 40 });
 
@@ -2177,8 +2181,11 @@ test("a refresh that never ends holds back the timer's only until it has hung; t
   });
 });
 
-test("while a refresh never ends, the refresh button, r and a new folder each start one at once (#42)", { timeout: 5000 }, async (t) => {
-  t.after(() => { hold = () => false; held.length = 0; });
+test("while a refresh never ends, the refresh button, r and a new folder each start one once its grace is over (#42)", { timeout: 5000 }, async (t) => {
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  // The grace (#45) over at once: here a press always finds the hung refresh past it.
+  REFRESH.graceMs = 0;
   setup("issues");
   const starts = {
     "refresh(true)": () => refresh(true),
@@ -2202,11 +2209,15 @@ test("while a refresh never ends, the refresh button, r and a new folder each st
   // The header's refresh button forces one too.
   const src = fs.readFileSync(path.join(__dirname, "..", "panel.js"), "utf8");
   assert.match(src, /from: at \+ 3, to: at \+ 6, action: \(\) => refresh\(true\) \}/);
-  assert.match(src, /if \(ui\.visible && \(cwd !== ui\.context \|\| Date\.now\(\) - ui\.fetchedAt > STALE\)\) refresh\(\);/);
+  // The timer's refresh, every POLL, through poll() (#44), which doesn't press.
+  assert.match(src, /setInterval\(poll, POLL\);/);
+  assert.match(src, /P\.refreshDue\(ui\.every, ui\.fetchedAt, Date\.now\(\)\)\)\) return refresh\(\);/);
 });
 
 test("a refresh that answers after another replaced it changes nothing and leaves the newer one's spinner on (#42)", { timeout: 5000 }, async (t) => {
-  t.after(() => { hold = () => false; held.length = 0; });
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  REFRESH.graceMs = 0;
   setup("issues");
   await quietly(async () => {
     for (const late of [{ stdout: "/old\n" }, { error: new Error("spawn git ENOENT") }]) {
@@ -2232,5 +2243,171 @@ test("a refresh that answers after another replaced it changes nothing and leave
       assert.equal(ui.loading, false);
       assert.equal(ui.error, "Not a git repository");
     }
+  });
+});
+
+// ── Repeated presses (#45) ──────────────────────────────────────────────────
+
+// Lets the refresh still running end, so the next test finds none: a press past
+// the grace replaces it with one that answers.
+async function finishRefresh() {
+  hold = () => false;
+  REFRESH.graceMs = 0;
+  await refresh(true);
+  await settle();
+}
+
+test("pressing r again and again, or the refresh button, while a refresh runs starts one refresh, not one per press (#45)", { timeout: 5000 }, async (t) => {
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  const lines = setup("issues");
+  await quietly(async () => {
+    hold = holdGit;
+    // None running: one press starts one at once.
+    const before = gitCalls();
+    onInput(Buffer.from("r"));
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(ui.loading, true);
+    // Held r, the header's ↻ and the refresh function, all within the grace: nothing more.
+    onInput(Buffer.from("r".repeat(30)));
+    click(lines[0].indexOf("↻"), 0);
+    for (let i = 0; i < 5; i++) refresh(true);
+    await settle();
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(held.length, 1);
+    assert.equal(ui.loading, true);
+    await finishRefresh();
+    assert.equal(ui.loading, false);
+    assert.equal(ui.error, "Not a git repository");
+  });
+});
+
+test("once its grace is over, the next r replaces a refresh that never ends, and its answer shows (#45, #42)", { timeout: 5000 }, async (t) => {
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  setup("issues");
+  await quietly(async () => {
+    REFRESH.graceMs = 30;
+    hold = holdGit;
+    refresh(true);
+    const before = gitCalls();
+    onInput(Buffer.from("r"));
+    assert.equal(gitCalls(), before);
+    await new Promise((r) => setTimeout(r, 40));
+    hold = () => false;
+    onInput(Buffer.from("r"));
+    await settle();
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(ui.loading, false);
+    assert.equal(ui.error, "Not a git repository");
+  });
+});
+
+test("a new folder replaces a running refresh at once, grace or not (#45)", { timeout: 5000 }, async (t) => {
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  setup("issues");
+  await quietly(async () => {
+    REFRESH.graceMs = 60 * 60000;
+    hold = holdGit;
+    refresh(true);
+    hold = () => false;
+    const before = gitCalls();
+    ui.context = "/somewhere/else";
+    await refresh();
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(ui.loading, false);
+  });
+});
+
+// ── Refresh interval (#44) ──────────────────────────────────────────────────
+
+test("the panel's state folder is the test's, not the real one", () => {
+  assert.equal(STATE, stateDir);
+});
+
+test("t steps the refresh interval through 30s, 1m, 5m, 15m and manual, says so and shows it in the key hints (#44)", (t) => {
+  t.after(() => { ui.every = P.DEFAULT_REFRESH; fs.rmSync(path.join(stateDir, "refresh"), { force: true }); });
+  setup("issues");
+  assert.equal(ui.every, "1m");
+  // The key hints in a pane wide enough for all of them.
+  const hints = () => screenAt(120, 24, draw)[FOOTER];
+  assert.match(hints(), /r refresh · t interval: 1m · o repo/);
+  const seen = [];
+  for (let i = 0; i < 5; i++) {
+    const lines = screen(() => onInput(Buffer.from("t")));
+    seen.push(ui.every);
+    // Kept for the next run.
+    assert.equal(fs.readFileSync(path.join(stateDir, "refresh"), "utf8"), ui.every);
+    assert.equal(ui.notice.tone, "ok");
+    assert.equal(ui.notice.text, P.refreshNotice(ui.every));
+    assert.ok(lines.some((l) => l?.includes(P.refreshNotice(ui.every).slice(0, 30))), lines.join("\n"));
+  }
+  assert.deepEqual(seen, ["5m", "15m", "manual", "30s", "1m"]);
+  screen(() => onInput(Buffer.from("tt")));
+  assert.equal(ui.every, "15m");
+  assert.match(hints(), /t interval: 15m/);
+  screen(() => onInput(Buffer.from("t")));
+  assert.match(hints(), /r refresh · t interval: manual · o repo/);
+});
+
+test("the refresh interval chosen is read back when the panel starts again; an unknown one is the default (#44)", (t) => {
+  const file = path.join(stateDir, "refresh");
+  t.after(() => { ui.every = P.DEFAULT_REFRESH; fs.rmSync(file, { force: true }); });
+  for (const [kept, read] of [["manual", "manual"], ["15m\n", "15m"], ["30s", "30s"], ["2m", "1m"], ["", "1m"]]) {
+    ui.every = "5m";
+    fs.writeFileSync(file, kept);
+    restore();
+    assert.equal(ui.every, read, JSON.stringify(kept));
+  }
+  // None kept yet: what the panel had, the default.
+  fs.rmSync(file, { force: true });
+  ui.every = P.DEFAULT_REFRESH;
+  restore();
+  assert.equal(ui.every, "1m");
+});
+
+test("the panel refreshes on its own at the chosen interval, and in manual never, only on r or a new folder (#44)", { timeout: 5000 }, async (t) => {
+  t.after(() => { ui.every = P.DEFAULT_REFRESH; ui.visible = true; });
+  setup("issues");
+  await quietly(async () => {
+    // The folder the panel follows, read once: only the interval decides now.
+    await refresh(true);
+    const due = async (every, ago) => {
+      ui.every = every;
+      ui.fetchedAt = Date.now() - ago;
+      const before = gitCalls();
+      await poll();
+      await settle();
+      return gitCalls() > before;
+    };
+    assert.equal(await due("30s", 31000), true);
+    assert.equal(await due("30s", 10000), false);
+    assert.equal(await due("1m", 61000), true);
+    assert.equal(await due("1m", 50000), false);
+    assert.equal(await due("5m", 4 * 60000), false);
+    assert.equal(await due("5m", 5 * 60000 + 1000), true);
+    assert.equal(await due("15m", 10 * 60000), false);
+    assert.equal(await due("15m", 15 * 60000 + 1000), true);
+    // Manual: never on its own, however long ago the lists were read.
+    assert.equal(await due("manual", 24 * 3600000), false);
+    assert.equal(await due("manual", Date.now()), false);
+    // A hidden panel never fetches on its own either.
+    ui.visible = false;
+    assert.equal(await due("30s", 60000), false);
+    ui.visible = true;
+    // In manual, r refreshes at once.
+    let before = gitCalls();
+    onInput(Buffer.from("r"));
+    await settle();
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(ui.loading, false);
+    // And a new folder is still read, so the lists are never another repo's.
+    ui.context = "/somewhere/else";
+    before = gitCalls();
+    await poll();
+    await settle();
+    assert.equal(gitCalls(), before + 1);
+    assert.notEqual(ui.context, "/somewhere/else");
   });
 });

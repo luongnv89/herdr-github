@@ -301,18 +301,18 @@ test("main.js keeps every notice through nextNotice, by launch, and counts promp
 
 // ── Refresh (#42) ───────────────────────────────────────────────────────────
 
-test("refreshGate: a running refresh blocks the next one until it ends or hangs; force starts one anyway", () => {
+test("refreshGate: a running refresh blocks the timer's until it ends or hangs; a new folder replaces it at once", () => {
   const gate = F.refreshGate();
-  const a = gate.begin(1000, false, 300);
+  const a = gate.begin(1000, {}, 300, 50);
   assert.equal(a, 1);
   assert.equal(gate.running, true);
   // Still running, not hung: the timer's refresh waits.
-  assert.equal(gate.begin(1200, false, 300), null);
+  assert.equal(gate.begin(1200, {}, 300, 50), null);
   // Hung (300 ms here): the next one starts.
-  const b = gate.begin(1300, false, 300);
+  const b = gate.begin(1300, {}, 300, 50);
   assert.equal(b, 2);
-  // The refresh button, r, the refresh command or a new folder: right away.
-  const c = gate.begin(1301, true, 300);
+  // A new folder: right away, even with the grace not over.
+  const c = gate.begin(1301, { moved: true }, 300, 50);
   assert.equal(c, 3);
   assert.equal(gate.current(a), false);
   assert.equal(gate.current(c), true);
@@ -320,10 +320,40 @@ test("refreshGate: a running refresh blocks the next one until it ends or hangs;
   assert.equal(gate.end(a), false);
   assert.equal(gate.end(b), false);
   assert.equal(gate.running, true);
-  assert.equal(gate.begin(1302, false, 300), null);
+  assert.equal(gate.begin(1302, {}, 300, 50), null);
   assert.equal(gate.end(c), true);
   assert.equal(gate.running, false);
-  assert.equal(gate.begin(1303, false, 300), 4);
+  assert.equal(gate.begin(1303, {}, 300, 50), 4);
+});
+
+test("refreshGate: a press starts one at once when none runs, and replaces a running one only after the grace (#45)", () => {
+  const gate = F.refreshGate();
+  // None running: the press starts one right away.
+  assert.equal(gate.begin(1000, { press: true }, 300, 50), 1);
+  // Pressed again within the grace: nothing new starts, the running one goes on.
+  assert.equal(gate.begin(1001, { press: true }, 300, 50), null);
+  assert.equal(gate.begin(1049, { press: true }, 300, 50), null);
+  assert.equal(gate.current(1), true);
+  // Past the grace, a press replaces it: a refresh that never ends doesn't hold the panel (#42).
+  assert.equal(gate.begin(1050, { press: true }, 300, 50), 2);
+  assert.equal(gate.current(1), false);
+  // The grace starts again from the new refresh.
+  assert.equal(gate.begin(1060, { press: true }, 300, 50), null);
+  // Ended: the next press starts one at once, grace or not.
+  assert.equal(gate.end(2), true);
+  assert.equal(gate.begin(1061, { press: true }, 300, 50), 3);
+});
+
+test("refreshGate: a burst of presses, as held r repeats, starts at most one refresh per grace (#45)", () => {
+  const gate = F.refreshGate();
+  // 30 presses a second for 10 s while the refresh never ends, with the default grace.
+  let starts = 0;
+  for (let t = 0; t <= 10000; t += 33) if (gate.begin(t, { press: true }) !== null) starts++;
+  assert.ok(F.REFRESH.graceMs >= 1000, "a grace of at least a second");
+  assert.ok(starts <= 1 + Math.floor(10000 / F.REFRESH.graceMs), `${starts} refreshes`);
+  assert.ok(starts >= 2, "a hung refresh is still replaced");
+  // The grace is far shorter than the hung limit: a press still recovers from a hung refresh long before the timer would.
+  assert.ok(F.REFRESH.graceMs * 10 <= F.REFRESH.hungMs);
 });
 
 test("refreshGate: the limit is past the slowest real refresh, four steps of a 60 s timeout", () => {
@@ -397,12 +427,13 @@ test("readRepo: a refresh replaced while it ran answers nothing, whichever step 
   assert.equal(await F.readRepo({ cwd: "/r", exec: failing, forges: new Map(), current: () => wanted }), null);
 });
 
-test("main.js refreshes through the gate: the buttons force one, and only the latest stops the spinner", () => {
+test("main.js refreshes through the gate: the buttons press, a new folder moves, and only the latest stops the spinner", () => {
   const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
   const fn = main.slice(main.indexOf("refresh(cx, fromRender = false, force = false) {"));
   const refresh = fn.slice(0, fn.indexOf("\n  }\n") + 4);
   assert.doesNotMatch(refresh, /if \(this\.loading\) return/);
-  assert.match(refresh, /const n = this\.gate\.begin\(Date\.now\(\), force \|\| moved\);\s*if \(n === null\) return;/);
+  // A press and a new folder stay apart: only the folder skips the grace (#45).
+  assert.match(refresh, /const n = this\.gate\.begin\(Date\.now\(\), \{ press: force, moved \}\);\s*if \(n === null\) return;/);
   assert.match(refresh, /const current = \(\) => this\.gate\.current\(n\) && keyOf\(this\.loc\) === context;/);
   assert.match(refresh, /if \(!found \|\| !current\(\)\) return;/);
   assert.match(refresh, /finally \{\n(\s*\/\/[^\n]*\n)*\s*if \(this\.gate\.end\(n\)\) this\.loading = false;/);
@@ -411,5 +442,38 @@ test("main.js refreshes through the gate: the buttons force one, and only the la
   assert.match(main, /else if \(c === "refresh"\) this\.refresh\(cx, false, true\);/);
   assert.match(main, /else if \(k === "r"\) this\.refresh\(cx, false, true\);/);
   assert.match(main, /"Refresh", \(_e, cx\) => this\.refresh\(cx, false, true\)\)/);
-  assert.match(main, /cx\.timer\.every\(STALE, \(cx\) => \{ if \(this\.visible\(\)\) this\.refresh\(cx\); \}\);/);
+  // The timer doesn't press: it never replaces a running refresh before it hangs.
+  assert.match(main, /cx\.timer\.every\(TICK_MS, \(cx\) => \{ if \(this\.visible\(\) && refreshDue\(this\.every, this\.fetchedAt, Date\.now\(\)\)\) this\.refresh\(cx\); \}\);/);
+});
+
+// ── Refresh interval (#44) ──────────────────────────────────────────────────
+
+test("main.js refreshes on its own only when the chosen interval says so, and never in manual (#44)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  assert.doesNotMatch(main, /\bSTALE\b/);
+  // Both timed paths, the timer and render's check, ask refreshDue; a new folder still loads at once.
+  const tick = Number(/const TICK_MS = (\d+);/.exec(main)?.[1]);
+  assert.ok(tick > 0 && tick <= 30000 / 3, `a tick of ${tick} ms against the 30 s interval`);
+  assert.match(main, /cx\.timer\.every\(TICK_MS, \(cx\) => \{ if \(this\.visible\(\) && refreshDue\(this\.every, this\.fetchedAt, Date\.now\(\)\)\)/);
+  assert.match(main, /if \(this\.visible\(\) && \(keyOf\(this\.loc\) !== this\.context \|\| refreshDue\(this\.every, this\.fetchedAt, Date\.now\(\)\)\)\) this\.refresh\(cx, true\);/);
+  assert.equal(main.match(/refreshDue\(/g).length, 2);
+});
+
+test("main.js keeps the interval, and t, the header's interval button and the interval command step it (#44)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  // Read back when the panel opens, as the view is; anything unknown is the default.
+  assert.match(main, /this\.every = parseRefresh\(localStorage\.getItem\("refresh"\)\);/);
+  const fn = main.slice(main.indexOf("  cycleRefresh(cx) {"));
+  const cycle = fn.slice(0, fn.indexOf("\n  }\n") + 4);
+  assert.match(cycle, /this\.every = nextRefresh\(this\.every\);\s*localStorage\.setItem\("refresh", this\.every\);/);
+  assert.match(cycle, /this\.say\("ok", refreshNotice\(this\.every\)\);/);
+  assert.match(main, /else if \(k === "t"\) this\.cycleRefresh\(cx\);/);
+  assert.match(main, /else if \(c === "interval"\) this\.cycleRefresh\(cx\);/);
+  assert.match(main, /this\.chip\(t, "hg-interval", this\.every === "manual" \? "Manual" : this\.every, false,\s*\(_e, cx\) => \{ if \(!this\.closeMenu\(cx\)\) this\.cycleRefresh\(cx\); \}\)/);
+  // Named for a screen reader, and left out of a narrow header, where t still works.
+  assert.match(main, /\.accessibility_label\(`Refresh interval: \$\{this\.every\}\. Activate to change it\.`\)/);
+  assert.match(main, /\.when\(!st && \(this\.width \?\? 368\) >= INTERVAL_MIN_W, \(el\) => el\.child\(this\.chip\(t, "hg-interval"/);
+  assert.match(main, /t \$\{refreshLabel\(this\.every\)\}/);
+  // The refresh button still presses, in manual too.
+  assert.match(main, /"Refresh", \(_e, cx\) => this\.refresh\(cx, false, true\)\)/);
 });
