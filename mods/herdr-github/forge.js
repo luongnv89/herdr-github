@@ -226,6 +226,18 @@ export function pickNewTerminal(before, after, tabId) {
   return found.length === 1 ? found[0] : null;
 }
 
+// What the app says when pickNewTerminal found no terminal for `who`'s new pane.
+// No terminal new anywhere: terminal.open opened nothing, most often because
+// herdr-core can't find the program on its PATH (Herdr says so in a toast).
+// Something new but not exactly one in the tab: the pane may be open.
+// Either way the notice keeps `text`, the prompt to send by hand.
+export function unpickedNotice(who, text, before, after) {
+  const old = new Set(before ?? []);
+  const opened = (after ?? []).some((t) => typeof t?.address === "string" && !old.has(t.address));
+  if (!opened) return `${who} didn't start in a new pane. Herdr may not find its program: check Herdr's message, or the profile's harness. When ${who} runs, send it: ${text}`;
+  return `Started ${who} in a new pane, but can't tell which terminal it is. Send it yourself in the new pane: ${text}`;
+}
+
 // The panel's one notice, after `incoming`: { tone, text, url, from }, `from` being
 // the launch that said it (null for anything else). An error stays until a newer
 // error or a message from its own launch replaces it (a key or a new launch clears
