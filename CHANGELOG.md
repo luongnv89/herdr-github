@@ -10,6 +10,10 @@
 
 - The Herdr app's screenshots (#36, #37, #38): `scripts/capture-app-screenshots.mjs` now keeps the agent stand-ins first on the PATH of a login shell too, where macOS's `path_helper` used to put Homebrew ahead of them. Ctrl+C stops it cleanly: nothing more launches, the isolated app and its herdr-core are stopped, the temporary folder is deleted, no picture is written and it exits 130, even on a second Ctrl+C. It takes a picture only once the panel has settled, which a loading panel never does, so a slow `gh` can no longer leave a loading frame in the README.
 
+### Tests
+
+- The Herdr app's screenshot script's Ctrl+C stop and panel check are now tested offline (#40), with a fake app, clock and signals: nothing launches, no picture is cut out or put in place after Ctrl+C or SIGTERM, cleanup runs once and the run exits 130 only once it has finished, even on a second Ctrl+C; a change that only focusing the panel caused doesn't count as the view's command taking effect; a command's view is taken once it has settled, not mid-change; and a launch whose panel never settles is tried again, then given up. The script's stop, one launch and the loop over the pictures are now exported (`createStopper`, `createAttempt`, `captureAll`) for this; it behaves as before.
+
 ## 0.5.0 (2026-11-11)
 
 ### Added

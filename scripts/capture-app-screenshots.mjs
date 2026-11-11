@@ -121,7 +121,7 @@ export async function watchFrames(frame, { changed = null, poll = POLL_MS, settl
 }
 
 // Thrown to unwind the run once Ctrl+C (or SIGTERM) has stopped it.
-class Stopped extends Error {}
+export class Stopped extends Error {}
 
 // The layout: the panel alone, near the top left of the window, at the shot's height.
 export function layoutFor(shot) {
@@ -155,6 +155,130 @@ export function isolatedEnv(dirs, { user, ghConfigDir }) {
   };
 }
 
+const isAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+// How the run stops. Ctrl+C or SIGTERM sets `stopping`: the run unwinds at its next
+// `halt()`, so nothing more launches or is written. Each `halt()` sits right before
+// what it guards, with no await between them. Quitting the app and cleaning up each
+// happen once: a second caller waits for the first. The signal handler stays
+// installed for the whole run, so a second Ctrl+C while cleaning up can't end the
+// process before the app is stopped; it exits 130 once cleanup is done.
+// `quitApp` asks the app to quit, `stopCore` stops its herdr-core, `removeWorld`
+// deletes the folder; `signals` is where SIGINT and SIGTERM arrive.
+export function createStopper({ quitApp, stopCore, removeWorld, signals = process, exit = (code) => process.exit(code), alive = isAlive, kill = (pid) => process.kill(pid, "SIGKILL"), nap = sleep }) {
+  let stopping = false;
+  const halt = () => { if (stopping) throw new Stopped(); };
+
+  let child = null;
+  let quitting = Promise.resolve();
+  // The app that was just launched, for `quit()` to stop.
+  const launched = (pid) => { child = { pid }; };
+  const quit = () => {
+    if (child) {
+      const { pid } = child;
+      child = null;
+      quitting = (async () => {
+        try { await quitApp(); } catch {}
+        for (let i = 0; i < 30 && alive(pid); i++) await nap(100);
+        if (alive(pid)) kill(pid);
+      })();
+    }
+    return quitting;
+  };
+  let cleaning = null;
+  const cleanup = () => (cleaning ??= (async () => {
+    await quit();
+    try { await stopCore(); } catch {}
+    removeWorld();
+  })());
+  const onSignal = () => {
+    if (stopping) return;
+    stopping = true;
+    cleanup().finally(() => exit(130));
+  };
+  signals.on("SIGINT", onSignal);
+  signals.on("SIGTERM", onSignal);
+
+  // At the end of the run, however it ends: clean up, and let go of the signals
+  // unless one is stopping the run.
+  const finish = async () => {
+    await cleanup();
+    if (!stopping) {
+      signals.off("SIGINT", onSignal);
+      signals.off("SIGTERM", onSignal);
+    }
+  };
+  return { halt, launched, quit, cleanup, finish, get stopping() { return stopping; } };
+}
+
+// One launch of the app, for one picture: the picture's frame, or null when the
+// panel didn't settle or the app stopped drawing too soon. `seed` sets the app's
+// state, `launch` starts it, `app` runs a herdr-app command, `shoot` saves the app's
+// last frame ({ file, bytes }), and `quit` stops the app; `watch` is passed on to
+// watchFrames (its clock).
+export function createAttempt({ halt, seed, launch, app, shoot, quit, repo, nap = sleep, watch: watchOpts = {} }) {
+  const frame = async () => {
+    halt();
+    return shoot();
+  };
+  const watch = (changed = null) => watchFrames(frame, { ...watchOpts, changed });
+  return async (shot) => {
+    halt();
+    seed(shot);
+    launch();
+    try {
+      let up = false;
+      for (let i = 0; i < 100 && !up; i++) {
+        halt();
+        try { await app("status"); up = true; } catch { await nap(100); }
+      }
+      if (!up) throw new Error("the Herdr app didn't start");
+      const { spaces = [] } = JSON.parse((await app("ls")).stdout);
+      if (!spaces.some((s) => s.folder === repo)) await app("do", "space.new", "--folder", repo);
+      // The panel once its issues are in: a loading one doesn't settle.
+      const loaded = await watch();
+      if (!loaded) return null;
+      // Focus redraws the panel's border, so focus first and let it settle: then the
+      // probe's change is the probe's own, and proves the app was still drawing.
+      await app("do", "herdr-github.focus");
+      const focused = await watch();
+      if (!focused) return null;
+      await app("do", `herdr-github.${probeFor(shot)}`);
+      if (!(await watch((f) => !f.bytes.equals(focused.bytes)))) return null;
+      // A view a command opened is taken once it has settled, not mid-change.
+      return shot.command ? await watch() : loaded;
+    } finally {
+      await quit();
+    }
+  };
+}
+
+// Every picture: each one tried up to `tries` times, cut out with `sips` (it runs
+// sips with those arguments and resolves to its output) into `out(shot)`, and only
+// once every picture is taken, each put in place with `place(from, to)`, which must
+// be synchronous so no signal lands between the last `halt()` and the last rename.
+export async function captureAll({ shots, attempt, halt, sips, out, place, warn = console.error, tries = TRIES }) {
+  const written = [];
+  for (const shot of shots) {
+    let picked = null;
+    for (let i = 0; i < tries && !picked; i++) {
+      picked = await attempt(shot);
+      if (!picked && i < tries - 1) warn(`${shot.file}: the panel didn't settle, or the app stopped drawing too soon: trying again`);
+    }
+    if (!picked) throw new Error(`${shot.file} couldn't be taken ${tries} times (the panel didn't settle, or the app stopped drawing too soon): run it again`);
+    halt();
+    const width = Number(/pixelWidth: (\d+)/.exec((await sips(["-g", "pixelWidth", picked.file])).stdout)?.[1]);
+    if (!width) throw new Error("couldn't read the app's picture");
+    const picture = out(shot);
+    halt();
+    await sips([...cropArgs(shot, width / WINDOW.w), picked.file, "--out", picture]);
+    written.push([picture, join(root, shot.file)]);
+  }
+  // Only once every picture is taken do they replace the old ones.
+  halt();
+  for (const [from, to] of written) place(from, to);
+}
+
 async function main() {
   if (process.platform !== "darwin") throw new Error("the Herdr app's pictures are taken on macOS");
   const which = async (cmd) => {
@@ -180,119 +304,49 @@ async function main() {
   const dirs = buildWorld(world, tools);
   const env = isolatedEnv(dirs, { user: process.env.USER, ghConfigDir: process.env.GH_CONFIG_DIR ?? join(homedir(), ".config/gh") });
   const app = (...args) => execFile(join(dirs.bin, "herdr-app"), args, { env, cwd: world });
-  const repo = realpathSync(root);
 
-  // Ctrl+C or SIGTERM sets `stopping`: the run unwinds at its next check, so nothing
-  // more launches or is written. Each check sits right before what it guards, with no
-  // await between them.
-  let stopping = false;
-  const halt = () => { if (stopping) throw new Stopped(); };
+  const stopper = createStopper({
+    quitApp: () => app("do", "app.quit"),
+    stopCore: () => execFile(join(dirs.bin, "hc"), ["server", "stop"], { env, cwd: world }),
+    removeWorld: () => rmSync(world, { recursive: true, force: true }),
+  });
+  const { halt } = stopper;
 
-  // Quitting and cleaning up each happen once: a second caller waits for the first.
-  let child = null;
-  let quitting = Promise.resolve();
-  const quit = () => {
-    if (child) {
-      const { pid } = child;
-      child = null;
-      quitting = (async () => {
-        try { await app("do", "app.quit"); } catch {}
-        const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
-        for (let i = 0; i < 30 && alive(); i++) await sleep(100);
-        if (alive()) process.kill(pid, "SIGKILL");
-      })();
-    }
-    return quitting;
-  };
-  let cleaning = null;
-  const cleanup = () => (cleaning ??= (async () => {
-    await quit();
-    try { await execFile(join(dirs.bin, "hc"), ["server", "stop"], { env, cwd: world }); } catch {}
-    rmSync(world, { recursive: true, force: true });
-  })());
-  // Kept for the whole run: a second Ctrl+C while cleaning up must not end the
-  // process before the app is stopped.
-  const onSignal = () => {
-    if (stopping) return;
-    stopping = true;
-    cleanup().finally(() => process.exit(130));
-  };
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
-
-  // The app's last frame, saved to `file`, and its bytes.
+  // The app's last frame, saved to a file, and its bytes.
   let n = 0;
-  const frame = async () => {
-    halt();
-    const file = join(dirs.tmp, `frame-${n++}.png`);
-    await app("shot", file);
-    return { file, bytes: readFileSync(file) };
-  };
-  const watch = (changed = null) => watchFrames(frame, { changed });
-
-  // One launch: the picture's frame, or null when the panel didn't settle or the app
-  // stopped drawing too soon.
-  const attempt = async (shot) => {
-    halt();
-    seed(dirs, shot);
-    child = spawn(join(dirs.bin, "herdr-app"), [], { env, cwd: world, detached: true, stdio: "ignore" });
-    child.unref();
-    try {
-      let up = false;
-      for (let i = 0; i < 100 && !up; i++) {
-        halt();
-        try { await app("status"); up = true; } catch { await sleep(100); }
-      }
-      if (!up) throw new Error("the Herdr app didn't start");
-      const { spaces = [] } = JSON.parse((await app("ls")).stdout);
-      if (!spaces.some((s) => s.folder === repo)) await app("do", "space.new", "--folder", repo);
-      // The panel once its issues are in: a loading one doesn't settle.
-      const loaded = await watch();
-      if (!loaded) return null;
-      // Focus redraws the panel's border, so focus first and let it settle: then the
-      // probe's change is the probe's own, and proves the app was still drawing.
-      await app("do", "herdr-github.focus");
-      const focused = await watch();
-      if (!focused) return null;
-      await app("do", `herdr-github.${probeFor(shot)}`);
-      if (!(await watch((f) => !f.bytes.equals(focused.bytes)))) return null;
-      // A view a command opened is taken once it has settled, not mid-change.
-      return shot.command ? await watch() : loaded;
-    } finally {
-      await quit();
-    }
-  };
+  const attempt = createAttempt({
+    halt,
+    seed: (shot) => seed(dirs, shot),
+    launch: () => {
+      const child = spawn(join(dirs.bin, "herdr-app"), [], { env, cwd: world, detached: true, stdio: "ignore" });
+      child.unref();
+      stopper.launched(child.pid);
+    },
+    app,
+    shoot: async () => {
+      const file = join(dirs.tmp, `frame-${n++}.png`);
+      await app("shot", file);
+      return { file, bytes: readFileSync(file) };
+    },
+    quit: stopper.quit,
+    repo: realpathSync(root),
+  });
 
   try {
-    const written = [];
-    for (const shot of SHOTS) {
-      let picked = null;
-      for (let i = 0; i < TRIES && !picked; i++) {
-        picked = await attempt(shot);
-        if (!picked && i < TRIES - 1) console.error(`${shot.file}: the panel didn't settle, or the app stopped drawing too soon: trying again`);
-      }
-      if (!picked) throw new Error(`${shot.file} couldn't be taken ${TRIES} times (the panel didn't settle, or the app stopped drawing too soon): run it again`);
-      halt();
-      const width = Number(/pixelWidth: (\d+)/.exec((await execFile("sips", ["-g", "pixelWidth", picked.file])).stdout)?.[1]);
-      if (!width) throw new Error("couldn't read the app's picture");
-      const picture = join(dirs.out, shot.file.replaceAll("/", "_"));
-      halt();
-      await execFile("sips", [...cropArgs(shot, width / WINDOW.w), picked.file, "--out", picture]);
-      written.push([picture, join(root, shot.file)]);
-    }
-    // Only once every picture is taken do they replace the old ones.
-    halt();
-    for (const [from, to] of written) {
-      mkdirSync(dirname(to), { recursive: true });
-      renameSync(from, to);
-      console.log(`wrote ${relative(root, to)}`);
-    }
+    await captureAll({
+      shots: SHOTS,
+      attempt,
+      halt,
+      sips: (args) => execFile("sips", args),
+      out: (shot) => join(dirs.out, shot.file.replaceAll("/", "_")),
+      place: (from, to) => {
+        mkdirSync(dirname(to), { recursive: true });
+        renameSync(from, to);
+        console.log(`wrote ${relative(root, to)}`);
+      },
+    });
   } finally {
-    await cleanup();
-    if (!stopping) {
-      process.off("SIGINT", onSignal);
-      process.off("SIGTERM", onSignal);
-    }
+    await stopper.finish();
   }
 }
 
