@@ -27,16 +27,23 @@ const path = require("node:path");
 const calls = [], callOpts = [];
 let herdr = () => ({ code: 1, stderr: "no herdr in tests" });
 let mcc = () => ({ code: 1, stderr: "no mcc in tests" });
+// git answers as not a repository, unless a test scripts it. A call held returns no
+// answer until the test answers it from held, as a refresh that never ends (#42).
+let git = () => ({ code: 1, stderr: "no git in tests" });
+let hold = () => false;
+const held = [];
+const answer = (cb, r) => cb(r.error ?? (r.code ? Object.assign(new Error("exit"), { code: r.code }) : null), r.stdout ?? "", r.stderr ?? "");
 require("node:child_process").execFile = (cmd, args, opts, cb) => {
   const name = path.basename(cmd);
   calls.push([name, ...args]);
   callOpts.push(opts);
-  const r = name === "herdr" ? herdr(args) : name === "mcc" ? mcc(args) : { code: 1, stderr: `no ${name} in tests` };
-  setImmediate(() => cb(r.error ?? (r.code ? Object.assign(new Error("exit"), { code: r.code }) : null), r.stdout ?? "", r.stderr ?? ""));
+  if (hold(name, args)) { held.push({ name, args, answer: (r) => answer(cb, r) }); return; }
+  const r = name === "herdr" ? herdr(args) : name === "mcc" ? mcc(args) : name === "git" ? git(args) : { code: 1, stderr: `no ${name} in tests` };
+  setImmediate(() => answer(cb, r));
 };
 Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1" });
 const P = require("../profiles.cjs");
-const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow } = require("../panel.js");
+const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow, refresh, REFRESH } = require("../panel.js");
 // A launch through mcc polls herdr for Claude Code in the new pane: quickly, here.
 Object.assign(TIMING, { pollMs: 1, appearMs: 40 });
 
@@ -2131,4 +2138,99 @@ test("a menu longer than the room shows a window of it that follows the highligh
   const [l, y] = shown.find(([x]) => x.includes("│   Profile 8"));
   await screenAsync(() => click(l.indexOf("│") + 3, y));
   assert.equal(herdrCalls()[2], "agent start resolve-12 --kind pi --pane w1:p7 --timeout 55000 -- --model m8");
+});
+
+// ── Refresh (#42) ───────────────────────────────────────────────────────────
+
+// Run fn with the panel's frames kept off node --test's stdout. Only the frames: the
+// test runner reports through stdout too, while fn awaits.
+async function quietly(fn) {
+  const { write } = process.stdout;
+  process.stdout.write = (s, ...rest) => typeof s === "string" && s.startsWith("\x1b[?2026h") ? true : write.call(process.stdout, s, ...rest);
+  try { return await fn(); } finally { process.stdout.write = write; }
+}
+const gitCalls = () => calls.filter((c) => c[0] === "git").length;
+const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+const holdGit = (name) => name === "git";
+
+test("a refresh that never ends holds back the timer's only until it has hung; the next one then shows its answer (#42)", { timeout: 5000 }, async (t) => {
+  const limit = REFRESH.hungMs;
+  t.after(() => { REFRESH.hungMs = limit; hold = () => false; held.length = 0; });
+  setup("issues");
+  await quietly(async () => {
+    REFRESH.hungMs = 60 * 60000;
+    hold = holdGit;
+    refresh(true);
+    const before = gitCalls();
+    assert.equal(ui.loading, true);
+    // Still running and not hung: the timer's refresh starts nothing.
+    await refresh();
+    assert.equal(gitCalls(), before);
+    assert.equal(ui.loading, true);
+    // Hung: the timer's refresh starts one, whose answer shows and stops the spinner.
+    hold = () => false;
+    REFRESH.hungMs = 0;
+    await refresh();
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(ui.loading, false);
+    assert.equal(ui.error, "Not a git repository");
+  });
+});
+
+test("while a refresh never ends, the refresh button, r and a new folder each start one at once (#42)", { timeout: 5000 }, async (t) => {
+  t.after(() => { hold = () => false; held.length = 0; });
+  setup("issues");
+  const starts = {
+    "refresh(true)": () => refresh(true),
+    r: () => onInput(Buffer.from("r")),
+    "a new folder": () => { ui.context = "/somewhere/else"; return refresh(); },
+  };
+  await quietly(async () => {
+    for (const [how, start] of Object.entries(starts)) {
+      hold = holdGit;
+      refresh(true);
+      assert.equal(ui.loading, true, how);
+      hold = () => false;
+      const before = gitCalls();
+      await start();
+      await settle();
+      assert.equal(gitCalls(), before + 1, how);
+      assert.equal(ui.loading, false, how);
+      assert.equal(ui.error, "Not a git repository", how);
+    }
+  });
+  // The header's refresh button forces one too.
+  const src = fs.readFileSync(path.join(__dirname, "..", "panel.js"), "utf8");
+  assert.match(src, /from: at \+ 3, to: at \+ 6, action: \(\) => refresh\(true\) \}/);
+  assert.match(src, /if \(ui\.visible && \(cwd !== ui\.context \|\| Date\.now\(\) - ui\.fetchedAt > STALE\)\) refresh\(\);/);
+});
+
+test("a refresh that answers after another replaced it changes nothing and leaves the newer one's spinner on (#42)", { timeout: 5000 }, async (t) => {
+  t.after(() => { hold = () => false; held.length = 0; });
+  setup("issues");
+  await quietly(async () => {
+    for (const late of [{ stdout: "/old\n" }, { error: new Error("spawn git ENOENT") }]) {
+      hold = holdGit;
+      refresh(true);
+      const old = held.at(-1);
+      const second = refresh(true), now = held.at(-1);
+      assert.notEqual(old, now);
+      const waiting = held.length;
+      ui.error = null;
+      ui.root = null;
+      // Not awaited: a replaced refresh that went on would wait on a held git remote.
+      old.answer(late);
+      await settle();
+      // The old one stopped there: no git remote, no root, no error, spinner still on.
+      assert.equal(held.length, waiting);
+      assert.equal(ui.root, null);
+      assert.equal(ui.error, null);
+      assert.equal(ui.loading, true);
+      hold = () => false;
+      now.answer({ code: 1, stderr: "not a git repository" });
+      await second;
+      assert.equal(ui.loading, false);
+      assert.equal(ui.error, "Not a git repository");
+    }
+  });
 });

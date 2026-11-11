@@ -254,29 +254,69 @@ async function locate() {
   } catch {}
 }
 
-async function refresh() {
-  if (ui.loading) return;
-  const context = cwd;
-  if (context !== ui.context) {
+// How long a refresh may run before the panel stops waiting for it (#42): git
+// rev-parse, git remote, then each forge's calls for an unknown host, four steps of at
+// most run()'s 60 s timeout. Only a refresh that will never end runs longer. Tests
+// shorten it. The app's mod has the same rule, in forge.js.
+const REFRESH = { hungMs: 300000 };
+
+// Which refresh is the panel's own. begin() numbers a new refresh, or returns null
+// while one is running that hasn't hung; force starts one anyway. Only the latest
+// number is current, and only its end() says the spinner can stop, so a refresh that
+// ends after another replaced it changes nothing.
+function refreshGate() {
+  let latest = 0, since = 0, running = false;
+  return {
+    begin(now, force = false, hungMs = REFRESH.hungMs) {
+      if (running && !force && now - since < hungMs) return null;
+      running = true;
+      since = now;
+      return ++latest;
+    },
+    current: (n) => n === latest,
+    end(n) {
+      if (n !== latest) return false;
+      running = false;
+      return true;
+    },
+  };
+}
+const gate = refreshGate();
+
+// force: the refresh button or r, which start one even while another runs (#42). A
+// new folder does too: the old one's answer isn't wanted any more.
+async function refresh(force = false) {
+  const context = cwd, moved = context !== ui.context;
+  // A refresh that never ends would otherwise keep the spinner on and stop every
+  // later one, for good.
+  const n = gate.begin(Date.now(), force || moved);
+  if (n === null) return;
+  if (moved) {
     Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 } });
   }
   ui.fetchedAt = Date.now();
-  if (!fs.existsSync(context)) { ui.error = "Folder not found"; draw(); return; }
+  if (!fs.existsSync(context)) {
+    gate.end(n);
+    Object.assign(ui, { loading: false, error: "Folder not found" });
+    draw();
+    return;
+  }
+  const live = () => gate.current(n) && cwd === context;
   ui.loading = true;
   draw();
   try {
     const top = await run("git", ["rev-parse", "--show-toplevel"], { cwd: context });
-    if (cwd !== context) return;
+    if (!live()) return;
     if (top.code !== 0) { ui.repo = null; ui.error = "Not a git repository"; return; }
     const root = top.stdout.trim();
     ui.root = root;
     const host = pickHost((await run("git", ["remote", "-v"], { cwd: root })).stdout);
-    if (cwd !== context) return;
+    if (!live()) return;
     if (!host) { Object.assign(ui, { repo: null, forge: null, prs: [], issues: [], error: "No GitHub or GitLab remote" }); return; }
     const errors = [];
     for (const id of forgeCache.has(host) ? [forgeCache.get(host)] : forgesFor(host)) {
       const result = await load(FORGES[id], root);
-      if (cwd !== context) return;
+      if (!live()) return;
       if (result.error) { errors.push(result.error); continue; }
       forgeCache.set(host, id);
       Object.assign(ui, result, { forge: FORGES[id], error: null, fetched: true });
@@ -285,9 +325,10 @@ async function refresh() {
     }
     Object.assign(ui, { repo: null, forge: null, errors: {}, prs: [], issues: [], error: errors.join(" · ") });
   } catch (e) {
-    if (cwd === context) ui.error = `Can't read the repository: ${e.message}`;
+    if (live()) ui.error = `Can't read the repository: ${e.message}`;
   } finally {
-    ui.loading = false;
+    // Only the latest refresh stops the spinner.
+    if (gate.end(n)) ui.loading = false;
     draw();
   }
 }
@@ -783,7 +824,7 @@ function draw() {
   const at = cols - width(right);
   if (button) ui.buttons.push({ row: 0, from: at - width(button), to: at, action: () => act(ui.view, ui.sel[ui.view], "header") });
   ui.buttons.push({ row: 0, from: at, to: at + 3, action: () => openSettings() });
-  ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => refresh() });
+  ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => refresh(true) });
   if (ui.repo?.url) ui.buttons.push({ row: 0, from: at + 6, to: at + 9, action: () => openUrl(ui.repo.url) });
   out.push(dim("─".repeat(cols)));
 
@@ -1393,7 +1434,7 @@ function onInput(data) {
     else if (k === "o") openUrl(ui.repo?.url);
     else if (k === "a") act(ui.view, ui.sel[ui.view], "row");
     else if (k === "s") openSettings();
-    else if (k === "r") refresh();
+    else if (k === "r") refresh(true);
   }
 }
 
@@ -1429,7 +1470,7 @@ function main() {
   }, POLL);
 
   draw();
-  locate().then(refresh);
+  locate().then(() => refresh());
 }
 
 if (require.main === module) main();
@@ -1438,7 +1479,7 @@ else {
     width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput,
     act, startChoice, launch, findSkill, promptFor, readStore, IDD, TIMING,
     // scripts/capture-screenshots.mjs reads the repo once, as the panel does.
-    refresh,
+    refresh, REFRESH,
     // Tests point the panel at another followed pane, or none.
     follow: (pane) => { target = pane; },
   };

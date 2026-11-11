@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- The panel no longer stops refreshing for good when one refresh never finishes (#42), in the Herdr app and in the terminal. Before, the spinner stayed on and the panel kept the last repo's lists, even in another folder, and nothing refreshed it: not the timer, the refresh button or `r`. Now the refresh button, `r`, the `refresh` command and a change of folder each start a new refresh at once, and the timer's starts one after 5 minutes, longer than the slowest real refresh. A refresh that answers after another replaced it changes nothing and leaves the spinner of the newer one on.
 - The Herdr app's screenshots (#36, #37, #38): `scripts/capture-app-screenshots.mjs` now keeps the agent stand-ins first on the PATH of a login shell too, where macOS's `path_helper` used to put Homebrew ahead of them. Ctrl+C stops it cleanly: nothing more launches, the isolated app and its herdr-core are stopped, the temporary folder is deleted, no picture is written and it exits 130, even on a second Ctrl+C. It takes a picture only once the panel has settled, which a loading panel never does, so a slow `gh` can no longer leave a loading frame in the README.
 
 ### Tests

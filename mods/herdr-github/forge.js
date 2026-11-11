@@ -154,6 +154,64 @@ export async function load(forge, sh) {
   return result;
 }
 
+// How long a refresh may run before the panel stops waiting for it (#42). A real one
+// runs git rev-parse, git remote, then each forge's calls for an unknown host: four
+// steps of at most a 60 s timeout in the terminal panel, 30 s in the app. Only a
+// refresh that will never end runs longer. Tests shorten it.
+export const REFRESH = { hungMs: 300000 };
+
+// Which refresh is the panel's own (#42). begin() numbers a new refresh, or returns
+// null while one is running that hasn't hung; force starts one anyway. Only the latest
+// number is current, and only its end() says the spinner can stop, so a refresh that
+// ends after another replaced it changes nothing.
+export function refreshGate() {
+  let latest = 0, since = 0, running = false;
+  return {
+    begin(now, force = false, hungMs = REFRESH.hungMs) {
+      if (running && !force && now - since < hungMs) return null;
+      running = true;
+      since = now;
+      return ++latest;
+    },
+    current: (n) => n === latest,
+    end(n) {
+      if (n !== latest) return false;
+      running = false;
+      return true;
+    },
+    get running() { return running; },
+  };
+}
+
+// One refresh of a folder, as the panel's new fields: root, repo, forge, the lists and
+// their errors, or an error. exec(cmd, args, { cwd }) runs a program there, and forges
+// remembers which forge answered for a host. Null as soon as current() says the
+// answer isn't wanted any more: the folder changed or a newer refresh began.
+export async function readRepo({ cwd, on = null, exec, forges, current }) {
+  try {
+    const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd });
+    if (!current()) return null;
+    if (top.code !== 0) return { repo: null, forge: null, root: null, prs: [], issues: [], error: "Not a git repository" };
+    const root = top.stdout.trim();
+    const host = pickHost((await exec("git", ["remote", "-v"], { cwd: root })).stdout);
+    if (!current()) return null;
+    if (!host) return { root, repo: null, forge: null, prs: [], issues: [], error: "No GitHub or GitLab remote" };
+    const key = `${on ?? ""}|${host}`, errors = [];
+    for (const id of forges.has(key) ? [forges.get(key)] : forgesFor(host)) {
+      const result = await load(FORGES[id], (cli, args) => exec(cli, args, { cwd: root }));
+      if (!current()) return null;
+      if (result.error) { errors.push(result.error); continue; }
+      forges.set(key, id);
+      return { root, ...result, forge: FORGES[id], error: null, fetched: true };
+    }
+    return { root, repo: null, forge: null, errors: {}, prs: [], issues: [], error: errors.join(" · ") };
+  } catch (e) {
+    // exec rejects when git can't start there, or the machine can't be reached.
+    if (!current()) return null;
+    return { error: on ? `Can't reach ${on}: ${e?.message ?? e}` : `Can't read the repository: ${e?.message ?? e}` };
+  }
+}
+
 // Why a program didn't start, in a few words.
 export function cantRun(cli, e) {
   const text = String(e?.message ?? e ?? "");
