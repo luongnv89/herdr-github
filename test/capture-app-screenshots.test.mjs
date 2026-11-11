@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { INSET, SHOTS, TOOLS, WIDTH, agentStub, cropArgs, isolatedEnv, layoutFor, probeFor } from "../scripts/capture-app-screenshots.mjs";
+import { INSET, SHOTS, TOOLS, WIDTH, agentStub, buildWorld, cropArgs, isolatedEnv, layoutFor, probeFor, watchFrames } from "../scripts/capture-app-screenshots.mjs";
 
 const { HARNESSES } = createRequire(import.meta.url)("../profiles.cjs");
 const README = readFileSync(new URL("../README.md", import.meta.url), "utf8");
@@ -70,4 +70,51 @@ test("SHOTS: each picture is checked by a panel command, and is in the README", 
     assert.match(README, new RegExp(`<img src="${shot.file}" width="${WIDTH}" alt="[^"]+">`), `${shot.file} isn't shown in the README, with alt text`);
   }
   assert.equal(probeFor({}), "resolve", "a list picture is checked with the Resolve menu, which opens only on a row");
+});
+
+// Where a login zsh finds `cmd`, under the isolated environment.
+const zshWhich = (env, cmd) => spawnSync("zsh", ["-l", "-c", `command -v ${cmd}`], { env, encoding: "utf8" }).stdout.trim();
+const hasZsh = spawnSync("zsh", ["-c", "true"]).status === 0;
+
+test("buildWorld: in a login shell, every agent's program is its stand-in and the tools are yours", { skip: !hasZsh && "no zsh here" }, () => {
+  // herdr-core starts programs from a login zsh, whose /etc/zprofile (path_helper on
+  // macOS) puts Homebrew and /usr/local ahead of the PATH it was given.
+  const world = mkdtempSync(join(tmpdir(), "hgs-test-"));
+  try {
+    const tools = Object.fromEntries(TOOLS.map((t) => [t, spawnSync("/bin/sh", ["-c", `command -v ${t}`], { encoding: "utf8" }).stdout.trim()]).filter(([, p]) => p));
+    const dirs = buildWorld(world, tools);
+    const env = isolatedEnv(dirs, { user: "me", ghConfigDir: join(world, "gh") });
+    for (const h of HARNESSES) assert.equal(zshWhich(env, h), join(dirs.bin, h), `${h} isn't its stand-in in a login shell`);
+    for (const t of Object.keys(tools)) assert.equal(zshWhich(env, t), join(dirs.bin, t), `${t} isn't found`);
+  } finally {
+    rmSync(world, { recursive: true, force: true });
+  }
+});
+
+// A fake clock and a list of frames, so watchFrames runs without waiting.
+function frames(list) {
+  let t = 0, i = 0;
+  const frame = async () => ({ bytes: Buffer.from(list(i++)) });
+  return { frame, now: () => t, nap: async (ms) => { t += ms; } };
+}
+const opts = { poll: 200, settled: 600, wait: 4000 };
+
+test("watchFrames: a panel that keeps changing, as while it loads, never counts as settled", async () => {
+  const spinner = frames((i) => (i % 2 ? "spin-a" : "spin-b"));
+  assert.equal(await watchFrames(spinner.frame, { ...opts, ...spinner }), null);
+});
+
+test("watchFrames: a panel that stops changing is taken once it has stayed the same", async () => {
+  const loads = frames((i) => (i < 5 ? `loading-${i}` : "loaded"));
+  const f = await watchFrames(loads.frame, { ...opts, ...loads });
+  assert.equal(f.bytes.toString(), "loaded");
+  assert.ok(loads.now() >= 5 * 200 + 600, "not before it stayed the same for the settle time");
+});
+
+test("watchFrames: with `changed`, the first frame it holds for, or null when none does", async () => {
+  const menu = frames((i) => (i < 3 ? "list" : "menu"));
+  const changed = (f) => f.bytes.toString() !== "list";
+  assert.equal((await watchFrames(menu.frame, { ...opts, ...menu, changed })).bytes.toString(), "menu");
+  const still = frames(() => "list");
+  assert.equal(await watchFrames(still.frame, { ...opts, ...still, changed }), null);
 });
