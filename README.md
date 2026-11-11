@@ -23,7 +23,9 @@ The repo also holds the same panel for the Herdr desktop app, in `mods/herdr-git
 
 ## Screenshots
 
-These are of the terminal panel on this repo, taken by a script (see [Take the screenshots again](#take-the-screenshots-again)). The issues list is at the top of this page.
+These are of this repo, taken by scripts (see [Take the screenshots again](#take-the-screenshots-again)). The terminal panel's issues list is at the top of this page.
+
+### Terminal panel
 
 ![The panel's pull requests list for this repo](docs/screenshots/pull-requests.svg)
 
@@ -36,6 +38,20 @@ These are of the terminal panel on this repo, taken by a script (see [Take the s
 ![The agent profiles view, listing the built-in profile, three example profiles with what each starts and which action uses it, and the Resolve and Review prompts](docs/screenshots/profiles.svg)
 
 *The profiles view (`s`, or `⚙` in the header): what each profile starts, which one Resolve and Review use, and the prompt each sends. The profiles are examples.*
+
+### Herdr app
+
+<img src="docs/screenshots/app-issues.png" width="420" alt="The Herdr app's panel showing this repo's open issues: the selected issue with its Resolve button, which is also in the header">
+
+*The issues list in the Herdr app, on this repo. The selected issue's Resolve button is also in the header.*
+
+<img src="docs/screenshots/app-resolve.png" width="420" alt="The menu of profiles that a Resolve click opens at the top of the app's panel, listing the built-in Claude Code via mcc run and three example profiles, the one assigned to Resolve chosen">
+
+*A Resolve click in the app: the menu of profiles opens at the top of the panel, the profile assigned to Resolve chosen.*
+
+<img src="docs/screenshots/app-profiles.png" width="420" alt="The app's agent profiles view, listing the built-in profile, three example profiles with what each starts and which action uses it, and the Resolve and Review prompts">
+
+*The profiles view in the app (`⚙` in the header): the same profiles and prompts as the terminal panel, from the same file. The profiles are examples.*
 
 ## Install
 
@@ -277,15 +293,15 @@ A linked plugin runs straight from your folder, so a change shows the next time 
 - `bind-key.js`: binds a key to `toggle` in herdr's config.
 - `panel.js`: the panel itself. Plain Node, no npm packages.
 - `mods/herdr-github/`: the Herdr app mod. `main.js` is the panel, `forge.js` its rules for rows, forges and agent actions, and `profiles.js` the agent profiles, shared with `panel.js`.
-- `scripts/capture-screenshots.mjs`: takes the README's pictures of the panel (see [Take the screenshots again](#take-the-screenshots-again)). `scripts/ansi-svg.mjs` turns a frame of the panel into an SVG.
+- `scripts/capture-screenshots.mjs`: takes the README's pictures of the terminal panel (see [Take the screenshots again](#take-the-screenshots-again)). `scripts/ansi-svg.mjs` turns a frame of the panel into an SVG. `scripts/capture-app-screenshots.mjs` takes the pictures of the Herdr app's panel.
 - `profiles.cjs`: the terminal panel's copy of `mods/herdr-github/profiles.js`, generated. Edit `profiles.js`, then run `node scripts/sync-profiles.mjs`. CI fails when the two differ (`node scripts/sync-profiles.mjs --check`).
-- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, for what Resolve and Review run for each harness, with stand-ins for `herdr` and `mcc`, for the profiles and their file, for the app mod's rules, for which key `bind-key` picks and how it edits the config, and for how a frame of the panel becomes an SVG.
+- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, for what Resolve and Review run for each harness, with stand-ins for `herdr` and `mcc`, for the profiles and their file, for the app mod's rules, for which key `bind-key` picks and how it edits the config, for how a frame of the panel becomes an SVG, and for what the app's screenshots set up.
 
 `mods/herdr-github/gpui-kit.d.ts` is written by the app's runtime each time the mod runs, and is not in git.
 
 ### Take the screenshots again
 
-`docs/preview.svg` and the pictures in `docs/screenshots/` are of the terminal panel on this repo. To take them again:
+`docs/preview.svg` and the SVGs in `docs/screenshots/` are of the terminal panel on this repo. To take them again:
 
 ```sh
 node scripts/capture-screenshots.mjs
@@ -293,7 +309,13 @@ node scripts/capture-screenshots.mjs
 
 It needs `gh`, logged in. It reads this repo's open issues and pull requests live, draws each view 64 columns wide, and writes it as an SVG: nothing is edited by hand. It runs only `git` and `gh`, so it never starts an agent or opens a browser. The Resolve menu and the profiles view show example profiles from a temporary home folder, never yours. The Resolve menu needs at least one open issue or pull request: with none, or when `gh` can't read the repo, the script writes nothing, says why and exits 1. Ages, such as `3d`, are as of when you run it.
 
-The Herdr app's panel isn't captured by the script: take that picture by hand. Install the mod (see [Herdr app](#herdr-app)), open a space on this repo in the app, then on macOS press Cmd+Shift+4 and drag over the panel. Save the picture in `docs/screenshots/`.
+The PNGs in `docs/screenshots/` (`app-*.png`) are of the Herdr app's panel on this repo. To take them again, on a Mac with Herdr installed:
+
+```sh
+node scripts/capture-app-screenshots.mjs
+```
+
+It needs `gh`, logged in, and at least one open issue. The app draws each picture itself (`herdr-app shot`), and the script crops the panel out of it: nothing is edited by hand. It runs a second Herdr app with its own home folder and its own herdr-core, in a temporary folder that it deletes at the end, so your window, spaces, terminals and profiles are never touched. That app shows example profiles, and it can't start an agent: the programs the profiles start are stand-ins there that refuse to run. Its window stays off screen. An off-screen window draws only for its first few seconds, so each picture is a fresh launch, and the script checks that every picture shows what it should: when the app stopped drawing too soon, it tries again, up to 3 times. When a picture can't be taken, or `gh` can't read the repo, it writes nothing, says why and exits 1. It doesn't run in CI, which has no Herdr app.
 
 ## License
 
