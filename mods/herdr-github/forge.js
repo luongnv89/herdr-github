@@ -228,8 +228,8 @@ export function pickNewTerminal(before, after, tabId) {
 
 // The panel's one notice, after `incoming`: { tone, text, url, from }, `from` being
 // the launch that said it (null for anything else). An error stays until a newer
-// error, a message from its own launch, or a key replaces it, so another launch's
-// progress never hides a prompt that wasn't sent.
+// error or a message from its own launch replaces it (a key or a new launch clears
+// it), so another launch's progress never hides a prompt that wasn't sent.
 export function nextNotice(current, incoming) {
   if (current?.tone === "error" && incoming.tone !== "error" && current.from !== incoming.from) return current;
   return incoming;

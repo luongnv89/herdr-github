@@ -282,6 +282,8 @@ export default class GitHub extends View {
   async launch(action, profile, template, cx) {
     const what = `${action.noun} #${action.number}`, loc = this.loc, root = this.root, on = loc?.on ?? null;
     const id = ++this.launches, say = (tone, text, url = null) => this.say(tone, text, url, id);
+    // Starting one is seen as reading the last notice: its own progress shows.
+    this.notice = null;
     if (!root) return say("error", "No repository to work in");
     if (!chooseAnchor(loc, panes())) return say("error", `No pane to split. Click a pane, then ${action.label} again.`);
     // Checked before anything runs: an unchecked profile never reaches a command line.

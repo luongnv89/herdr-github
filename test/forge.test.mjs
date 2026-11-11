@@ -259,6 +259,8 @@ test("main.js keeps every notice through nextNotice, by launch, and counts promp
   assert.match(main, /this\.delivering\+\+;\s*cx\.spawn\(/);
   assert.match(main, /finally \{ this\.delivering--; cx\.notify\(\); \}/);
   assert.match(main, /keepsNotice\(this\.notice, this\.acting \|\| this\.delivering > 0\)/);
+  // A new launch clears the notice before its first word, so its progress shows.
+  assert.match(main, /const id = \+\+this\.launches, say = [^\n]*\n(\s*\/\/[^\n]*\n)*\s*this\.notice = null;\n\s*if \(!root\) return say\(/);
   // Inside a launch, every notice carries the launch's id: this.say is called only by its say.
   const body = main.slice(main.indexOf("async launch("), main.indexOf("async readStore("));
   assert.deepEqual(body.match(/this\.say\([^)]*\)/g), ["this.say(tone, text, url, id)"]);
