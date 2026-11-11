@@ -9,7 +9,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, focused, exec, hc, theme, layout, window, run, home, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
-import { LIMIT, STALE, IDD, ago, firstLine, FORGES, ACTIONS, pickHost, forgesFor, load, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, unpickedNotice, isReadyToSend, nextNotice, keepsNotice, pathTo, shown } from "./forge.js";
+import { LIMIT, STALE, IDD, ago, firstLine, ACTIONS, readRepo, refreshGate, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, unpickedNotice, isReadyToSend, nextNotice, keepsNotice, pathTo, shown } from "./forge.js";
 import {
   HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, validateProfile, buildLaunch, storePath, emptyStore,
   parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, parseMccEnv,
@@ -85,6 +85,7 @@ export default class GitHub extends View {
     // Each action's custom prompt as last read, for the buttons' tooltips.
     this.prompts = { resolve: null, review: null };
     this.forges = new Map();
+    this.gate = refreshGate();
     this.loc = locate(null);
     this.handle = cx.focus_handle();
     // The profile form's text fields, made once and refilled for each profile.
@@ -120,7 +121,7 @@ export default class GitHub extends View {
       for (;;) {
         const c = await nextCommand();
         if (c === "focus") this.handle.focus();
-        else if (c === "refresh") this.refresh(cx);
+        else if (c === "refresh") this.refresh(cx, false, true);
         else if (c === "resolve" || c === "review" || c === "act") { this.handle.focus(); this.act(cx, this.view, this.sel[this.view], "header"); }
         else if (c === "settings") { if (this.settings) this.closeSettings(cx); else { this.handle.focus(); this.openSettings(cx); } }
         cx.notify();
@@ -138,42 +139,38 @@ export default class GitHub extends View {
   action() { return actionFor(this.forge, this.view, this.selected()); }
 
   // From render, cx.notify() isn't allowed: render reads the new state right after.
-  refresh(cx, fromRender = false) {
-    if (this.loading) return;
-    const loc = this.loc, context = keyOf(loc);
-    if (context !== this.context) {
+  // force: the refresh button, r or the refresh command, which start one even while
+  // another runs (#42). A new folder does too: the old one's answer isn't wanted.
+  refresh(cx, fromRender = false, force = false) {
+    const loc = this.loc, context = keyOf(loc), moved = context !== this.context;
+    // A refresh that never ends (a cancelled task's promise stays pending) would
+    // otherwise keep the spinner on and stop every later one, for good.
+    const n = this.gate.begin(Date.now(), force || moved);
+    if (n === null) return;
+    if (moved) {
       Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 } });
     }
     this.fetchedAt = Date.now();
-    if (!loc?.cwd) { this.error = "No folder"; if (!fromRender) cx.notify(); return; }
+    if (!loc?.cwd) {
+      this.gate.end(n);
+      Object.assign(this, { loading: false, error: "No folder" });
+      if (!fromRender) cx.notify();
+      return;
+    }
     const { cwd, on } = loc;
-    const current = () => keyOf(this.loc) === context;
+    const current = () => this.gate.current(n) && keyOf(this.loc) === context;
     this.loading = true;
     cx.spawn(async (cx) => {
       try {
-        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
-        if (!current()) return;
-        if (top.code !== 0) { Object.assign(this, { repo: null, forge: null, root: null, prs: [], issues: [], error: "Not a git repository" }); return; }
-        const root = top.stdout.trim();
-        this.root = root;
-        const host = pickHost((await exec("git", ["remote", "-v"], { cwd: root, on })).stdout);
-        if (!current()) return;
-        if (!host) { Object.assign(this, { repo: null, forge: null, prs: [], issues: [], error: "No GitHub or GitLab remote" }); return; }
-        const cacheKey = `${on ?? ""}|${host}`, errors = [];
-        for (const id of this.forges.has(cacheKey) ? [this.forges.get(cacheKey)] : forgesFor(host)) {
-          const result = await load(FORGES[id], (cli, args) => exec(cli, args, { cwd: root, on }));
-          if (!current()) return;
-          if (result.error) { errors.push(result.error); continue; }
-          this.forges.set(cacheKey, id);
-          Object.assign(this, result, { forge: FORGES[id], error: null, fetched: true });
-          for (const v of ["prs", "issues"]) this.sel[v] = Math.min(this.sel[v], Math.max(0, this[v].length - 1));
-          return;
-        }
-        Object.assign(this, { repo: null, forge: null, errors: {}, prs: [], issues: [], error: errors.join(" · ") });
-      } catch (e) {
-        // exec rejects when git can't start there, or the machine can't be reached.
-        if (current()) this.error = on ? `Can't reach ${on}: ${e?.message ?? e}` : `Can't read the repository: ${e?.message ?? e}`;
-      } finally { this.loading = false; cx.notify(); }
+        const found = await readRepo({ cwd, on, exec: (cmd, args, opts) => exec(cmd, args, { ...opts, on }), forges: this.forges, current });
+        if (!found || !current()) return;
+        Object.assign(this, found);
+        if (found.fetched) for (const v of ["prs", "issues"]) this.sel[v] = Math.min(this.sel[v], Math.max(0, this[v].length - 1));
+      } finally {
+        // Only this panel's latest refresh stops the spinner.
+        if (this.gate.end(n)) this.loading = false;
+        cx.notify();
+      }
     });
     if (!fromRender) cx.notify();
   }
@@ -667,7 +664,7 @@ export default class GitHub extends View {
     else if (k === "o") this.openUrl(this.repo?.url, cx);
     else if (k === "a") this.act(cx, this.view, this.sel[this.view], "header");
     else if (k === "s") this.openSettings(cx);
-    else if (k === "r") this.refresh(cx);
+    else if (k === "r") this.refresh(cx, false, true);
     else if (k === "escape" || k === "q") {
       const id = this.block()?.at(-1)?.id;
       if (id) run("layout.hide", { id }); else run("pane.go", { direction: "left" });
@@ -928,7 +925,7 @@ export default class GitHub extends View {
           .tooltip(this.actTip(action))
           .on_click((_e, cx) => { cx.stop_propagation(); if (!this.closeMenu(cx)) this.act(cx, view, this.sel[view], "header"); }).child(`${action.label} #${action.number}`)))
         .child(this.iconButton(t, "hg-profiles", "gear", st ? "Back to the list" : "Agent profiles", (_e, cx) => (st ? this.closeSettings(cx) : this.openSettings(cx)), Boolean(st)))
-        .when(!st, (el) => el.child(this.iconButton(t, "hg-refresh", "refresh", "Refresh", (_e, cx) => this.refresh(cx))))
+        .when(!st, (el) => el.child(this.iconButton(t, "hg-refresh", "refresh", "Refresh", (_e, cx) => this.refresh(cx, false, true))))
         .when(!st && Boolean(this.repo?.url), (el) => el.child(this.iconButton(t, "hg-open", "external", `Open the repo on ${this.forge?.name ?? "the web"}`, (_e, cx) => this.openUrl(this.repo.url, cx)))))
       // The profile menu of the header's button (or the a key), under the header.
       .when(!st && this.menu?.anchor === "header", (el) => el.child(h_flex().flex_none().px(8).py(6).justify_end().border_b(1).border_color(t.border)

@@ -298,3 +298,118 @@ test("main.js keeps every notice through nextNotice, by launch, and counts promp
   const body = main.slice(main.indexOf("async launch("), main.indexOf("async readStore("));
   assert.deepEqual(body.match(/this\.say\([^)]*\)/g), ["this.say(tone, text, url, id)"]);
 });
+
+// ── Refresh (#42) ───────────────────────────────────────────────────────────
+
+test("refreshGate: a running refresh blocks the next one until it ends or hangs; force starts one anyway", () => {
+  const gate = F.refreshGate();
+  const a = gate.begin(1000, false, 300);
+  assert.equal(a, 1);
+  assert.equal(gate.running, true);
+  // Still running, not hung: the timer's refresh waits.
+  assert.equal(gate.begin(1200, false, 300), null);
+  // Hung (300 ms here): the next one starts.
+  const b = gate.begin(1300, false, 300);
+  assert.equal(b, 2);
+  // The refresh button, r, the refresh command or a new folder: right away.
+  const c = gate.begin(1301, true, 300);
+  assert.equal(c, 3);
+  assert.equal(gate.current(a), false);
+  assert.equal(gate.current(c), true);
+  // A replaced refresh ending changes nothing: the latest one is still running.
+  assert.equal(gate.end(a), false);
+  assert.equal(gate.end(b), false);
+  assert.equal(gate.running, true);
+  assert.equal(gate.begin(1302, false, 300), null);
+  assert.equal(gate.end(c), true);
+  assert.equal(gate.running, false);
+  assert.equal(gate.begin(1303, false, 300), 4);
+});
+
+test("refreshGate: the limit is past the slowest real refresh, four steps of a 60 s timeout", () => {
+  assert.ok(F.REFRESH.hungMs > 4 * 60000);
+  const gate = F.refreshGate();
+  gate.begin(0);
+  assert.equal(gate.begin(4 * 60000), null);
+  assert.equal(gate.begin(F.REFRESH.hungMs), 2);
+});
+
+// An exec over scripted answers: by program and first argument, or hold, which never answers.
+function fakeExec(answers) {
+  const calls = [];
+  const exec = (cmd, args, opts) => {
+    calls.push([cmd, ...args, opts.cwd]);
+    const a = answers[`${cmd} ${args[0]}`] ?? answers[cmd];
+    if (a === "hold") return new Promise(() => {});
+    if (a instanceof Error) return Promise.reject(a);
+    return Promise.resolve({ code: 0, stdout: "", stderr: "", ...a });
+  };
+  return { exec, calls };
+}
+
+const GH = {
+  "git rev-parse": { stdout: "/r\n" },
+  "git remote": { stdout: "origin\tgit@github.com:o/p.git (fetch)\n" },
+  "gh repo": { stdout: JSON.stringify({ nameWithOwner: "o/p", url: "https://github.com/o/p" }) },
+  "gh pr": { stdout: "[]" },
+  "gh issue": { stdout: "[]" },
+  "gh label": { stdout: "[]" },
+};
+
+test("readRepo: reads the repo, its lists and the forge, and remembers which forge answered", async () => {
+  const { exec, calls } = fakeExec(GH);
+  const forges = new Map();
+  const found = await F.readRepo({ cwd: "/r/sub", exec, forges, current: () => true });
+  assert.equal(found.root, "/r");
+  assert.equal(found.forge, F.FORGES.github);
+  assert.equal(found.fetched, true);
+  assert.equal(found.error, null);
+  assert.deepEqual([found.prs, found.issues], [[], []]);
+  assert.equal(forges.get("|github.com"), "github");
+  // git runs in the folder, then in the root; gh in the root.
+  assert.equal(calls[0].at(-1), "/r/sub");
+  assert.ok(calls.slice(1).every((c) => c.at(-1) === "/r"));
+});
+
+test("readRepo: says what's wrong with the folder, and why it couldn't be read", async () => {
+  const no = await F.readRepo({ cwd: "/x", exec: fakeExec({ git: { code: 128 } }).exec, forges: new Map(), current: () => true });
+  assert.equal(no.error, "Not a git repository");
+  const local = await F.readRepo({ cwd: "/x", exec: fakeExec({ git: { stdout: "/x\n" } }).exec, forges: new Map(), current: () => true });
+  assert.equal(local.error, "No GitHub or GitLab remote");
+  assert.equal(local.root, "/x");
+  const away = await F.readRepo({ cwd: "/x", on: "box", exec: fakeExec({ git: new Error("unreachable") }).exec, forges: new Map(), current: () => true });
+  assert.deepEqual(away, { error: "Can't reach box: unreachable" });
+});
+
+test("readRepo: a refresh replaced while it ran answers nothing, whichever step it was on", async () => {
+  for (const step of ["git rev-parse", "git remote", "gh repo"]) {
+    let wanted = true;
+    const { exec } = fakeExec(GH);
+    // Replaced while this step runs.
+    const slow = (cmd, args, opts) => { if (`${cmd} ${args[0]}` === step) wanted = false; return exec(cmd, args, opts); };
+    const forges = new Map();
+    assert.equal(await F.readRepo({ cwd: "/r", exec: slow, forges, current: () => wanted }), null, step);
+    assert.equal(forges.size, 0, step);
+  }
+  // Nor an error from a step that failed after it was replaced.
+  let wanted = true;
+  const failing = () => { wanted = false; return Promise.reject(new Error("gone")); };
+  assert.equal(await F.readRepo({ cwd: "/r", exec: failing, forges: new Map(), current: () => wanted }), null);
+});
+
+test("main.js refreshes through the gate: the buttons force one, and only the latest stops the spinner", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  const fn = main.slice(main.indexOf("refresh(cx, fromRender = false, force = false) {"));
+  const refresh = fn.slice(0, fn.indexOf("\n  }\n") + 4);
+  assert.doesNotMatch(refresh, /if \(this\.loading\) return/);
+  assert.match(refresh, /const n = this\.gate\.begin\(Date\.now\(\), force \|\| moved\);\s*if \(n === null\) return;/);
+  assert.match(refresh, /const current = \(\) => this\.gate\.current\(n\) && keyOf\(this\.loc\) === context;/);
+  assert.match(refresh, /if \(!found \|\| !current\(\)\) return;/);
+  assert.match(refresh, /finally \{\n(\s*\/\/[^\n]*\n)*\s*if \(this\.gate\.end\(n\)\) this\.loading = false;/);
+  assert.doesNotMatch(refresh, /finally \{ this\.loading = false;/);
+  // The refresh button, r and the refresh command force one; the timer doesn't.
+  assert.match(main, /else if \(c === "refresh"\) this\.refresh\(cx, false, true\);/);
+  assert.match(main, /else if \(k === "r"\) this\.refresh\(cx, false, true\);/);
+  assert.match(main, /"Refresh", \(_e, cx\) => this\.refresh\(cx, false, true\)\)/);
+  assert.match(main, /cx\.timer\.every\(STALE, \(cx\) => \{ if \(this\.visible\(\)\) this\.refresh\(cx\); \}\);/);
+});
