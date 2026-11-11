@@ -216,6 +216,43 @@ test("keepsNotice: a key leaves up only progress, while a launch or a prompt is 
   assert.equal(F.keepsNotice(null, true), false);
 });
 
+test("several launches in a row all split the same tab, and each picks only its own new terminal (#26)", () => {
+  const t = (address, tab) => ({ address, labels: { "herdr.space": "s1", "herdr.tab": tab } });
+  // Another tab's terminal pane comes first, so a split that ignored the tab would go there.
+  const panesNow = [pane("q1", "tab2"), pane("p1", "tab1"), { pane: "m1", tab: "tab1", terminal: null, mod: "herdr-github" }];
+  const termsNow = [t("t-q1", "tab2"), t("t-p1", "tab1")];
+  // What terminal.open does: a new pane right of the anchor, in its tab, focused,
+  // so the panel follows it.
+  const open = (anchor, id) => {
+    panesNow.push(pane(id, anchor.tab));
+    termsNow.push(t(`t-${id}`, anchor.tab));
+    return { tab: anchor.tab, pane: id };
+  };
+  // The panel has the keyboard: it follows no pane, only its tab.
+  let loc = { tab: "tab1", pane: null };
+  const picked = [];
+  let firstBefore = null;
+  for (const id of ["p2", "p3", "p4"]) {
+    const anchor = F.chooseAnchor(loc, panesNow);
+    assert.ok(anchor, `an anchor for ${id}`);
+    assert.equal(anchor.tab, "tab1", `${id} splits tab1`);
+    const before = termsNow.map((x) => x.address);
+    firstBefore ??= before;
+    loc = open(anchor, id);
+    const terminal = F.pickNewTerminal(before, termsNow, anchor.tab);
+    assert.equal(terminal?.address, `t-${id}`, `${id}'s own terminal`);
+    picked.push(terminal.address);
+    // The second launch follows the new pane; the third is pressed from the panel again.
+    if (id === "p3") loc = { tab: "tab1", pane: "m1" };
+  }
+  assert.deepEqual(picked, ["t-p2", "t-p3", "t-p4"]);
+  // Every new pane is in tab1, and no tab was added.
+  assert.deepEqual(panesNow.filter((p) => p.tab === "tab1" && !p.mod).map((p) => p.pane), ["p1", "p2", "p3", "p4"]);
+  assert.deepEqual([...new Set(panesNow.map((p) => p.tab))], ["tab2", "tab1"]);
+  // Without a fresh snapshot per launch, the earlier launches' terminals look new too.
+  assert.equal(F.pickNewTerminal(firstBefore, termsNow, "tab1"), null);
+});
+
 test("main.js keeps every notice through nextNotice, by launch, and counts prompts still to be sent", () => {
   const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
   assert.match(main, /say\(tone, text, url = null, from = null\) \{ this\.notice = nextNotice\(this\.notice, \{ tone, text, url, from \}\); \}/);
