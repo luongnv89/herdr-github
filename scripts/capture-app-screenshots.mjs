@@ -8,11 +8,13 @@
 // It runs a second Herdr app in a world of its own: its own HOME, app home and
 // herdr-core, in a temporary folder. Your window, spaces, terminals and profiles are
 // never touched, and it shows example profiles, never yours. No agent can start in
-// it: the programs the profiles start are stand-ins there that refuse to run.
+// it: the programs the profiles start are stand-ins there that refuse to run, first
+// on the PATH of a login shell too.
 //
 // An app window that's off screen draws only for its first few seconds, so each
-// picture is one fresh launch: set the state, launch, send the view's command,
-// shoot, quit.
+// picture is one fresh launch: set the state, launch, wait for the panel to settle,
+// send the view's command, shoot, quit. Ctrl+C stops it: nothing more launches, the
+// app and its herdr-core are stopped, the folder is deleted and no picture is written.
 import { execFile as execFileCb, spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -35,8 +37,10 @@ export const INSET = 8;
 // The window, in points. With bounds much smaller the app opens full screen.
 export const WINDOW = { w: 1280, h: 820 };
 // How often to look at the app's frame, how long a frame must stay the same to count
-// as settled (the repo's issues have arrived), and how long a command may take to
-// show. A launch whose frames stop before then is tried again, up to TRIES times.
+// as settled, and how long the panel may take to settle or a command to show. While
+// the issues load, the header's spinner turns, so a loading panel never settles. A
+// launch that doesn't settle, or whose frames stop too soon, is tried again, up to
+// TRIES times.
 const POLL_MS = 200;
 const SETTLED_MS = 600;
 const WAIT_MS = 4000;
@@ -50,8 +54,10 @@ export const SHOTS = [
   { file: "docs/screenshots/app-resolve.png", height: 420, view: "issues", command: "resolve" },
   { file: "docs/screenshots/app-profiles.png", height: 716, view: "issues", command: "settings" },
 ];
-// The command that shows a picture was taken after the issues arrived: the Resolve
-// menu opens only on a row. For a picture with no command, it runs after the shot.
+// The command that shows the app was still drawing when the panel settled, so the
+// settled frame wasn't a frozen one: it's sent once the panel is focused, and the
+// Resolve menu opens only on a row. For a picture with no command, it runs after
+// the shot.
 export const probeFor = (shot) => shot.command ?? "resolve";
 
 // The example profiles the Resolve menu and the profiles view show, as in
@@ -72,6 +78,50 @@ export const TOOLS = ["git", "gh", "hc", "herdr-core", "herdr-app"];
 // A stand-in for an agent's program: first on the isolated PATH, so even an agent
 // started by mistake runs this, which refuses.
 export const agentStub = (cmd) => `#!/bin/sh\necho "${cmd} doesn't run while the screenshots are taken" >&2\nexit 1\n`;
+
+// The isolated home's ~/.zprofile. herdr-core starts programs from a login zsh, whose
+// /etc/zprofile runs path_helper: that puts /etc/paths and /etc/paths.d (Homebrew,
+// /usr/local) ahead of the PATH it was given. ~/.zprofile runs after it, and puts the
+// stand-ins first again.
+const shellQuote = (s) => `'${s.replaceAll("'", `'\\''`)}'`;
+export const zprofile = (dirs) => `export PATH=${shellQuote(dirs.bin)}:"$PATH"\n`;
+
+const WORLD_DIRS = ["home", "app", "state", "config", "data", "run", "tmp", "bin", "out"];
+
+// The isolated world's folders in `world`: the tools as links to yours (`tools` maps
+// each name to its path), a stand-in for every agent's program, and the ~/.zprofile
+// that keeps them first.
+export function buildWorld(world, tools) {
+  const dirs = Object.fromEntries(WORLD_DIRS.map((d) => [d, join(world, d)]));
+  for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true, mode: 0o700 });
+  for (const [t, path] of Object.entries(tools)) symlinkSync(path, join(dirs.bin, t));
+  for (const h of HARNESSES) writeFileSync(join(dirs.bin, h), agentStub(h), { mode: 0o755 });
+  writeFileSync(join(dirs.home, ".zprofile"), zprofile(dirs));
+  return dirs;
+}
+
+// Frames from `frame()` until one stays the same for `settled` ms, or, with
+// `changed`, until it holds for one: that frame. null when neither happens within
+// `wait` ms, as when the panel is still loading.
+export async function watchFrames(frame, { changed = null, poll = POLL_MS, settled = SETTLED_MS, wait = WAIT_MS, nap = sleep, now = Date.now } = {}) {
+  let last = await frame(), since = now();
+  for (const start = now(); now() - start < wait;) {
+    await nap(poll);
+    const next = await frame();
+    if (changed) {
+      if (changed(next)) return next;
+    } else if (!next.bytes.equals(last.bytes)) {
+      last = next;
+      since = now();
+    } else if (now() - since >= settled) {
+      return last;
+    }
+  }
+  return null;
+}
+
+// Thrown to unwind the run once Ctrl+C (or SIGTERM) has stopped it.
+class Stopped extends Error {}
 
 // The layout: the panel alone, near the top left of the window, at the shot's height.
 export function layoutFor(shot) {
@@ -127,71 +177,87 @@ async function main() {
   // A unix socket path is at most 103 bytes here, and herdr-core's socket goes under
   // XDG_RUNTIME_DIR, so the isolated world lives in a short folder under /tmp.
   const world = mkdtempSync("/tmp/hgs.");
-  const dirs = Object.fromEntries(["home", "app", "state", "config", "data", "run", "tmp", "bin", "out"].map((d) => [d, join(world, d)]));
-  for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true, mode: 0o700 });
-  for (const t of TOOLS) symlinkSync(tools[t], join(dirs.bin, t));
-  for (const h of HARNESSES) writeFileSync(join(dirs.bin, h), agentStub(h), { mode: 0o755 });
+  const dirs = buildWorld(world, tools);
   const env = isolatedEnv(dirs, { user: process.env.USER, ghConfigDir: process.env.GH_CONFIG_DIR ?? join(homedir(), ".config/gh") });
   const app = (...args) => execFile(join(dirs.bin, "herdr-app"), args, { env, cwd: world });
   const repo = realpathSync(root);
 
+  // Ctrl+C or SIGTERM sets `stopping`: the run unwinds at its next check, so nothing
+  // more launches or is written. Each check sits right before what it guards, with no
+  // await between them.
+  let stopping = false;
+  const halt = () => { if (stopping) throw new Stopped(); };
+
+  // Quitting and cleaning up each happen once: a second caller waits for the first.
   let child = null;
-  const quit = async () => {
-    if (!child) return;
-    const { pid } = child;
-    child = null;
-    try { await app("do", "app.quit"); } catch {}
-    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
-    for (let i = 0; i < 30 && alive(); i++) await sleep(100);
-    if (alive()) process.kill(pid, "SIGKILL");
+  let quitting = Promise.resolve();
+  const quit = () => {
+    if (child) {
+      const { pid } = child;
+      child = null;
+      quitting = (async () => {
+        try { await app("do", "app.quit"); } catch {}
+        const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+        for (let i = 0; i < 30 && alive(); i++) await sleep(100);
+        if (alive()) process.kill(pid, "SIGKILL");
+      })();
+    }
+    return quitting;
   };
-  const cleanup = async () => {
+  let cleaning = null;
+  const cleanup = () => (cleaning ??= (async () => {
     await quit();
     try { await execFile(join(dirs.bin, "hc"), ["server", "stop"], { env, cwd: world }); } catch {}
     rmSync(world, { recursive: true, force: true });
+  })());
+  // Kept for the whole run: a second Ctrl+C while cleaning up must not end the
+  // process before the app is stopped.
+  const onSignal = () => {
+    if (stopping) return;
+    stopping = true;
+    cleanup().finally(() => process.exit(130));
   };
-  const onSignal = () => { cleanup().finally(() => process.exit(130)); };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
 
   // The app's last frame, saved to `file`, and its bytes.
   let n = 0;
   const frame = async () => {
+    halt();
     const file = join(dirs.tmp, `frame-${n++}.png`);
     await app("shot", file);
     return { file, bytes: readFileSync(file) };
   };
-  // Frames until one stays the same for SETTLED_MS, or until `changed` holds for one.
-  const watch = async (changed = null) => {
-    let last = await frame(), since = Date.now();
-    for (const start = Date.now(); Date.now() - start < WAIT_MS;) {
-      await sleep(POLL_MS);
-      const next = await frame();
-      if (changed && changed(next)) return next;
-      if (!next.bytes.equals(last.bytes)) { last = next; since = Date.now(); }
-      else if (!changed && Date.now() - since >= SETTLED_MS) return last;
-    }
-    return changed ? null : last;
-  };
+  const watch = (changed = null) => watchFrames(frame, { changed });
 
-  // One launch: the picture's frame, or null when the app stopped drawing too soon.
+  // One launch: the picture's frame, or null when the panel didn't settle or the app
+  // stopped drawing too soon.
   const attempt = async (shot) => {
+    halt();
     seed(dirs, shot);
     child = spawn(join(dirs.bin, "herdr-app"), [], { env, cwd: world, detached: true, stdio: "ignore" });
     child.unref();
-    let up = false;
-    for (let i = 0; i < 100 && !up; i++) {
-      try { await app("status"); up = true; } catch { await sleep(100); }
-    }
-    if (!up) throw new Error("the Herdr app didn't start");
     try {
+      let up = false;
+      for (let i = 0; i < 100 && !up; i++) {
+        halt();
+        try { await app("status"); up = true; } catch { await sleep(100); }
+      }
+      if (!up) throw new Error("the Herdr app didn't start");
       const { spaces = [] } = JSON.parse((await app("ls")).stdout);
       if (!spaces.some((s) => s.folder === repo)) await app("do", "space.new", "--folder", repo);
-      const settled = await watch();
+      // The panel once its issues are in: a loading one doesn't settle.
+      const loaded = await watch();
+      if (!loaded) return null;
+      // Focus redraws the panel's border, so focus first and let it settle: then the
+      // probe's change is the probe's own, and proves the app was still drawing.
+      await app("do", "herdr-github.focus");
+      const focused = await watch();
+      if (!focused) return null;
       await app("do", `herdr-github.${probeFor(shot)}`);
-      const shown = await watch((f) => !f.bytes.equals(settled.bytes));
-      if (!shown) return null;
-      return shot.command ? shown : settled;
+      if (!(await watch((f) => !f.bytes.equals(focused.bytes)))) return null;
+      // A view a command opened is taken once it has settled, not mid-change.
+      return shot.command ? await watch() : loaded;
     } finally {
       await quit();
     }
@@ -203,16 +269,19 @@ async function main() {
       let picked = null;
       for (let i = 0; i < TRIES && !picked; i++) {
         picked = await attempt(shot);
-        if (!picked && i < TRIES - 1) console.error(`${shot.file}: the app stopped drawing too soon, trying again`);
+        if (!picked && i < TRIES - 1) console.error(`${shot.file}: the panel didn't settle, or the app stopped drawing too soon: trying again`);
       }
-      if (!picked) throw new Error(`the Herdr app stopped drawing before ${shot.file} could be taken, ${TRIES} times: run it again`);
+      if (!picked) throw new Error(`${shot.file} couldn't be taken ${TRIES} times (the panel didn't settle, or the app stopped drawing too soon): run it again`);
+      halt();
       const width = Number(/pixelWidth: (\d+)/.exec((await execFile("sips", ["-g", "pixelWidth", picked.file])).stdout)?.[1]);
       if (!width) throw new Error("couldn't read the app's picture");
       const picture = join(dirs.out, shot.file.replaceAll("/", "_"));
+      halt();
       await execFile("sips", [...cropArgs(shot, width / WINDOW.w), picked.file, "--out", picture]);
       written.push([picture, join(root, shot.file)]);
     }
     // Only once every picture is taken do they replace the old ones.
+    halt();
     for (const [from, to] of written) {
       mkdirSync(dirname(to), { recursive: true });
       renameSync(from, to);
@@ -220,8 +289,10 @@ async function main() {
     }
   } finally {
     await cleanup();
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+    if (!stopping) {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+    }
   }
 }
 
@@ -244,6 +315,8 @@ function seed(dirs, shot) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().catch((e) => {
+    // Stopped by Ctrl+C: the signal handler exits 130 once it has cleaned up.
+    if (e instanceof Stopped) return;
     console.error(`capture-app-screenshots: ${e?.message ?? e}`);
     process.exitCode = 1;
   });
