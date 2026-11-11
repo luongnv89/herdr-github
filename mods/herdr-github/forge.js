@@ -226,6 +226,19 @@ export function pickNewTerminal(before, after, tabId) {
   return found.length === 1 ? found[0] : null;
 }
 
+// The panel's one notice, after `incoming`: { tone, text, url, from }, `from` being
+// the launch that said it (null for anything else). An error stays until a newer
+// error, a message from its own launch, or a key replaces it, so another launch's
+// progress never hides a prompt that wasn't sent.
+export function nextNotice(current, incoming) {
+  if (current?.tone === "error" && incoming.tone !== "error" && current.from !== incoming.from) return current;
+  return incoming;
+}
+
+// Whether a key leaves the notice up: only the progress of a launch, or of a
+// prompt still waiting to be sent.
+export const keepsNotice = (notice, busy) => Boolean(notice && busy && notice.tone === "info");
+
 // Whether an agent can take its first message: idle only. A blocked one is asking
 // something, such as whether you trust the folder, and pasted text would answer it.
 export const isReadyToSend = (status) => status === "idle";

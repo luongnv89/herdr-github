@@ -182,3 +182,47 @@ test("main.js splits the current tab to the right of the anchor pane, and opens 
   // The prompt is sent only to an idle agent.
   assert.match(main, /hc\(\["send", "--if", "idle", address, task\]\)/);
 });
+
+test("nextNotice: another launch's progress never hides an error; an error or the same launch replaces it", () => {
+  const n = (tone, from, text = tone) => ({ tone, text, url: null, from });
+  const errA = n("error", 1, "Send it yourself in the new pane: /issue-resolver 12");
+  // Nothing up yet.
+  assert.equal(F.nextNotice(null, n("info", 1)).tone, "info");
+  // Info or ok from launch 2 over launch 1's error: the error stays.
+  assert.equal(F.nextNotice(errA, n("info", 2)), errA);
+  assert.equal(F.nextNotice(errA, n("ok", 2)), errA);
+  // So does an error not from a launch, such as "Can't start an agent".
+  const errNone = n("error", null);
+  assert.equal(F.nextNotice(errNone, n("info", 3)), errNone);
+  // An error replaces info, and a newer error an older one.
+  const errB = n("error", 2);
+  assert.equal(F.nextNotice(n("info", 1), errB), errB);
+  assert.equal(F.nextNotice(errA, errB), errB);
+  // A launch's own later message replaces its own earlier one, even an error.
+  const okA = n("ok", 1);
+  assert.equal(F.nextNotice(n("info", 1), okA), okA);
+  assert.equal(F.nextNotice(errA, okA), okA);
+  // Info replaces info or ok, whoever said it.
+  const infoB = n("info", 2);
+  assert.equal(F.nextNotice(okA, infoB), infoB);
+});
+
+test("keepsNotice: a key leaves up only progress, while a launch or a prompt is still under way", () => {
+  const info = { tone: "info", text: "Its prompt goes once it is ready: /issue-resolver 12" };
+  assert.equal(F.keepsNotice(info, true), true);
+  assert.equal(F.keepsNotice(info, false), false);
+  assert.equal(F.keepsNotice({ tone: "error", text: "x" }, true), false);
+  assert.equal(F.keepsNotice({ tone: "ok", text: "x" }, true), false);
+  assert.equal(F.keepsNotice(null, true), false);
+});
+
+test("main.js keeps every notice through nextNotice, by launch, and counts prompts still to be sent", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  assert.match(main, /say\(tone, text, url = null, from = null\) \{ this\.notice = nextNotice\(this\.notice, \{ tone, text, url, from \}\); \}/);
+  assert.match(main, /this\.delivering\+\+;\s*cx\.spawn\(/);
+  assert.match(main, /finally \{ this\.delivering--; cx\.notify\(\); \}/);
+  assert.match(main, /keepsNotice\(this\.notice, this\.acting \|\| this\.delivering > 0\)/);
+  // Inside a launch, every notice carries the launch's id: this.say is called only by its say.
+  const body = main.slice(main.indexOf("async launch("), main.indexOf("async readStore("));
+  assert.deepEqual(body.match(/this\.say\([^)]*\)/g), ["this.say(tone, text, url, id)"]);
+});
