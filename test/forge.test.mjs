@@ -110,6 +110,15 @@ test("tabStart: an agent herdr has no run for is refused", () => {
   }
 });
 
+test("tabStart: OpenCode starts with its run alone and gets the prompt as a first message, never as an argument (#29)", () => {
+  // A plain argument is OpenCode's start folder, so the prompt must never be one.
+  const text = "Use the issue-resolver skill on issue #7.";
+  const plan = P.buildLaunch({ id: "o", name: "O", harness: "opencode" }, text);
+  const start = F.tabStart(plan, ["opencode"], text);
+  assert.deepEqual(start, { argv: ["opencode"], task: text });
+  assert.ok(!start.argv.includes(text));
+});
+
 test("main.js imports only what forge.js and profiles.js export", () => {
   const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
   for (const [file, mod] of [["./forge.js", F], ["./profiles.js", P]]) {
