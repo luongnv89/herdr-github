@@ -3,7 +3,6 @@
 // loads it as a module and `node --test` loads it as one too.
 
 export const LIMIT = 50;
-export const STALE = 120000;
 export const IDD = "https://luongnv.com/idd";
 
 export function ago(iso, now = Date.now()) {

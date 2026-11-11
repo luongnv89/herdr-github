@@ -442,5 +442,35 @@ test("main.js refreshes through the gate: the buttons press, a new folder moves,
   assert.match(main, /else if \(c === "refresh"\) this\.refresh\(cx, false, true\);/);
   assert.match(main, /else if \(k === "r"\) this\.refresh\(cx, false, true\);/);
   assert.match(main, /"Refresh", \(_e, cx\) => this\.refresh\(cx, false, true\)\)/);
-  assert.match(main, /cx\.timer\.every\(STALE, \(cx\) => \{ if \(this\.visible\(\)\) this\.refresh\(cx\); \}\);/);
+  // The timer doesn't press: it never replaces a running refresh before it hangs.
+  assert.match(main, /cx\.timer\.every\(TICK_MS, \(cx\) => \{ if \(this\.visible\(\) && refreshDue\(this\.every, this\.fetchedAt, Date\.now\(\)\)\) this\.refresh\(cx\); \}\);/);
+});
+
+// ── Refresh interval (#44) ──────────────────────────────────────────────────
+
+test("main.js refreshes on its own only when the chosen interval says so, and never in manual (#44)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  assert.doesNotMatch(main, /\bSTALE\b/);
+  // Both timed paths, the timer and render's check, ask refreshDue; a new folder still loads at once.
+  const tick = Number(/const TICK_MS = (\d+);/.exec(main)?.[1]);
+  assert.ok(tick > 0 && tick <= 30000 / 3, `a tick of ${tick} ms against the 30 s interval`);
+  assert.match(main, /cx\.timer\.every\(TICK_MS, \(cx\) => \{ if \(this\.visible\(\) && refreshDue\(this\.every, this\.fetchedAt, Date\.now\(\)\)\)/);
+  assert.match(main, /if \(this\.visible\(\) && \(keyOf\(this\.loc\) !== this\.context \|\| refreshDue\(this\.every, this\.fetchedAt, Date\.now\(\)\)\)\) this\.refresh\(cx, true\);/);
+  assert.equal(main.match(/refreshDue\(/g).length, 2);
+});
+
+test("main.js keeps the interval, and t, the header's interval button and the interval command step it (#44)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  // Read back when the panel opens, as the view is; anything unknown is the default.
+  assert.match(main, /this\.every = parseRefresh\(localStorage\.getItem\("refresh"\)\);/);
+  const fn = main.slice(main.indexOf("  cycleRefresh(cx) {"));
+  const cycle = fn.slice(0, fn.indexOf("\n  }\n") + 4);
+  assert.match(cycle, /this\.every = nextRefresh\(this\.every\);\s*localStorage\.setItem\("refresh", this\.every\);/);
+  assert.match(cycle, /this\.say\("ok", refreshNotice\(this\.every\)\);/);
+  assert.match(main, /else if \(k === "t"\) this\.cycleRefresh\(cx\);/);
+  assert.match(main, /else if \(c === "interval"\) this\.cycleRefresh\(cx\);/);
+  assert.match(main, /this\.chip\(t, "hg-interval", this\.every === "manual" \? "Manual" : this\.every, false,\s*\(_e, cx\) => \{ if \(!this\.closeMenu\(cx\)\) this\.cycleRefresh\(cx\); \}\)/);
+  assert.match(main, /t \$\{refreshLabel\(this\.every\)\}/);
+  // The refresh button still presses, in manual too.
+  assert.match(main, /"Refresh", \(_e, cx\) => this\.refresh\(cx, false, true\)\)/);
 });

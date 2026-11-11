@@ -89,13 +89,14 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
   - `↑`/`↓` or `j`/`k` select, page up/down jump, `g`/`G` go to the top or bottom;
   - enter opens the selected row in your browser;
   - tab or `←`/`→` switches between pull requests and issues, `1` and `2` choose one;
-  - `r` refreshes, `o` opens the repo on GitHub or GitLab;
+  - `r` refreshes, `t` changes how often the panel refreshes on its own (see **Fetching** below), `o` opens the repo on GitHub or GitLab;
   - `a` resolves the selected issue, or reviews the selected pull request, with an agent (see [Resolve and review with an agent](#resolve-and-review-with-an-agent)). With more than one profile it opens a menu of them: `↑`/`↓` or `j`/`k` choose, enter starts the one chosen, and esc or `q` closes the menu without starting anything;
   - `s` opens the agent profiles (see [Agent profiles](#agent-profiles));
   - `q` or esc closes the panel.
 - **Mouse:** click a row to open it, click the switch to change lists, click a row's `Resolve #N` or `Review #N` button, the same button in the header (for the selected row), `⚙`, `↻` or `↗` in the header, a profile in the menu those buttons open, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. On a remote machine, Ctrl-click the selected row's URL instead (see [Remote machines](#remote-machines)).
 - **When a row can't be opened:** the panel shows why in red, a hint to Ctrl- or Cmd-click the URL, and the whole URL above the key hints. The URL is a terminal hyperlink too. Any key, or the next open, clears it.
-- **Fetching:** when the repo changes, every 2 minutes while the panel's tab is on screen, and on `r`. A panel in a tab you aren't looking at doesn't fetch.
+- **Fetching:** when the repo changes, on `r` or `↻`, and, while the panel's tab is on screen, at the interval you choose: every 30 seconds, minute (the default), 5 or 15 minutes, or never (manual), when it refreshes only when you ask. A new folder is still read in manual, so the lists are never another repo's. `t` steps through the intervals; the key hints show the one in use, and the panel says what it does. Each panel keeps its own interval for the next time it opens. A panel in a tab you aren't looking at doesn't fetch.
+- **Pressing refresh again:** while a refresh runs, `r` or `↻` starts another only once the running one has had 3 seconds, so pressing again, or holding `r`, doesn't pile up `git` and `gh` calls. With none running, it starts one at once. A refresh that never finishes is still replaced by the next press after those 3 seconds, and a change of folder replaces it at once.
 - **Lists:** the 50 most recently opened of each on GitHub, and the 50 most recently updated on GitLab. The panel remembers which list you chose.
 
 ## Resolve and review with an agent
@@ -217,9 +218,11 @@ If you use your own layout, the app may dock the panel as a column of its own, o
 
 In the app, a Resolve or Review click (after you choose a profile, when there's more than one; see [Choose the profile](#choose-the-profile)) splits the tab you're in: the agent opens in a new pane to the right of the pane the panel follows (else to the right of the first terminal pane in that tab), as Cmd+D splits, in the repo's folder, and the other panes stay open. Start several one after another and their panes all go in that tab; you can start the next one as soon as the last one's pane is open. Claude Code, Codex, Pi and OpenCode start with the `run` the app's `programs.json` gives them, followed by the profile's flags. The app sends them the prompt as their first message (`hc send`) once the agent is idle, so a question it asks first, such as whether you trust the folder, never gets the prompt as its answer: answer it in the new pane, and the prompt follows. The app waits up to 5 minutes for that. A notice that a prompt wasn't sent stays up until you press a key or start another Resolve or Review, even when another agent gets its prompt meanwhile. mcc starts as `mcc run -- [flags] /issue-resolver 12`. With a custom prompt, that prompt takes the place of `/issue-resolver 12`, and `mcc env` runs only to check that mcc is there. For a space on another machine, the agent, `mcc env` and the skill lookup run on that machine, while the profiles and prompts come from your computer. The app doesn't say when mcc is ready, so for mcc the panel says it opened the pane, not that Claude Code started: if mcc asks something first, such as about a usage limit, answer it in the new pane.
 
-Besides its own `localStorage` (which list you chose), the app mod writes only the profiles file, and runs `mkdir -p` for its folder the first time it saves one.
+In the app, the interval button in the header (`1m`, or `Manual`) changes the refresh interval as `t` does.
 
-`keys.json` can send the panel `herdr-github:focus`, `herdr-github:refresh`, `herdr-github:resolve` (or `review`, `act`) and `herdr-github:settings`.
+Besides its own `localStorage` (which list you chose and the refresh interval), the app mod writes only the profiles file, and runs `mkdir -p` for its folder the first time it saves one.
+
+`keys.json` can send the panel `herdr-github:focus`, `herdr-github:refresh`, `herdr-github:interval` (the next refresh interval), `herdr-github:resolve` (or `review`, `act`) and `herdr-github:settings`.
 
 ## Remote machines
 
@@ -249,7 +252,7 @@ A herdr plugin runs as your user, with no sandbox. This one:
 - runs `open` (macOS) or `xdg-open` (Linux) when you open a row or the repo, on the computer where its herdr server runs (see [Remote machines](#remote-machines));
 - when you run `bind-key`: runs `herdr --default-config` and `herdr config check` to find a free key and check the config, adds one `[[keys.command]]` binding to herdr's `config.toml` (see [Install](#install)), saves the old config next to it as `config.toml.bak-herdr-github`, runs `herdr server reload-config`, and shows the result as a herdr notification;
 - when you save in the profiles view: writes `~/.config/herdr/plugins/config/herdr-github/profiles.json`, creating its folder if needed, through a temporary file next to it (see [Where they're kept](#where-theyre-kept));
-- otherwise writes only under its herdr state folder (`~/.local/state/herdr/plugins/herdr-github/` on macOS): which list you chose, and the ids of its open panes.
+- otherwise writes only under its herdr state folder (`~/.local/state/herdr/plugins/herdr-github/` on macOS): which list you chose, the refresh interval, and the ids of its open panes.
 
 It sends nothing anywhere except through `gh` to GitHub, or `glab` to GitLab.
 
