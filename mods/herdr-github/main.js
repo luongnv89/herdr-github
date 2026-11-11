@@ -9,7 +9,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, focused, exec, hc, theme, layout, window, run, home, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
-import { LIMIT, STALE, IDD, ago, firstLine, FORGES, ACTIONS, pickHost, forgesFor, load, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, isReadyToSend, nextNotice, keepsNotice, pathTo, shown } from "./forge.js";
+import { LIMIT, STALE, IDD, ago, firstLine, FORGES, ACTIONS, pickHost, forgesFor, load, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, unpickedNotice, isReadyToSend, nextNotice, keepsNotice, pathTo, shown } from "./forge.js";
 import {
   HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, validateProfile, buildLaunch, storePath, emptyStore,
   parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, parseMccEnv,
@@ -367,7 +367,7 @@ export default class GitHub extends View {
       await cx.sleep(250);
       terminal = pickNewTerminal(before, terminals(), anchor.tab);
     }
-    if (!terminal) return say("error", `Started ${who} in a new pane, but can't tell which terminal it is. Send it yourself in the new pane: ${text}`);
+    if (!terminal) return say("error", unpickedNotice(who, text, before, terminals()));
     // The pane is open: another launch can start now, while this one waits to send.
     this.delivering++;
     cx.spawn(async (cx) => {

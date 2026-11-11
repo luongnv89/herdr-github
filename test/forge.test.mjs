@@ -179,6 +179,30 @@ test("pickNewTerminal: the one new terminal labelled with the tab, on its machin
   assert.equal(F.pickNewTerminal(before, [...old, { address: "t3" }], "tab1"), null);
 });
 
+test("unpickedNotice: no new terminal means the pane didn't open, never that the agent started (#31)", () => {
+  const t = (address, tab) => ({ address, labels: { "herdr.space": "s1", "herdr.tab": tab } });
+  const before = ["t1", "t2"];
+  const old = [t("t1", "tab1"), t("t2", "tab1")];
+  const prompt = "Use the issue-pr-review skill on pull request #30";
+  // terminal.open failed (Herdr's toast), so no terminal is new anywhere.
+  const none = F.unpickedNotice("OpenCode", prompt, before, old);
+  assert.equal(none, `OpenCode didn't start in a new pane. Herdr may not find its program: check Herdr's message, or the profile's harness. When OpenCode runs, send it: ${prompt}`);
+  assert.doesNotMatch(none, /Started|started in a new pane/);
+  assert.doesNotMatch(none, /Send it yourself in the new pane/);
+  assert.equal(F.unpickedNotice("OpenCode", prompt, before, undefined), none);
+  // A terminal is new, but not exactly one in the tab: the pane may be open.
+  const many = `Started OpenCode in a new pane, but can't tell which terminal it is. Send it yourself in the new pane: ${prompt}`;
+  assert.equal(F.unpickedNotice("OpenCode", prompt, before, [...old, t("t3", "tab1"), t("t4", "tab1")]), many);
+  assert.equal(F.unpickedNotice("OpenCode", prompt, before, [...old, t("t3", "tab2")]), many);
+  assert.equal(F.unpickedNotice("OpenCode", prompt, before, [...old, { address: "t3" }]), many);
+});
+
+test("main.js says the pane didn't open through unpickedNotice when it finds no terminal (#31)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  assert.match(main, /if \(!terminal\) return say\("error", unpickedNotice\(who, text, before, terminals\(\)\)\);/);
+  assert.doesNotMatch(main, /return say\("error", `Started \$\{who\} in a new pane, but can't tell/);
+});
+
 test("isReadyToSend: only an idle agent takes its first message", () => {
   assert.equal(F.isReadyToSend("idle"), true);
   for (const status of ["working", "blocked", "done", null, undefined]) assert.equal(F.isReadyToSend(status), false, String(status));
