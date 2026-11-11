@@ -4,7 +4,7 @@
 
 ### Added
 
-- Screenshots in the README (#24): the issues list at the top of the page, then the pull requests list, the menu a Resolve click opens and the profiles view, each with a caption. They are of this repo, and `node scripts/capture-screenshots.mjs` takes them again from its open issues and pull requests, read live with `gh`. It runs only `git` and `gh`, and shows example profiles, never yours. The Herdr app's panel is captured by hand; the README says how.
+- Screenshots in the README (#24): the issues list at the top of the page, then the pull requests list, the menu a Resolve click opens and the profiles view, each with a caption. They are of this repo, and `node scripts/capture-screenshots.mjs` takes them again from its open issues and pull requests, read live with `gh`. It runs only `git` and `gh`, and shows example profiles, never yours. The Herdr app's panel has its own pictures too: the issues list, the Resolve menu and the profiles view. On a Mac with Herdr installed, `node scripts/capture-app-screenshots.mjs` takes them again, with the app's own `herdr-app shot`, in a second Herdr app with its own home folder and herdr-core, which can't start an agent and leaves your window, spaces and profiles alone.
 
 ## 0.5.0 (2026-11-11)
 
