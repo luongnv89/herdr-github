@@ -470,6 +470,9 @@ test("main.js keeps the interval, and t, the header's interval button and the in
   assert.match(main, /else if \(k === "t"\) this\.cycleRefresh\(cx\);/);
   assert.match(main, /else if \(c === "interval"\) this\.cycleRefresh\(cx\);/);
   assert.match(main, /this\.chip\(t, "hg-interval", this\.every === "manual" \? "Manual" : this\.every, false,\s*\(_e, cx\) => \{ if \(!this\.closeMenu\(cx\)\) this\.cycleRefresh\(cx\); \}\)/);
+  // Named for a screen reader, and left out of a narrow header, where t still works.
+  assert.match(main, /\.accessibility_label\(`Refresh interval: \$\{this\.every\}\. Activate to change it\.`\)/);
+  assert.match(main, /\.when\(!st && \(this\.width \?\? 368\) >= INTERVAL_MIN_W, \(el\) => el\.child\(this\.chip\(t, "hg-interval"/);
   assert.match(main, /t \$\{refreshLabel\(this\.every\)\}/);
   // The refresh button still presses, in manual too.
   assert.match(main, /"Refresh", \(_e, cx\) => this\.refresh\(cx, false, true\)\)/);

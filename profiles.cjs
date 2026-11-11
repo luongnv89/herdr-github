@@ -378,10 +378,9 @@ function refreshDue(choice, fetchedAt, now) {
   return ms !== undefined && now - fetchedAt >= ms;
 }
 
-// The choice in a few characters, for the key hints and the app's header button.
+// The key hint for t: what it changes, then the choice in use.
 function refreshLabel(choice) {
-  const c = parseRefresh(choice);
-  return c === "manual" ? "manual" : `every ${c}`;
+  return `interval: ${parseRefresh(choice)}`;
 }
 
 // What the panel says when the choice changes.

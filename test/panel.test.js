@@ -2332,7 +2332,7 @@ test("t steps the refresh interval through 30s, 1m, 5m, 15m and manual, says so 
   assert.equal(ui.every, "1m");
   // The key hints in a pane wide enough for all of them.
   const hints = () => screenAt(120, 24, draw)[FOOTER];
-  assert.match(hints(), /r refresh · t every 1m · o repo/);
+  assert.match(hints(), /r refresh · t interval: 1m · o repo/);
   const seen = [];
   for (let i = 0; i < 5; i++) {
     const lines = screen(() => onInput(Buffer.from("t")));
@@ -2346,9 +2346,9 @@ test("t steps the refresh interval through 30s, 1m, 5m, 15m and manual, says so 
   assert.deepEqual(seen, ["5m", "15m", "manual", "30s", "1m"]);
   screen(() => onInput(Buffer.from("tt")));
   assert.equal(ui.every, "15m");
-  assert.match(hints(), /t every 15m/);
+  assert.match(hints(), /t interval: 15m/);
   screen(() => onInput(Buffer.from("t")));
-  assert.match(hints(), /r refresh · t manual · o repo/);
+  assert.match(hints(), /r refresh · t interval: manual · o repo/);
 });
 
 test("the refresh interval chosen is read back when the panel starts again; an unknown one is the default (#44)", (t) => {

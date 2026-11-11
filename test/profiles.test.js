@@ -408,8 +408,9 @@ test("refreshDue: due once the chosen interval has passed since the last fetch, 
 });
 
 test("the interval's label and notice say what it does", () => {
-  assert.equal(P.refreshLabel("5m"), "every 5m");
-  assert.equal(P.refreshLabel("manual"), "manual");
+  assert.equal(P.refreshLabel("5m"), "interval: 5m");
+  assert.equal(P.refreshLabel("manual"), "interval: manual");
+  assert.equal(P.refreshLabel("junk"), "interval: 1m");
   assert.match(P.refreshNotice("30s"), /^Refreshes every 30 seconds while on screen, and on r/);
   assert.match(P.refreshNotice("1m"), /every minute/);
   assert.match(P.refreshNotice("manual"), /^Refreshes only when you ask: r or the refresh button\. A new folder still loads\.$/);

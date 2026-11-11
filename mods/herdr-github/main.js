@@ -38,6 +38,9 @@ const ANSWER_MS = 300000;
 // How often the timer looks whether the lists are due for a refresh (#44): the
 // shortest interval is 30 s, so a refresh is at most this late.
 const TICK_MS = 5000;
+// Below this panel width the header leaves out its interval button, so the title and
+// the other buttons keep their room; t and the interval command still change it.
+const INTERVAL_MIN_W = 340;
 
 // Where the panel looks: the focused terminal's folder and machine. While the
 // panel itself (or another mod pane) has the keyboard, it keeps the last one.
@@ -945,8 +948,9 @@ export default class GitHub extends View {
           .on_click((_e, cx) => { cx.stop_propagation(); if (!this.closeMenu(cx)) this.act(cx, view, this.sel[view], "header"); }).child(`${action.label} #${action.number}`)))
         .child(this.iconButton(t, "hg-profiles", "gear", st ? "Back to the list" : "Agent profiles", (_e, cx) => (st ? this.closeSettings(cx) : this.openSettings(cx)), Boolean(st)))
         // How often the lists refresh (#44): a click steps to the next interval, or manual.
-        .when(!st, (el) => el.child(this.chip(t, "hg-interval", this.every === "manual" ? "Manual" : this.every, false,
-          (_e, cx) => { if (!this.closeMenu(cx)) this.cycleRefresh(cx); }).tooltip(`${refreshNotice(this.every)} Click to change.`)))
+        .when(!st && (this.width ?? 368) >= INTERVAL_MIN_W, (el) => el.child(this.chip(t, "hg-interval", this.every === "manual" ? "Manual" : this.every, false,
+          (_e, cx) => { if (!this.closeMenu(cx)) this.cycleRefresh(cx); }).tooltip(`${refreshNotice(this.every)} Click to change.`)
+          .accessibility_label(`Refresh interval: ${this.every}. Activate to change it.`)))
         .when(!st, (el) => el.child(this.iconButton(t, "hg-refresh", "refresh", "Refresh", (_e, cx) => this.refresh(cx, false, true))))
         .when(!st && Boolean(this.repo?.url), (el) => el.child(this.iconButton(t, "hg-open", "external", `Open the repo on ${this.forge?.name ?? "the web"}`, (_e, cx) => this.openUrl(this.repo.url, cx)))))
       // The profile menu of the header's button (or the a key), under the header.
