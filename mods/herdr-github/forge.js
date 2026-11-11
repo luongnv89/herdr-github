@@ -157,18 +157,26 @@ export async function load(forge, sh) {
 // How long a refresh may run before the panel stops waiting for it (#42). A real one
 // runs git rev-parse, git remote, then each forge's calls for an unknown host: four
 // steps of at most a 60 s timeout in the terminal panel, 30 s in the app. Only a
-// refresh that will never end runs longer. Tests shorten it.
-export const REFRESH = { hungMs: 300000 };
+// refresh that will never end runs longer. graceMs: how long a running refresh is left
+// alone by the refresh button, r and the refresh command (#45), so pressing them again,
+// or holding r, starts at most one refresh per grace instead of one per press. Tests
+// shorten both.
+export const REFRESH = { hungMs: 300000, graceMs: 3000 };
 
 // Which refresh is the panel's own (#42). begin() numbers a new refresh, or returns
-// null while one is running that hasn't hung; force starts one anyway. Only the latest
-// number is current, and only its end() says the spinner can stop, so a refresh that
-// ends after another replaced it changes nothing.
+// null while one is running that it mustn't replace:
+//   - moved (a new folder): always replaces it; its answer isn't wanted any more.
+//   - press (the refresh button, r, the refresh command): replaces it once it has run
+//     graceMs, so a refresh that never ends is still replaced by the next press.
+//   - neither (the timer, a render): replaces it only once it has hung.
+// With none running, any of them starts one at once. Only the latest number is
+// current, and only its end() says the spinner can stop, so a refresh that ends after
+// another replaced it changes nothing.
 export function refreshGate() {
   let latest = 0, since = 0, running = false;
   return {
-    begin(now, force = false, hungMs = REFRESH.hungMs) {
-      if (running && !force && now - since < hungMs) return null;
+    begin(now, { press = false, moved = false } = {}, hungMs = REFRESH.hungMs, graceMs = REFRESH.graceMs) {
+      if (running && !moved && now - since < (press ? graceMs : hungMs)) return null;
       running = true;
       since = now;
       return ++latest;

@@ -139,13 +139,14 @@ export default class GitHub extends View {
   action() { return actionFor(this.forge, this.view, this.selected()); }
 
   // From render, cx.notify() isn't allowed: render reads the new state right after.
-  // force: the refresh button, r or the refresh command, which start one even while
-  // another runs (#42). A new folder does too: the old one's answer isn't wanted.
+  // force: the refresh button, r or the refresh command, which replace a running
+  // refresh once it has had its grace (#42, #45). A new folder replaces it at once:
+  // the old one's answer isn't wanted.
   refresh(cx, fromRender = false, force = false) {
     const loc = this.loc, context = keyOf(loc), moved = context !== this.context;
     // A refresh that never ends (a cancelled task's promise stays pending) would
     // otherwise keep the spinner on and stop every later one, for good.
-    const n = this.gate.begin(Date.now(), force || moved);
+    const n = this.gate.begin(Date.now(), { press: force, moved });
     if (n === null) return;
     if (moved) {
       Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 } });

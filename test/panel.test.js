@@ -2177,8 +2177,11 @@ test("a refresh that never ends holds back the timer's only until it has hung; t
   });
 });
 
-test("while a refresh never ends, the refresh button, r and a new folder each start one at once (#42)", { timeout: 5000 }, async (t) => {
-  t.after(() => { hold = () => false; held.length = 0; });
+test("while a refresh never ends, the refresh button, r and a new folder each start one once its grace is over (#42)", { timeout: 5000 }, async (t) => {
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  // The grace (#45) over at once: here a press always finds the hung refresh past it.
+  REFRESH.graceMs = 0;
   setup("issues");
   const starts = {
     "refresh(true)": () => refresh(true),
@@ -2206,7 +2209,9 @@ test("while a refresh never ends, the refresh button, r and a new folder each st
 });
 
 test("a refresh that answers after another replaced it changes nothing and leaves the newer one's spinner on (#42)", { timeout: 5000 }, async (t) => {
-  t.after(() => { hold = () => false; held.length = 0; });
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  REFRESH.graceMs = 0;
   setup("issues");
   await quietly(async () => {
     for (const late of [{ stdout: "/old\n" }, { error: new Error("spawn git ENOENT") }]) {
@@ -2232,5 +2237,79 @@ test("a refresh that answers after another replaced it changes nothing and leave
       assert.equal(ui.loading, false);
       assert.equal(ui.error, "Not a git repository");
     }
+  });
+});
+
+// ── Repeated presses (#45) ──────────────────────────────────────────────────
+
+// Lets the refresh still running end, so the next test finds none: a press past
+// the grace replaces it with one that answers.
+async function finishRefresh() {
+  hold = () => false;
+  REFRESH.graceMs = 0;
+  await refresh(true);
+  await settle();
+}
+
+test("pressing r again and again, or the refresh button, while a refresh runs starts one refresh, not one per press (#45)", { timeout: 5000 }, async (t) => {
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  const lines = setup("issues");
+  await quietly(async () => {
+    hold = holdGit;
+    // None running: one press starts one at once.
+    const before = gitCalls();
+    onInput(Buffer.from("r"));
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(ui.loading, true);
+    // Held r, the header's ↻ and the refresh function, all within the grace: nothing more.
+    onInput(Buffer.from("r".repeat(30)));
+    click(lines[0].indexOf("↻"), 0);
+    for (let i = 0; i < 5; i++) refresh(true);
+    await settle();
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(held.length, 1);
+    assert.equal(ui.loading, true);
+    await finishRefresh();
+    assert.equal(ui.loading, false);
+    assert.equal(ui.error, "Not a git repository");
+  });
+});
+
+test("once its grace is over, the next r replaces a refresh that never ends, and its answer shows (#45, #42)", { timeout: 5000 }, async (t) => {
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  setup("issues");
+  await quietly(async () => {
+    REFRESH.graceMs = 30;
+    hold = holdGit;
+    refresh(true);
+    const before = gitCalls();
+    onInput(Buffer.from("r"));
+    assert.equal(gitCalls(), before);
+    await new Promise((r) => setTimeout(r, 40));
+    hold = () => false;
+    onInput(Buffer.from("r"));
+    await settle();
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(ui.loading, false);
+    assert.equal(ui.error, "Not a git repository");
+  });
+});
+
+test("a new folder replaces a running refresh at once, grace or not (#45)", { timeout: 5000 }, async (t) => {
+  const grace = REFRESH.graceMs;
+  t.after(() => { REFRESH.graceMs = grace; hold = () => false; held.length = 0; });
+  setup("issues");
+  await quietly(async () => {
+    REFRESH.graceMs = 60 * 60000;
+    hold = holdGit;
+    refresh(true);
+    hold = () => false;
+    const before = gitCalls();
+    ui.context = "/somewhere/else";
+    await refresh();
+    assert.equal(gitCalls(), before + 1);
+    assert.equal(ui.loading, false);
   });
 });
