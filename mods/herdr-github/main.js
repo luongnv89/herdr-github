@@ -73,6 +73,10 @@ const TITLE_LH = 18, BODY_LH = 16, META_H = 16, PAD = 7, GAP = 4, ACT_H = 24;
 // box with 4 px of padding and a 1 px border.
 const MENU_TITLE_H = 16, MENU_ITEM_H = 24;
 const menuHeight = (n) => 2 + 8 + MENU_TITLE_H + n * (MENU_ITEM_H + 2);
+// The commit this mod's code was loaded from, for the profiles view (#49): looked up
+// by the first copy of the view, once per load, so a copy opened after a git pull
+// that the app hasn't reloaded still shows the commit of the code it runs.
+let commitLookup = null;
 
 export default class GitHub extends View {
   init(_props, cx) {
@@ -125,15 +129,12 @@ export default class GitHub extends View {
       this.promptInputs[action] = input;
     }
     cx.spawn(async (cx) => { await this.readStore(); cx.notify(); });
-    // The commit this mod was built from, for the profiles view (#49): looked up once,
-    // in its own folder on this computer. undefined until then, null when it can't
-    // be told, as in a copy with no .git of its own.
+    // The commit this mod was built from, for the profiles view (#49): read in its
+    // own folder on this computer. undefined until then, null when it can't be told,
+    // as in a copy with no .git of its own.
     this.commit = undefined;
-    cx.spawn(async (cx) => {
-      try { this.commit = parseCommit(await exec("git", COMMIT_ARGS, { cwd: `${appHome()}/mods/${MOD}`, timeout: 5000 }), `mods/${MOD}/`); }
-      catch { this.commit = null; }
-      cx.notify();
-    });
+    commitLookup ??= exec("git", COMMIT_ARGS, { cwd: `${appHome()}/mods/${MOD}`, timeout: 5000 }).then((r) => parseCommit(r, `mods/${MOD}/`), () => null);
+    cx.spawn(async (cx) => { this.commit = await commitLookup; cx.notify(); });
     // The timer's refresh, when the lists are due at the chosen interval; never in manual.
     cx.timer.every(TICK_MS, (cx) => { if (this.visible() && refreshDue(this.every, this.fetchedAt, Date.now())) this.refresh(cx); });
     // keys.json can send "herdr-github:<command>": focus, refresh, interval, resolve, settings.

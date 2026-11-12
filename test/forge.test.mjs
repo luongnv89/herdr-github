@@ -484,13 +484,15 @@ test("main.js keeps the interval, and t, the header's interval button and the in
 test("main.js looks up its commit once, in its own folder on this computer, and shows it in the profiles view (#49)", () => {
   const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
   assert.match(main, /import \{[^}]*\bappHome\b[^}]*\} from "herdr";/);
-  // In init, once: git on this computer (no `on`), in the mod's folder under the app's.
+  // Once per load of the code, by the first copy's init: git on this computer (no
+  // `on`), in the mod's folder under the app's; a failure is unknown.
+  assert.match(main, /^let commitLookup = null;$/m);
   const fn = main.slice(main.indexOf("  init(_props, cx) {"));
   const init = fn.slice(0, fn.indexOf("\n  }\n") + 4);
-  assert.match(init, /this\.commit = undefined;/);
-  assert.match(init, /try \{ this\.commit = parseCommit\(await exec\("git", COMMIT_ARGS, \{ cwd: `\$\{appHome\(\)\}\/mods\/\$\{MOD\}`, timeout: 5000 \}\), `mods\/\$\{MOD\}\/`\); \}\s*catch \{ this\.commit = null; \}/);
+  assert.match(init, /this\.commit = undefined;\s*commitLookup \?\?= exec\("git", COMMIT_ARGS, \{ cwd: `\$\{appHome\(\)\}\/mods\/\$\{MOD\}`, timeout: 5000 \}\)\.then\(\(r\) => parseCommit\(r, `mods\/\$\{MOD\}\/`\), \(\) => null\);/);
+  assert.match(init, /cx\.spawn\(async \(cx\) => \{ this\.commit = await commitLookup; cx\.notify\(\); \}\);/);
   assert.equal(main.match(/COMMIT_ARGS/g).length, 2, "imported, and run once");
-  assert.doesNotMatch(main, /exec\("git", COMMIT_ARGS, \{[^}]*\bon\b/);
+  assert.equal(main.match(/commitLookup = /g).length, 1, "set in one place only");
   assert.match(main, /const MOD = "herdr-github";/);
   // The profile list's last line.
   const list = main.slice(main.indexOf("  profileList(t) {"));
