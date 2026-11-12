@@ -4,7 +4,7 @@ The open pull requests and issues of the repo you're in, in a side pane of [herd
 
 ![The panel in herdr, showing this repo's open issues: the selected issue with its Resolve button and its URL](docs/preview.svg)
 
-*The issues list, on this repo. The selected issue shows its Resolve button and its URL.*
+*The issues list, on this repo. The selected issue shows its Resolve button and its URL. This picture was taken before the header's Resolve and Review button was removed (#51): the header now has only the `⚙`, `↻` and `↗` buttons.*
 
 Each row shows the title (up to 2 lines), the description (up to 3 lines) and a meta line:
 
@@ -29,7 +29,7 @@ These are of this repo, taken by scripts (see [Take the screenshots again](#take
 
 ![The panel's pull requests list for this repo](docs/screenshots/pull-requests.svg)
 
-*The pull requests list. A pull request's row is like an issue's, with a Review button instead of Resolve. With none open, the list says so.*
+*The pull requests list. A pull request's row is like an issue's, with a Review button instead of Resolve, and now a Merge button beside it. This picture was taken before the Merge button was added and the header's Review button was removed (#51). With none open, the list says so.*
 
 ![The profile menu that a Resolve click opens under the button, listing the built-in Claude Code via mcc run and three example profiles](docs/screenshots/resolve.svg)
 

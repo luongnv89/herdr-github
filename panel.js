@@ -431,11 +431,12 @@ function actionFor(view, index = ui.sel[view]) {
 
 // ── Merging a pull request (#51) ────────────────────────────────────────────
 // Each pull request with a Review button has a Merge button beside it. The first
-// press only asks: the button reads Confirm merge #N, and the notice says pressing
-// it merges. A second press on that button merges that pull request with `gh pr
-// merge`, by the method the repo allows, and only while its head is still the
-// commit the list showed. Any other key or click takes the question back. The same
-// rules as the app's, in forge.js.
+// press only asks: the button reads Confirm merge #N in the same place, and the key
+// hints' line says pressing it merges. A second press on that button merges that
+// pull request with `gh pr merge`, by the method the repo allows, and only while
+// its head is still the commit the list showed at the first press. Any other key
+// or click, or a move to another folder or repo, takes the question back. The
+// same rules as the app's, in forge.js.
 
 const MERGE_FLAGS = { squash: "--squash", merge: "--merge", rebase: "--rebase" };
 const MERGE_NAMES = { squash: "squash", merge: "merge commit", rebase: "rebase" };
