@@ -17,7 +17,7 @@ On GitLab, merge requests show as `!123` and have no checks mark: the list doesn
 
 Click a pull request or issue, or select it and press enter, to open it in your browser. Clicking needs `ui.mouse_capture = true` in your herdr config. On a remote machine, see [Remote machines](#remote-machines).
 
-On GitHub, each issue has a **Resolve** button and each pull request a **Review** button, which start an agent on it. Which agent, model and thinking level is up to you: see [Agent profiles](#agent-profiles). So is the prompt it gets: see [Custom prompts](#custom-prompts).
+On GitHub, each issue has a **Resolve** button and each pull request a **Review** button, which start an agent on it. Which agent, model and thinking level is up to you: see [Agent profiles](#agent-profiles). So is the prompt it gets: see [Custom prompts](#custom-prompts). Each pull request also has a **Merge** button, which merges it once you press it a second time: see [Merge a pull request](#merge-a-pull-request).
 
 The repo also holds the same panel for the Herdr desktop app, in `mods/herdr-github` (see [Herdr app](#herdr-app)). The terminal panel is the twin of the GitHub panel in [Whole Herdr](https://github.com/luongnv89/whole-herdr), a layout for the Herdr desktop app.
 
@@ -41,13 +41,13 @@ These are of this repo, taken by scripts (see [Take the screenshots again](#take
 
 ### Herdr app
 
-<img src="docs/screenshots/app-issues.png" width="420" alt="The Herdr app's panel showing this repo's open issues: the selected issue with its Resolve button, which is also in the header">
+<img src="docs/screenshots/app-issues.png" width="420" alt="The Herdr app's panel showing this repo's open issues: the selected issue with its Resolve button">
 
-*The issues list in the Herdr app, on this repo. The selected issue's Resolve button is also in the header.*
+*The issues list in the Herdr app, on this repo. The selected issue shows its Resolve button. This picture was taken before the header's Resolve and Review button was removed (#51): the header now has only the profiles, interval, refresh and open buttons.*
 
 <img src="docs/screenshots/app-resolve.png" width="420" alt="The menu of profiles that a Resolve click opens at the top of the app's panel, listing the built-in Claude Code via mcc run and three example profiles, the one assigned to Resolve chosen">
 
-*A Resolve click in the app: the menu of profiles opens at the top of the panel, the profile assigned to Resolve chosen.*
+*Resolve with `a` (or the `resolve` command) in the app: the menu of profiles opens at the top of the panel, the profile assigned to Resolve chosen.*
 
 <img src="docs/screenshots/app-profiles.png" width="420" alt="The app's agent profiles view, listing the built-in profile, three example profiles with what each starts and which action uses it, and the Resolve and Review prompts">
 
@@ -90,10 +90,10 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
   - enter opens the selected row in your browser;
   - tab or `←`/`→` switches between pull requests and issues, `1` and `2` choose one;
   - `r` refreshes, `t` changes how often the panel refreshes on its own (see **Fetching** below), `o` opens the repo on GitHub or GitLab;
-  - `a` resolves the selected issue, or reviews the selected pull request, with an agent (see [Resolve and review with an agent](#resolve-and-review-with-an-agent)). With more than one profile it opens a menu of them: `↑`/`↓` or `j`/`k` choose, enter starts the one chosen, and esc or `q` closes the menu without starting anything;
+  - `a` resolves the selected issue, or reviews the selected pull request, with an agent, as the selected row's button does (see [Resolve and review with an agent](#resolve-and-review-with-an-agent)). With more than one profile it opens a menu of them: `↑`/`↓` or `j`/`k` choose, enter starts the one chosen, and esc or `q` closes the menu without starting anything;
   - `s` opens the agent profiles (see [Agent profiles](#agent-profiles));
   - `q` or esc closes the panel.
-- **Mouse:** click a row to open it, click the switch to change lists, click a row's `Resolve #N` or `Review #N` button, the same button in the header (for the selected row), `⚙`, `↻` or `↗` in the header, a profile in the menu those buttons open, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. On a remote machine, Ctrl-click the selected row's URL instead (see [Remote machines](#remote-machines)).
+- **Mouse:** click a row to open it, click the switch to change lists, click a row's `Resolve #N`, `Review #N` or `Merge #N` button, `⚙`, `↻` or `↗` in the header, a profile in the menu the Resolve and Review buttons open, and scroll with the wheel. This needs `ui.mouse_capture = true` in your herdr config. On a remote machine, Ctrl-click the selected row's URL instead (see [Remote machines](#remote-machines)).
 - **When a row can't be opened:** the panel shows why in red, a hint to Ctrl- or Cmd-click the URL, and the whole URL above the key hints. The URL is a terminal hyperlink too. Any key, or the next open, clears it.
 - **Fetching:** when the repo changes, on `r` or `↻`, and, while the panel's tab is on screen, at the interval you choose: every 30 seconds, minute (the default), 5 or 15 minutes, or never (manual), when it refreshes only when you ask. A new folder is still read in manual, so the lists are never another repo's. `t` steps through the intervals; the key hints show the one in use (`t interval: 1m`), and the panel says what it does. When `t interval: 1m` would be cut off, they shorten it to `t 1m` and move it up after `⏎ open` (or the `a` key), or to the front of the line, so `t` and the interval stay in view however narrow the pane; the hints after it may still be cut. Each panel keeps its own interval for the next time it opens. A panel in a tab you aren't looking at doesn't fetch.
 - **Pressing refresh again:** while a refresh runs, `r` or `↻` starts another only once the running one has had 3 seconds, so pressing again, or holding `r`, doesn't pile up `git` and `gh` calls. With none running, it starts one at once. A refresh that never finishes is still replaced by the next press after those 3 seconds, and a change of folder replaces it at once.
@@ -101,14 +101,14 @@ Press the key in any pane. The panel opens on the right, about a third of the ta
 
 ## Resolve and review with an agent
 
-On GitHub, every issue row ends with a **Resolve #N** button and every pull request row with a **Review #N** button. The header shows the same button for the selected row, and `a` presses it. Resolve hands the issue to the `issue-resolver` skill, Review hands the pull request to `issue-pr-review`, unless you wrote your own prompt for the action (see [Custom prompts](#custom-prompts)). The agent that starts is the one in the profile you choose; with no profiles of your own, it's Claude Code started through `mcc run` (see [Agent profiles](#agent-profiles)).
+On GitHub, every issue row ends with a **Resolve #N** button and every pull request row with a **Review #N** button, next to its **Merge #N** button (see [Merge a pull request](#merge-a-pull-request)). `a` presses the selected row's Resolve or Review button; the header has none. Resolve hands the issue to the `issue-resolver` skill, Review hands the pull request to `issue-pr-review`, unless you wrote your own prompt for the action (see [Custom prompts](#custom-prompts)). The agent that starts is the one in the profile you choose; with no profiles of your own, it's Claude Code started through `mcc run` (see [Agent profiles](#agent-profiles)).
 
 ### Choose the profile
 
 With no profiles of your own, only the built-in one, a click or `a` starts it right away. With one or more of your own, a click or `a` first opens a menu that lists every profile, the built-in **Claude Code via mcc run** first, with the one assigned to the action highlighted (the built-in one when none is):
 
-- **Terminal panel:** the menu opens under the button you clicked: under a row's **Resolve #N** or **Review #N** for that row (and for `a`, under the selected row's), or under the header for the header's button and for a row whose button is out of view. When there's no room under the button, it opens above it, and a menu longer than the room scrolls, with `↑` or `↓` on its border when there are more profiles that way. `↑`/`↓` or `j`/`k` move the highlight, enter starts the highlighted profile, and a click on a profile starts that one. Esc, `q`, the mouse wheel or a click anywhere else closes the menu and starts nothing: a click on a row then doesn't open it in your browser.
-- **Herdr app:** the menu opens under a row's button for that row, and under the header for the header's button, `a` and the `resolve`, `review` and `act` commands. The same keys work, and a click on a profile starts it. Esc, `q`, or a click on a row, the switch or a header button closes it and starts nothing.
+- **Terminal panel:** the menu opens under the row's **Resolve #N** or **Review #N** button: the one you clicked, or for `a`, the selected row's. When that button is out of view, as in a pane too short for the whole row, it opens under the header, at its right edge. When there's no room under the button, it opens above it, and a menu longer than the room scrolls, with `↑` or `↓` on its border when there are more profiles that way. `↑`/`↓` or `j`/`k` move the highlight, enter starts the highlighted profile, and a click on a profile starts that one. Esc, `q`, the mouse wheel or a click anywhere else closes the menu and starts nothing: a click on a row then doesn't open it in your browser.
+- **Herdr app:** the menu opens under a row's button when you click it, and under the header for `a` and the `resolve`, `review` and `act` commands, so it's in view however the list is scrolled. The same keys work, and a click on a profile starts it. Esc, `q`, or a click on a row, the switch or a header button closes it and starts nothing.
 
 Whichever profile you choose, the action's custom prompt is sent, if it has one. The panel reads the profiles file again when you choose: if the profile was deleted meanwhile, or the row left the list in a refresh, nothing starts and the panel says why. Choosing doesn't change which profile is assigned to the action.
 
@@ -132,6 +132,18 @@ mcc can ask something before Claude Code starts, such as what to do about a usag
 If the skill isn't installed, nothing starts and the panel points you to [luongnv.com/idd](https://luongnv.com/idd) to install the skills. It looks for `<skill>/SKILL.md` in the `skills` folder of `~/.claude`, `~/.agents`, `~/.codex` and `~/.<agent>`, and of the same folders in the repo. For Claude it also looks in the plugins you have installed and not disabled (`~/.claude/plugins/installed_plugins.json`, `enabledPlugins` in `~/.claude/settings.json` and the repo's `.claude/settings*.json`), and in synced plugins, and sends a plugin's skill under the plugin's name, such as `/idd:issue-resolver 12`. For mcc, it runs `mcc env -q --shell bash` in the repo to find the Claude Code folder `mcc run` would use there, such as `~/.mcc/profiles/work`, and looks in that folder's `skills` too, and for plugins in that folder instead of `~/.claude`.
 
 The buttons don't show on GitLab, because both skills work through `gh`.
+
+## Merge a pull request
+
+On GitHub, every pull request row has a **Merge #N** button next to its **Review #N** button, in the terminal panel and in the Herdr app; in a narrow terminal pane it sits on a line of its own, under Review. GitLab's merge requests have none.
+
+- **Press it twice.** The first press only asks: the button turns into **Confirm merge #N**, and the notice says which merge method it will use. A second press on that button merges that pull request, and only that one. Any other key or click, including a press on another row's Merge button, takes the question back and merges nothing. In the terminal, the scroll wheel doesn't.
+- **The method is the repo's.** The panel reads which merge methods the repo allows (`gh repo view`) and uses squash when it's allowed, else a merge commit, else rebase. When the repo allows none of them, or `gh` doesn't say, the button stays, and a press says why and merges nothing.
+- **Only the commit you saw.** The merge passes the pull request's head commit, as the list read it, to `gh pr merge --match-head-commit`, so GitHub refuses the merge if someone pushed to the branch since the list was read. Refresh, look again, and press Merge again.
+- **What you see.** The panel says `Merging #N…` while `gh` runs, `Merged #N` when it's done, or `Can't merge #N:` and the first line of `gh`'s reason, such as a required check or review that's missing, in red. A merged pull request leaves the list at once, and the panel refreshes; a refresh that was already running when the merge finished doesn't bring it back. A merge that failed leaves the pull request in the list.
+- **One thing at a time.** While a merge runs, Resolve, Review, `a` and the other Merge buttons do nothing, and while an agent starts, Merge does nothing.
+
+The merge runs `gh pr merge <number> --squash` (or `--merge`, `--rebase`) `--match-head-commit <commit>` in the repo's folder, on the space's machine in the app. It never passes `--delete-branch` or `--auto`, so it leaves your branches alone and doesn't wait for checks. It's built from the number, the method and the commit only, never from a title or a description. You need the rights to merge in the repo; `gh` says when you don't.
 
 ## Custom prompts
 
@@ -205,7 +217,7 @@ The panels read the file when the profiles view opens and on every Resolve or Re
 
 ## Herdr app
 
-`mods/herdr-github` is the same panel as a Herdr app mod: the same rows, the same per-row Resolve and Review buttons, the same profiles and the same default. It reads the repo with `gh` or `glab` on the space's machine.
+`mods/herdr-github` is the same panel as a Herdr app mod: the same rows, the same per-row Resolve, Review and Merge buttons, the same profiles and the same default. It reads the repo with `gh` or `glab` on the space's machine.
 
 To install it, link the folder into the app's mods folder (`~/.config/herdr-app`, or `$HERDR_APP_HOME` when that's set):
 
@@ -249,6 +261,7 @@ A plain click on a remote machine still can't open a browser on your computer.
 A herdr plugin runs as your user, with no sandbox. This one:
 
 - runs `git` in the repo's folder to find its remote, then `gh` or `glab` there to read the repo and its open pull requests (or merge requests) and issues;
+- when you press a pull request's Merge button a second time: runs `gh pr merge` in the repo's folder for that pull request (see [Merge a pull request](#merge-a-pull-request));
 - runs `git rev-parse` once in its own folder when it starts, for the commit the profiles view shows;
 - runs `herdr` to find the focused pane, and to open, resize and close its own pane;
 - when you click Resolve or Review, or press `a`: reads the profiles file, runs `herdr` to list the agents and split a new pane below your agent (or below the pane the panel follows), then either starts the profile's agent in it (`herdr agent start`) and sends it the skill and the number, or your custom prompt, or, for mcc, runs `mcc env` in the repo and types `mcc run -- … <prompt>` into the new pane (`herdr pane run`), and closes that pane again if `herdr agent start` or `herdr pane run` fails, except while the agent is asking you something; it reads the skill folders listed under [Resolve and review with an agent](#resolve-and-review-with-an-agent). With a custom prompt it doesn't run `mcc env` or read the skill folders;
