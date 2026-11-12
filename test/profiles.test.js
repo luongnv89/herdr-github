@@ -520,6 +520,18 @@ test("versionLine: the version, then the commit, commit unknown, or nothing whil
   assert.equal(P.versionLine("0.6.0", undefined), "herdr-github v0.6.0");
 });
 
+test("versionLine: longer than its room, it drops the plugin's name and keeps the commit", () => {
+  // It fits: the whole line.
+  assert.equal(P.versionLine("0.6.0", "ff6822f", 29), "herdr-github v0.6.0 · ff6822f");
+  assert.equal(P.versionLine("0.6.0", null, 36), "herdr-github v0.6.0 · commit unknown");
+  // One short: the version and what's after it.
+  assert.equal(P.versionLine("0.6.0", "ff6822f", 28), "v0.6.0 · ff6822f");
+  assert.equal(P.versionLine("0.6.0", null, 35), "v0.6.0 · commit unknown");
+  assert.equal(P.versionLine("0.6.0", undefined, 10), "v0.6.0");
+  // Shorter still, the caller cuts it.
+  assert.equal(P.versionLine("0.6.0", "ff6822f", 4), "v0.6.0 · ff6822f");
+});
+
 test("the CommonJS copy behaves as the app mod's module", async () => {
   const E = await esm();
   assert.deepEqual(Object.keys(E).sort(), Object.keys(P).sort());
@@ -555,7 +567,9 @@ test("the CommonJS copy behaves as the app mod's module", async () => {
   for (const [r, prefix] of [[revParse(""), ""], [revParse("mods/herdr-github/"), "mods/herdr-github/"], [revParse("x/"), ""], [answer("", 128), ""]]) {
     assert.equal(E.parseCommit(r, prefix), P.parseCommit(r, prefix), JSON.stringify(r));
   }
-  for (const c of ["ff6822f", null, undefined]) assert.equal(E.versionLine(P.PLUGIN_VERSION, c), P.versionLine(P.PLUGIN_VERSION, c), String(c));
+  for (const c of ["ff6822f", null, undefined]) {
+    for (const room of [undefined, 40, 30, 20]) assert.equal(E.versionLine(P.PLUGIN_VERSION, c, room), P.versionLine(P.PLUGIN_VERSION, c, room), `${c} ${room}`);
+  }
 });
 
 test("profiles.cjs is up to date with the app mod's profiles.js", () => {

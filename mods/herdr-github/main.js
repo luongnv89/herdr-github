@@ -919,7 +919,7 @@ export default class GitHub extends View {
         .child(this.chip(t, "hg-new", "New profile", false, (_e, cx) => this.editProfile(null, cx)))
         .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(st.file ?? "")))
       // The plugin's version and commit (#49).
-      .child(div().px(2).truncate().text_size(10.5).text_color(t.dim).child(versionLine(PLUGIN_VERSION, this.commit)));
+      .child(div().flex_none().px(2).truncate().text_size(10.5).text_color(t.dim).child(versionLine(PLUGIN_VERSION, this.commit)));
   }
 
   render(cx) {

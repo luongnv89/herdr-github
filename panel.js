@@ -1372,8 +1372,8 @@ function settingsLines(cols, rows) {
       if (on) selEnd = body.length;
     }
     // The plugin's version and commit, last (#49): with the last prompt selected, it
-    // shows too.
-    body.push("", `  ${dim(fit(P.versionLine(P.PLUGIN_VERSION, commit), cols - 2))}`); owner.push(null, null);
+    // shows too. Narrow, it drops the plugin's name to keep the commit.
+    body.push("", `  ${dim(fit(P.versionLine(P.PLUGIN_VERSION, commit, cols - 2), cols - 2))}`); owner.push(null, null);
     if (st.promptSel === P.ACTION_KEYS[P.ACTION_KEYS.length - 1] && st.mode === "list") selEnd = body.length;
   }
   // Keep the selected entry (or field) in view. A prompt keeps its end in view: the

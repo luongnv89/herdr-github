@@ -440,9 +440,12 @@ function parseCommit(result, prefix) {
 
 // The profiles view's version line (#49): the commit's short hash, "commit unknown"
 // when it can't be told (null), and nothing while it's still looked up (undefined).
-function versionLine(version, commit) {
-  const head = `herdr-github v${version}`;
-  return commit === undefined ? head : `${head} · ${commit ?? "commit unknown"}`;
+// Longer than `room` characters, it drops the plugin's name, so a narrow pane that
+// cuts it from the right still shows the commit.
+function versionLine(version, commit, room = Infinity) {
+  const tail = `v${version}${commit === undefined ? "" : ` · ${commit ?? "commit unknown"}`}`;
+  const line = `herdr-github ${tail}`;
+  return line.length > room ? tail : line;
 }
 
 module.exports = { HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice, keyHints, hintRoom, PLUGIN_VERSION, COMMIT_ARGS, parseCommit, versionLine };

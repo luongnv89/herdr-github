@@ -1359,7 +1359,7 @@ async function lookUpCommit(t, reply) {
   callOpts.length = 0;
   try { await readCommit(); } finally { git = before; }
 }
-const versionAt = (lines) => lines.find((l) => l?.includes("herdr-github v"));
+const versionAt = (lines) => lines.find((l) => /^ {2}(herdr-github )?v\d+\.\d+\.\d+/.test(l ?? ""));
 
 test("the profiles view shows the plugin's version and the commit its folder is at (#49)", async (t) => {
   claudeHome(t);
@@ -1375,9 +1375,11 @@ test("the profiles view shows the plugin's version and the commit its folder is 
   for (const cols of [40, 24]) {
     const narrow = screenAt(cols, 40, draw);
     for (const l of narrow) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
-    assert.ok(versionAt(narrow)?.trim().startsWith("herdr-github v"), `${cols}:\n${narrow.join("\n")}`);
+    assert.ok(versionAt(narrow), `${cols}:\n${narrow.join("\n")}`);
   }
   assert.match(versionAt(screenAt(40, 40, draw)), /^ {2}herdr-github v\d+\.\d+\.\d+ · ff6822f$/);
+  // Too narrow for it all, it drops the plugin's name and keeps the whole hash.
+  assert.equal(versionAt(screenAt(24, 40, draw)), `  v${P.PLUGIN_VERSION} · ff6822f`);
   // The form shows no version.
   assert.equal(versionAt(screenAt(60, 40, () => onInput(Buffer.from("n")))), undefined);
 });
@@ -1396,6 +1398,10 @@ test("the profiles view says the commit is unknown when git can't tell it, never
     assert.equal(versionAt(lines), `  herdr-github v${P.PLUGIN_VERSION} · commit unknown`, `${JSON.stringify(reply)}\n${lines.join("\n")}`);
     assert.ok(!lines.join("\n").includes("ff6822f"), JSON.stringify(reply));
   }
+  // Too narrow for it all, it still says so.
+  const narrow = screenAt(30, 40, draw);
+  for (const l of narrow) assert.ok(width(l ?? "") <= 30, `30: ${l}`);
+  assert.equal(versionAt(narrow), `  v${P.PLUGIN_VERSION} · commit unknown`, narrow.join("\n"));
 });
 
 test("the version shows while the commit is looked up, and the commit once git answers (#49)", async (t) => {

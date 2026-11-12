@@ -189,7 +189,7 @@ A model is letters, digits and `. _ : / @ + -`, starting with a letter or digit.
 
 A profile that can't be saved shows why, in red, and nothing is written.
 
-At the bottom of the list, both views show the plugin's version and the commit it was built from, such as `herdr-github v0.6.0 · ff6822f`. The commit is the one the plugin's own folder is at when the panel opens, read with `git`. When that can't be told, as in a copied folder that isn't in a clone of this repo, the line says `commit unknown` instead.
+At the bottom of the list, both views show the plugin's version and the commit it was built from, such as `herdr-github v0.6.0 · ff6822f`. In a terminal pane too narrow for all of it, the line drops the `herdr-github` name and keeps the version and commit. The commit is the one the plugin's own folder is at when the panel opens, read with `git`. When that can't be told, as in a copied folder that isn't in a clone of this repo, the line says `commit unknown` instead.
 
 ### Where they're kept
 

@@ -494,7 +494,7 @@ test("main.js looks up its commit once, in its own folder on this computer, and 
   assert.equal(main.match(/COMMIT_ARGS/g).length, 2, "imported, and run once");
   assert.equal(main.match(/commitLookup = /g).length, 1, "set in one place only");
   assert.match(main, /const MOD = "herdr-github";/);
-  // The profile list's last line.
+  // The profile list's last line: it keeps its height when the list overflows.
   const list = main.slice(main.indexOf("  profileList(t) {"));
-  assert.match(list.slice(0, list.indexOf("\n  }\n")), /\.child\(div\(\)[^\n]*\.child\(versionLine\(PLUGIN_VERSION, this\.commit\)\)\);$/);
+  assert.match(list.slice(0, list.indexOf("\n  }\n")), /\.child\(div\(\)\.flex_none\(\)[^\n]*\.truncate\(\)[^\n]*\.child\(versionLine\(PLUGIN_VERSION, this\.commit\)\)\);$/);
 });

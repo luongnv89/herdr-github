@@ -436,7 +436,10 @@ export function parseCommit(result, prefix) {
 
 // The profiles view's version line (#49): the commit's short hash, "commit unknown"
 // when it can't be told (null), and nothing while it's still looked up (undefined).
-export function versionLine(version, commit) {
-  const head = `herdr-github v${version}`;
-  return commit === undefined ? head : `${head} · ${commit ?? "commit unknown"}`;
+// Longer than `room` characters, it drops the plugin's name, so a narrow pane that
+// cuts it from the right still shows the commit.
+export function versionLine(version, commit, room = Infinity) {
+  const tail = `v${version}${commit === undefined ? "" : ` · ${commit ?? "commit unknown"}`}`;
+  const line = `herdr-github ${tail}`;
+  return line.length > room ? tail : line;
 }
