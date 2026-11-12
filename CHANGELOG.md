@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- The profiles view shows the plugin's version and the commit it was built from (#49), in the terminal and in the Herdr app, on the last line of the list, as `herdr-github v` and the version, then the commit's short hash. The commit is the one the plugin's own folder is at, read once with `git rev-parse` when the panel opens; the app reads it on your computer, from its folder in the app's mods folder. When it can't be told, the line says `commit unknown` rather than show another commit: in a folder with no `.git` of its own, as a copied app mod, git would otherwise answer for whatever repo holds it, so the commit shows only when git answers for the plugin's own folder, in a repo with `herdr-plugin.toml` at its root. Tests check the version against `herdr-plugin.toml`.
+
 ## 0.6.0 (2026-11-12)
 
 ### Added
