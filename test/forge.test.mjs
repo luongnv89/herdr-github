@@ -619,7 +619,19 @@ test("main.js merges through gh on the repo's machine, once a second press confi
   // The second press merges only what the first one asked about, in the same repo,
   // at the head the first press saw (#51).
   assert.match(press, /const armed = this\.armedFor\(number\);\s*if \(armed\) \{\s*this\.confirm = null;\s*(\/\/[^\n]*\n\s*)*return this\.merge\(cx, number, armed\.head\);\s*\}/);
-  assert.match(press, /this\.confirm = \{ number, root: this\.root, head: this\.prs\[index\]\.head \?\? null, notice: this\.notice \};/);
+  assert.match(press, /this\.confirm = \{ number, root: this\.root, head: this\.prs\[index\]\.head \?\? null \};/);
+  // The first press leaves the notice alone, so the list keeps its height and the
+  // second press lands on Confirm merge; the key hints' line asks instead (#51).
+  const asks = press.slice(press.indexOf("const strategy = mergeStrategy(this.repo);"));
+  const [noStrategy, ask] = asks.split("} else {");
+  assert.match(noStrategy, /this\.notice = null;\s*this\.say\("error", noMerge\(number\)\);/);
+  assert.doesNotMatch(ask, /this\.notice|this\.say\(/);
+  assert.doesNotMatch(press.slice(0, press.indexOf("const strategy")), /this\.notice|this\.say\(/);
+  assert.doesNotMatch(body("  cancelMerge(cx) {"), /this\.notice/);
+  assert.match(main, /const askingHint = \(number, strategy\) => `Press Confirm merge #\$\{number\} to merge it \(\$\{MERGE_NAMES\[strategy\] \?\? "\?"\}\) · any other key or click cancels`;/);
+  const render = body("  render(cx) {");
+  assert.match(render, /const armed = !this\.menu && !st && this\.confirm \? this\.armedFor\(this\.confirm\.number\) : null;/);
+  assert.match(render, /\.child\(armed \? askingHint\(armed\.number, mergeStrategy\(this\.repo\)\) : focused \? hints : "Click here for keys"\)\);/);
   assert.match(main, /armedFor\(number\) \{ return this\.confirm\?\.number === number && this\.confirm\.root === this\.root \? this\.confirm : null; \}/);
   assert.match(body("  mergeChip(t, number) {"), /const armed = Boolean\(this\.armedFor\(number\)\)/);
   const merge = body("  merge(cx, number, head) {");
@@ -633,8 +645,8 @@ test("main.js merges through gh on the repo's machine, once a second press confi
   const refresh = body("  refresh(cx, fromRender = false, force = false) {");
   assert.match(refresh, /if \(n === null\) return;\n(\s*\/\/[^\n]*\n)*\s*const began = this\.merges\.begin\(\);/);
   assert.match(refresh, /if \(found\.fetched\) found\.prs = this\.merges\.filter\(found\.prs, found\.root, began\);\s*Object\.assign\(this, found\);/);
-  // A move to another folder takes back a press that asked, and its notice (#51).
-  assert.match(refresh, /if \(moved\) \{\s*(\/\/[^\n]*\n\s*)*if \(this\.confirm && this\.notice === this\.confirm\.notice\) this\.notice = null;\s*Object\.assign\(this, \{ context, [^\n]*, confirm: null \}\);/);
+  // A move to another folder takes back a press that asked (#51).
+  assert.match(refresh, /if \(moved\) \{\s*(\/\/[^\n]*\n\s*)*Object\.assign\(this, \{ context, [^\n]*, confirm: null \}\);/);
   // Any key, command or press elsewhere takes back a press that only asked.
   assert.match(main, /\.on_mouse_down\("left", \(_e, cx\) => \{ this\.handle\.focus\(\); this\.cancelMerge\(cx\); \}\)/);
   assert.match(body("  onKey(e, cx) {"), /this\.cancelMerge\(cx\);/);

@@ -36,6 +36,8 @@ const DEFAULT_PROMPTS = Object.fromEntries(Object.values(ACTIONS).map((a) => [a.
 const PROMPT_TIP = `A custom prompt replaces the IDD skill: it is sent as written to every harness, with ${PROMPT_TOKEN} as the number. Empty sends the default.`;
 // What a Merge press says when the repo allows no merge method gh can use (#51).
 const noMerge = (number) => `Can't merge #${number}: the repo allows no squash, merge commit or rebase, or gh didn't say which.`;
+// What the key hints' line says while a Merge press asks (#51), as the terminal's does.
+const askingHint = (number, strategy) => `Press Confirm merge #${number} to merge it (${MERGE_NAMES[strategy] ?? "?"}) · any other key or click cancels`;
 // How long a new agent may take to be ready for its prompt, such as while it asks
 // whether you trust the folder, as in the terminal panel. Clicks aren't held meanwhile.
 const ANSWER_MS = 300000;
@@ -185,9 +187,8 @@ export default class GitHub extends View {
     // Numbered for the merge guard: a pull request merged after this began stays out of its answer (#51).
     const began = this.merges.begin();
     if (moved) {
-      // A Merge press that asked was for the old folder's repo: taken back, with its
-      // notice (#51). Not by cancelMerge: from render, cx.notify() isn't allowed.
-      if (this.confirm && this.notice === this.confirm.notice) this.notice = null;
+      // A Merge press that asked was for the old folder's repo: taken back (#51). Not
+      // by cancelMerge: from render, cx.notify() isn't allowed.
       Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, confirm: null });
     }
     this.fetchedAt = Date.now();
@@ -307,7 +308,7 @@ export default class GitHub extends View {
   }
 
   // A pull request's Merge button (#51). The first press only asks: the button reads
-  // Confirm merge #N, and the notice says pressing it merges. A second press on that
+  // Confirm merge #N, and the key hints' line says pressing it merges. A second press on that
   // button merges that pull request, found again by its number, so only that one is
   // ever merged, and only in the repo the first press was in. Any other key, command
   // or click takes the question back.
@@ -322,15 +323,17 @@ export default class GitHub extends View {
       // The head the first press saw: a push since then makes GitHub refuse.
       return this.merge(cx, number, armed.head);
     }
-    // Pressing it is seen as reading the last notice, as a launch is.
-    this.notice = null;
     const strategy = mergeStrategy(this.repo);
     if (!strategy) {
       this.confirm = null;
+      // Pressing it is seen as reading the last notice, as a launch is.
+      this.notice = null;
       this.say("error", noMerge(number));
     } else {
-      this.say("info", `Press Confirm merge #${number} to merge it (${MERGE_NAMES[strategy]}). Any other key or click cancels.`);
-      this.confirm = { number, root: this.root, head: this.prs[index].head ?? null, notice: this.notice };
+      // The first press leaves the notice as it is: a notice shown, gone or changed
+      // would change the list's height under the button, and the second press would
+      // land elsewhere. The key hints' line, always there and as tall, asks instead.
+      this.confirm = { number, root: this.root, head: this.prs[index].head ?? null };
     }
     cx.notify();
   }
@@ -339,10 +342,9 @@ export default class GitHub extends View {
   // null when there's none. A press in another repo never counts here.
   armedFor(number) { return this.confirm?.number === number && this.confirm.root === this.root ? this.confirm : null; }
 
-  // Takes back a Merge press that only asked, and the notice that asked.
+  // Takes back a Merge press that only asked.
   cancelMerge(cx) {
     if (!this.confirm) return;
-    if (this.notice && this.notice === this.confirm.notice) this.notice = null;
     this.confirm = null;
     cx.notify();
   }
@@ -1052,6 +1054,8 @@ export default class GitHub extends View {
     const tones = { info: t.blocked, ok: t.ansi2, error: t.ansi1 };
     const title = !st ? this.repo?.name ?? this.forge?.name ?? "Pull requests and issues"
       : st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles";
+    // A Merge press that asked says so on the key hints' line, in the hints' place (#51).
+    const armed = !this.menu && !st && this.confirm ? this.armedFor(this.confirm.number) : null;
     const hints = this.menu && !st ? "↑↓ choose · ⏎ start · esc cancel"
       // t and the interval in use stay in view in a narrow panel too, where the header
       // leaves out its interval button (#47).
@@ -1108,8 +1112,8 @@ export default class GitHub extends View {
           .when(Boolean(this.notice.url), (el) => el.child(div().id("hg-notice-url").text_color(t.accent).cursor_pointer().truncate()
             .on_click((_e, cx) => { if (!this.closeMenu(cx)) this.openUrl(this.notice.url, cx); }).child(this.notice.url))))))
       // The profiles view's keys wrap onto a second line rather than being cut.
-      .child(div().flex_none().min_h(24).px(14).flex().items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(focused ? t.muted : t.dim)
+      .child(div().flex_none().min_h(24).px(14).flex().items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(armed ? t.blocked : focused ? t.muted : t.dim)
         .when(!st, (el) => el.h(24).truncate()).when(Boolean(st), (el) => el.py(4))
-        .child(focused ? hints : "Click here for keys"));
+        .child(armed ? askingHint(armed.number, mergeStrategy(this.repo)) : focused ? hints : "Click here for keys"));
   }
 }
