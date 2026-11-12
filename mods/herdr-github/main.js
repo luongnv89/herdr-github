@@ -98,8 +98,9 @@ export default class GitHub extends View {
     // it was pressed) or "header" (under the header, for a and the commands: the
     // selected row may be scrolled out of view, and the header never is).
     this.menu = null;
-    // A Merge press that only asked (#51): { number, notice }, the pull request whose
-    // button now reads Confirm merge, and the notice that says so; null otherwise.
+    // A Merge press that only asked (#51): { number, root, head, notice }, the pull
+    // request whose button now reads Confirm merge, the repo it's in, its head commit
+    // as the list showed it then, and the notice that says so; null otherwise.
     this.confirm = null;
     // The pull requests merged here, kept out of a refresh that began before (#51).
     this.merges = mergeGuard();
@@ -184,7 +185,10 @@ export default class GitHub extends View {
     // Numbered for the merge guard: a pull request merged after this began stays out of its answer (#51).
     const began = this.merges.begin();
     if (moved) {
-      Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 } });
+      // A Merge press that asked was for the old folder's repo: taken back, with its
+      // notice (#51). Not by cancelMerge: from render, cx.notify() isn't allowed.
+      if (this.confirm && this.notice === this.confirm.notice) this.notice = null;
+      Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, confirm: null });
     }
     this.fetchedAt = Date.now();
     if (!loc?.cwd) {
@@ -305,15 +309,18 @@ export default class GitHub extends View {
   // A pull request's Merge button (#51). The first press only asks: the button reads
   // Confirm merge #N, and the notice says pressing it merges. A second press on that
   // button merges that pull request, found again by its number, so only that one is
-  // ever merged. Any other key, command or click takes the question back.
+  // ever merged, and only in the repo the first press was in. Any other key, command
+  // or click takes the question back.
   pressMerge(cx, number) {
     if (this.acting || this.menu) return;
     const index = this.prs.findIndex((p) => p.number === number);
     if (index < 0 || !actionFor(this.forge, "prs", this.prs[index])) return;
     this.sel.prs = index;
-    if (this.confirm?.number === number) {
+    const armed = this.armedFor(number);
+    if (armed) {
       this.confirm = null;
-      return this.merge(cx, number);
+      // The head the first press saw: a push since then makes GitHub refuse.
+      return this.merge(cx, number, armed.head);
     }
     // Pressing it is seen as reading the last notice, as a launch is.
     this.notice = null;
@@ -323,10 +330,14 @@ export default class GitHub extends View {
       this.say("error", noMerge(number));
     } else {
       this.say("info", `Press Confirm merge #${number} to merge it (${MERGE_NAMES[strategy]}). Any other key or click cancels.`);
-      this.confirm = { number, notice: this.notice };
+      this.confirm = { number, root: this.root, head: this.prs[index].head ?? null, notice: this.notice };
     }
     cx.notify();
   }
+
+  // The Merge press that asked about pull request `number`, in the repo on screen;
+  // null when there's none. A press in another repo never counts here.
+  armedFor(number) { return this.confirm?.number === number && this.confirm.root === this.root ? this.confirm : null; }
 
   // Takes back a Merge press that only asked, and the notice that asked.
   cancelMerge(cx) {
@@ -337,13 +348,14 @@ export default class GitHub extends View {
   }
 
   // The second press: `gh pr merge` on the repo's machine, by the method the repo
-  // allows, only while the head is the commit the list showed. It holds this.acting
-  // as a launch does, so its progress stays up and nothing else starts meanwhile.
-  merge(cx, number) {
+  // allows, only while the head is `head`, the commit the list showed at the first
+  // press. It holds this.acting as a launch does, so its progress stays up and
+  // nothing else starts meanwhile.
+  merge(cx, number, head) {
     const pr = this.prs.find((p) => p.number === number), root = this.root, on = this.loc?.on ?? null, strategy = mergeStrategy(this.repo);
     if (!pr || this.forge?.id !== "github" || !root) { this.say("error", `The pull request #${number} isn't in the list any more, so nothing was merged.`); return cx.notify(); }
     if (!strategy) { this.say("error", noMerge(number)); return cx.notify(); }
-    const args = mergeArgs(number, strategy, pr.head);
+    const args = mergeArgs(number, strategy, head);
     this.acting = true;
     this.say("info", `Merging #${number}…`);
     cx.spawn(async (cx) => {
@@ -889,11 +901,11 @@ export default class GitHub extends View {
   // A pull request's Merge button (#51), beside its Review button. Its press and
   // click stop here, as the Review button's do, so the row doesn't open as well.
   mergeChip(t, number) {
-    const armed = this.confirm?.number === number, strategy = mergeStrategy(this.repo);
+    const armed = Boolean(this.armedFor(number)), strategy = mergeStrategy(this.repo);
     return div().id(`hg-prs-merge-${number}`).h(ACT_H).px(8).flex_none().flex().items_center().rounded(6).cursor_pointer().text_size(11.5)
       .border_1().border_color(armed ? t.ansi1 : t.border).bg(this.acting ? t.raised : t.background).text_color(this.acting ? t.dim : armed ? t.ansi1 : t.foreground)
       .hover((s) => s.bg(t.hover))
-      .tooltip(strategy ? `Merge #${number} with gh (${MERGE_NAMES[strategy]}), only while its head is the commit listed. Press it twice: the first press asks.` : noMerge(number))
+      .tooltip(strategy ? `Merge #${number} with gh (${MERGE_NAMES[strategy]}), only while its head is the commit listed at the first press. Press it twice: the first press asks.` : noMerge(number))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_click((_e, cx) => { cx.stop_propagation(); this.handle.focus(); if (!this.closeMenu(cx)) this.pressMerge(cx, number); })
       .child(armed ? `Confirm merge #${number}` : `Merge #${number}`);

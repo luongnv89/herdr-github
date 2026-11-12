@@ -616,9 +616,15 @@ test("main.js merges through gh on the repo's machine, once a second press confi
   const body = (head) => { const fn = main.slice(main.indexOf(head)); return fn.slice(0, fn.indexOf("\n  }\n")); };
   const press = body("  pressMerge(cx, number) {");
   assert.match(press, /if \(this\.acting \|\| this\.menu\) return;/);
-  assert.match(press, /if \(this\.confirm\?\.number === number\) \{\s*this\.confirm = null;\s*return this\.merge\(cx, number\);\s*\}/);
-  const merge = body("  merge(cx, number) {");
-  assert.match(merge, /const args = mergeArgs\(number, strategy, pr\.head\);\s*this\.acting = true;/);
+  // The second press merges only what the first one asked about, in the same repo,
+  // at the head the first press saw (#51).
+  assert.match(press, /const armed = this\.armedFor\(number\);\s*if \(armed\) \{\s*this\.confirm = null;\s*(\/\/[^\n]*\n\s*)*return this\.merge\(cx, number, armed\.head\);\s*\}/);
+  assert.match(press, /this\.confirm = \{ number, root: this\.root, head: this\.prs\[index\]\.head \?\? null, notice: this\.notice \};/);
+  assert.match(main, /armedFor\(number\) \{ return this\.confirm\?\.number === number && this\.confirm\.root === this\.root \? this\.confirm : null; \}/);
+  assert.match(body("  mergeChip(t, number) {"), /const armed = Boolean\(this\.armedFor\(number\)\)/);
+  const merge = body("  merge(cx, number, head) {");
+  assert.match(merge, /const args = mergeArgs\(number, strategy, head\);\s*this\.acting = true;/);
+  assert.doesNotMatch(merge, /pr\.head/);
   assert.match(merge, /r = await exec\("gh", args, \{ cwd: root, on \}\);/);
   assert.match(merge, /catch \(e\) \{ return this\.say\("error", `Can't merge #\$\{number\}: \$\{cantRun\("gh", e\)\}`\); \}/);
   assert.match(merge, /this\.merges\.add\(root, number\);/);
@@ -627,6 +633,8 @@ test("main.js merges through gh on the repo's machine, once a second press confi
   const refresh = body("  refresh(cx, fromRender = false, force = false) {");
   assert.match(refresh, /if \(n === null\) return;\n(\s*\/\/[^\n]*\n)*\s*const began = this\.merges\.begin\(\);/);
   assert.match(refresh, /if \(found\.fetched\) found\.prs = this\.merges\.filter\(found\.prs, found\.root, began\);\s*Object\.assign\(this, found\);/);
+  // A move to another folder takes back a press that asked, and its notice (#51).
+  assert.match(refresh, /if \(moved\) \{\s*(\/\/[^\n]*\n\s*)*if \(this\.confirm && this\.notice === this\.confirm\.notice\) this\.notice = null;\s*Object\.assign\(this, \{ context, [^\n]*, confirm: null \}\);/);
   // Any key, command or press elsewhere takes back a press that only asked.
   assert.match(main, /\.on_mouse_down\("left", \(_e, cx\) => \{ this\.handle\.focus\(\); this\.cancelMerge\(cx\); \}\)/);
   assert.match(body("  onKey(e, cx) {"), /this\.cancelMerge\(cx\);/);
