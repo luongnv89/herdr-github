@@ -3,6 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 
 const source = readFileSync(new URL("../mods/herdr-github/forge.js", import.meta.url));
 const F = await import(`data:text/javascript;base64,${source.toString("base64")}`);
@@ -497,4 +498,137 @@ test("main.js looks up its commit once, in its own folder on this computer, and 
   // The profile list's last line: it keeps its height when the list overflows.
   const list = main.slice(main.indexOf("  profileList(t) {"));
   assert.match(list.slice(0, list.indexOf("\n  }\n")), /\.child\(div\(\)\.flex_none\(\)[^\n]*\.truncate\(\)[^\n]*\.child\(versionLine\(PLUGIN_VERSION, this\.commit\)\)\);$/);
+});
+
+// ── Merging a pull request (#51) ────────────────────────────────────────────
+
+test("mergeStrategy: squash, else a merge commit, else rebase, as the repo allows; null when none is allowed or gh didn't say", () => {
+  for (const squash of [true, false]) for (const merge of [true, false]) for (const rebase of [true, false]) {
+    const want = squash ? "squash" : merge ? "merge" : rebase ? "rebase" : null;
+    assert.equal(F.mergeStrategy({ merges: { squash, merge, rebase } }), want, JSON.stringify({ squash, merge, rebase }));
+  }
+  // Unknown is never allowed: no repo, no merges, or values that aren't true.
+  for (const repo of [null, undefined, {}, { name: "o/p" }, { merges: null }, { merges: {} }, { merges: { squash: "true", merge: 1, rebase: undefined } }]) {
+    assert.equal(F.mergeStrategy(repo), null, JSON.stringify(repo));
+  }
+  assert.deepEqual(F.MERGE_NAMES, { squash: "squash", merge: "merge commit", rebase: "rebase" });
+});
+
+test("mergeArgs: the number, the method's flag, and the head to match when it's a commit hash; nothing else", () => {
+  const sha1 = "0123456789abcdef0123456789abcdef01234567", sha256 = "ab".repeat(32);
+  assert.deepEqual(F.mergeArgs(12, "squash", sha1), ["pr", "merge", "12", "--squash", "--match-head-commit", sha1]);
+  assert.deepEqual(F.mergeArgs(12, "merge", sha256), ["pr", "merge", "12", "--merge", "--match-head-commit", sha256]);
+  assert.deepEqual(F.mergeArgs(12, "rebase", sha1), ["pr", "merge", "12", "--rebase", "--match-head-commit", sha1]);
+  // No head, or one that isn't a lowercase hash, leaves the check out rather than pass it on.
+  for (const head of [undefined, null, "", "abc123", sha1.toUpperCase().replace(/[0-9]/g, "A"), `${sha1} --admin`, `--admin`, sha1.slice(0, 39), 12]) {
+    assert.deepEqual(F.mergeArgs(12, "squash", head), ["pr", "merge", "12", "--squash"], String(head));
+  }
+  // Integers only: never text from a title or body.
+  for (const n of [0, -1, 1.5, "12", "12; rm -rf ~", NaN, Infinity, 2 ** 53, null, undefined]) {
+    assert.throws(() => F.mergeArgs(n, "squash", sha1), /not a number/, String(n));
+  }
+  for (const s of ["SQUASH", "--squash", "auto", "admin", "", undefined, null, "squash; id", "toString", "__proto__", "constructor"]) {
+    assert.throws(() => F.mergeArgs(12, s, sha1), /not a merge method/, String(s));
+  }
+  // Never the flags that touch your local branches or wait for checks.
+  for (const s of ["squash", "merge", "rebase"]) {
+    const args = F.mergeArgs(12, s, sha1);
+    for (const flag of ["--delete-branch", "-d", "--auto", "--admin"]) assert.ok(!args.includes(flag), `${s} ${flag}`);
+  }
+});
+
+test("mergeGuard: a refresh that began before a merge finished doesn't list it again; one that began after is gh's word on it", () => {
+  const g = F.mergeGuard(), pr = (number) => ({ number });
+  const list = [pr(10), pr(12), pr(13)];
+  const stale = g.begin();
+  g.add("/r", 12);
+  // The refresh that was running when #12 was merged answers with it still open.
+  assert.deepEqual(g.filter(list, "/r", stale).map((p) => p.number), [10, 13]);
+  // Another repo's #12 is another pull request.
+  assert.deepEqual(g.filter(list, "/other", stale).map((p) => p.number), [10, 12, 13]);
+  // A refresh begun after the merge: gh's answer stands, and the merge is forgotten,
+  // so an older answer can't bring it back later either way.
+  const fresh = g.begin();
+  assert.deepEqual(g.filter([pr(10), pr(13)], "/r", fresh).map((p) => p.number), [10, 13]);
+  assert.deepEqual(g.filter(list, "/r", stale).map((p) => p.number), [10, 12, 13]);
+  // Still listed after a merge (a merge queue, say): shown, not hidden for good.
+  const g2 = F.mergeGuard();
+  g2.add("/r", 12);
+  assert.deepEqual(g2.filter(list, "/r", g2.begin()).map((p) => p.number), [10, 12, 13]);
+  assert.deepEqual(g.filter(undefined, "/r", fresh), []);
+});
+
+test("readRepo: the repo's merge methods and each pull request's head commit come through", async () => {
+  assert.match(F.FORGES.github.repoArgs.join(" "), /--json nameWithOwner,url,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed$/);
+  assert.ok(F.FORGES.github.prArgs.at(-1).split(",").includes("headRefOid"));
+  const head = "f".repeat(40);
+  const { exec } = fakeExec({
+    ...GH,
+    "gh repo": { stdout: JSON.stringify({ nameWithOwner: "o/p", url: "https://github.com/o/p", squashMergeAllowed: false, mergeCommitAllowed: false, rebaseMergeAllowed: true }) },
+    "gh pr": { stdout: JSON.stringify([{ number: 4, title: "t", headRefName: "b", headRefOid: head, url: "u" }]) },
+  });
+  const found = await F.readRepo({ cwd: "/r", exec, forges: new Map(), current: () => true });
+  assert.deepEqual(found.repo, { name: "o/p", url: "https://github.com/o/p", merges: { squash: false, merge: false, rebase: true } });
+  assert.equal(found.prs[0].head, head);
+  assert.equal(F.mergeStrategy(found.repo), "rebase");
+  assert.deepEqual(F.mergeArgs(found.prs[0].number, F.mergeStrategy(found.repo), found.prs[0].head), ["pr", "merge", "4", "--rebase", "--match-head-commit", head]);
+  // GitLab's repo has none: no Merge button there.
+  assert.equal(F.mergeStrategy(F.FORGES.gitlab.repo({ path_with_namespace: "g/p", web_url: "u" })), null);
+});
+
+test("panel.js's copy of the merge rules is forge.js's", () => {
+  const panel = createRequire(import.meta.url)("../panel.js");
+  assert.deepEqual(panel.FORGES.github.repoArgs, F.FORGES.github.repoArgs);
+  assert.deepEqual(panel.FORGES.github.prArgs, F.FORGES.github.prArgs);
+  const r = { nameWithOwner: "o/p", url: "u", squashMergeAllowed: true, mergeCommitAllowed: false, rebaseMergeAllowed: true };
+  assert.deepEqual(panel.FORGES.github.repo(r), F.FORGES.github.repo(r));
+  for (const merges of [{ squash: true }, { merge: true }, { rebase: true }, {}, null]) {
+    assert.equal(panel.mergeStrategy({ merges }), F.mergeStrategy({ merges }));
+  }
+  for (const [n, s, h] of [[3, "squash", "a".repeat(40)], [3, "merge", "x"], [3, "rebase", null]]) assert.deepEqual(panel.mergeArgs(n, s, h), F.mergeArgs(n, s, h));
+  for (const [n, s] of [["3", "squash"], [3, "admin"]]) {
+    assert.throws(() => panel.mergeArgs(n, s));
+    assert.throws(() => F.mergeArgs(n, s));
+  }
+});
+
+test("main.js has no Resolve or Review button in its header, and a Merge chip on each GitHub pull request row (#51)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  // The header's button is gone: a and the commands press the selected row's action.
+  assert.doesNotMatch(main, /id\("hg-act"\)/);
+  assert.doesNotMatch(main, /this\.act\(cx, view, this\.sel\[view\], "header"\)/);
+  assert.match(main, /else if \(k === "a"\) this\.act\(cx, this\.view, this\.sel\[this\.view\], "header"\);/);
+  assert.match(main, /else if \(c === "resolve" \|\| c === "review" \|\| c === "act"\) \{ this\.handle\.focus\(\); this\.act\(cx, this\.view, this\.sel\[this\.view\], "header"\); \}/);
+  // The rows' own Review and Resolve buttons, and beside a pull request's, its Merge chip.
+  assert.match(main, /div\(\)\.id\(`hg-\$\{view\}-act-\$\{item\.number\}`\)/);
+  assert.match(main, /\.when\(view === "prs", \(el\) => el\.child\(this\.mergeChip\(t, item\.number\)\)\)/);
+  const fn = main.slice(main.indexOf("  mergeChip(t, number) {"));
+  const chip = fn.slice(0, fn.indexOf("\n  }\n"));
+  assert.match(chip, /div\(\)\.id\(`hg-prs-merge-\$\{number\}`\)/);
+  // Its press and click stop there, so the row doesn't open in the browser as well.
+  assert.match(chip, /\.on_mouse_down\("left", \(_e, cx\) => cx\.stop_propagation\(\)\)/);
+  assert.match(chip, /\.on_click\(\(_e, cx\) => \{ cx\.stop_propagation\(\); this\.handle\.focus\(\); if \(!this\.closeMenu\(cx\)\) this\.pressMerge\(cx, number\); \}\)/);
+  assert.match(chip, /armed \? `Confirm merge #\$\{number\}` : `Merge #\$\{number\}`/);
+});
+
+test("main.js merges through gh on the repo's machine, once a second press confirms, and keeps a merged pull request out of a stale refresh (#51)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  const body = (head) => { const fn = main.slice(main.indexOf(head)); return fn.slice(0, fn.indexOf("\n  }\n")); };
+  const press = body("  pressMerge(cx, number) {");
+  assert.match(press, /if \(this\.acting \|\| this\.menu\) return;/);
+  assert.match(press, /if \(this\.confirm\?\.number === number\) \{\s*this\.confirm = null;\s*return this\.merge\(cx, number\);\s*\}/);
+  const merge = body("  merge(cx, number) {");
+  assert.match(merge, /const args = mergeArgs\(number, strategy, pr\.head\);\s*this\.acting = true;/);
+  assert.match(merge, /r = await exec\("gh", args, \{ cwd: root, on \}\);/);
+  assert.match(merge, /catch \(e\) \{ return this\.say\("error", `Can't merge #\$\{number\}: \$\{cantRun\("gh", e\)\}`\); \}/);
+  assert.match(merge, /this\.merges\.add\(root, number\);/);
+  assert.match(merge, /this\.acting = false;\s*if \(merged\) this\.refresh\(cx, false, true\);/);
+  // The refresh drops what was merged since it began, before the lists are taken.
+  const refresh = body("  refresh(cx, fromRender = false, force = false) {");
+  assert.match(refresh, /if \(n === null\) return;\n(\s*\/\/[^\n]*\n)*\s*const began = this\.merges\.begin\(\);/);
+  assert.match(refresh, /if \(found\.fetched\) found\.prs = this\.merges\.filter\(found\.prs, found\.root, began\);\s*Object\.assign\(this, found\);/);
+  // Any key, command or press elsewhere takes back a press that only asked.
+  assert.match(main, /\.on_mouse_down\("left", \(_e, cx\) => \{ this\.handle\.focus\(\); this\.cancelMerge\(cx\); \}\)/);
+  assert.match(body("  onKey(e, cx) {"), /this\.cancelMerge\(cx\);/);
+  assert.match(main, /const c = await nextCommand\(\);\n(\s*\/\/[^\n]*\n)*\s*this\.cancelMerge\(cx\);/);
 });
