@@ -391,4 +391,29 @@ function refreshNotice(choice) {
     : `Refreshes ${REFRESH_WORDS[c]} while on screen, and on r or the refresh button.`;
 }
 
-module.exports = { HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice };
+// The list's key hints, with t and the interval in use kept in view at any width
+// (#47). `action` is the a key's action ("resolve", "review") or null, `close` the
+// close key's hint, `lead` what the line starts with, and `room` how many cells it
+// has. The first form whose t hint shows whole: all the hints as they are when they
+// fit, else t and the bare choice after ⏎ open (or the a key), else t first. A cut
+// line spends its last cell on "…" (the terminal's fit, the app's truncate), so t's
+// hint shows whole when it ends before that cell. Every glyph here takes one cell.
+function keyHints({ action = null, every, close, lead = "", room = Infinity }) {
+  const c = parseRefresh(every), a = action ? `a ${action} · ` : "";
+  const forms = [
+    [`${lead}↑↓ select · ⏎ open · ${a}⇥ switch · s profiles · r refresh · `, `t ${refreshLabel(c)}`, ` · o repo · ${close}`],
+    [`${lead}↑↓ select · ⏎ open · ${a}`, `t ${c}`, ` · ⇥ switch · s profiles · r refresh · o repo · ${close}`],
+    [lead, `t ${c}`, ` · ↑↓ select · ⏎ open · ${a}⇥ switch · s profiles · r refresh · o repo · ${close}`],
+  ];
+  const form = forms.find(([before, t]) => [...before + t].length < room) ?? forms[forms.length - 1];
+  return form.join("");
+}
+
+// How many characters the app's key hints have in a panel `width` px wide (#47): the
+// footer's 14 px padding on each side off, at its 10.5 px text, about 0.58 of the text
+// size per character, as clamp in main.js reckons.
+function hintRoom(width) {
+  return Math.max(0, Math.floor((width - 28) / (10.5 * 0.58)));
+}
+
+module.exports = { HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice, keyHints, hintRoom };

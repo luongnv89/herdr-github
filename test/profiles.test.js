@@ -416,6 +416,66 @@ test("the interval's label and notice say what it does", () => {
   assert.match(P.refreshNotice("manual"), /^Refreshes only when you ask: r or the refresh button\. A new folder still loads\.$/);
 });
 
+// The terminal panel's and the app's key hints (#47), and where t's hint ends in them.
+const TERM = { close: "q close", lead: " " }, APP = { close: "esc close" };
+const tEnd = (text, choice) => {
+  const m = new RegExp(`t (?:interval: )?${choice}(?!\\w)`).exec(text);
+  return m ? [...text.slice(0, m.index + m[0].length)].length : Infinity;
+};
+// What the terminal's fit and the app's truncate show of a line in `room` cells.
+const cut = (text, room) => ([...text].length <= room ? text : [...text].slice(0, room - 1).join("") + "…");
+
+test("the key hints are as they were when they fit: t and the interval after r refresh (#47)", async () => {
+  for (const M of [P, await esm()]) {
+    assert.equal(M.keyHints({ ...TERM, every: "1m", room: 120 }),
+      " ↑↓ select · ⏎ open · ⇥ switch · s profiles · r refresh · t interval: 1m · o repo · q close");
+    assert.equal(M.keyHints({ ...TERM, action: "resolve", every: "1m", room: 120 }),
+      " ↑↓ select · ⏎ open · a resolve · ⇥ switch · s profiles · r refresh · t interval: 1m · o repo · q close");
+    assert.equal(M.keyHints({ ...APP, action: "review", every: "manual", room: 120 }),
+      "↑↓ select · ⏎ open · a review · ⇥ switch · s profiles · r refresh · t interval: manual · o repo · esc close");
+    // With no room given, all of them.
+    assert.equal(M.keyHints({ ...APP, every: "junk" }), "↑↓ select · ⏎ open · ⇥ switch · s profiles · r refresh · t interval: 1m · o repo · esc close");
+  }
+});
+
+test("too narrow for that, t and the bare interval come after ⏎ open, then first, so they show whole at any width (#47)", async () => {
+  for (const M of [P, await esm()]) {
+    // The smallest room for each form, and one less: t's hint ends one cell before the "…".
+    for (const [hints, room, form] of [
+      [TERM, 73, " ↑↓ select · ⏎ open · ⇥ switch · s profiles · r refresh · t interval: 1m · o repo · q close"],
+      [TERM, 72, " ↑↓ select · ⏎ open · t 1m · ⇥ switch · s profiles · r refresh · o repo · q close"],
+      [TERM, 27, " ↑↓ select · ⏎ open · t 1m · ⇥ switch · s profiles · r refresh · o repo · q close"],
+      [TERM, 26, " t 1m · ↑↓ select · ⏎ open · ⇥ switch · s profiles · r refresh · o repo · q close"],
+      [{ ...TERM, action: "resolve" }, 85, " ↑↓ select · ⏎ open · a resolve · ⇥ switch · s profiles · r refresh · t interval: 1m · o repo · q close"],
+      [{ ...TERM, action: "resolve" }, 84, " ↑↓ select · ⏎ open · a resolve · t 1m · ⇥ switch · s profiles · r refresh · o repo · q close"],
+      [{ ...TERM, action: "resolve" }, 39, " ↑↓ select · ⏎ open · a resolve · t 1m · ⇥ switch · s profiles · r refresh · o repo · q close"],
+      [{ ...TERM, action: "resolve" }, 38, " t 1m · ↑↓ select · ⏎ open · a resolve · ⇥ switch · s profiles · r refresh · o repo · q close"],
+    ]) assert.equal(M.keyHints({ ...hints, every: "1m", room }), form, `${room}`);
+    assert.equal(M.keyHints({ ...APP, action: "review", every: "manual", room: 3 }),
+      "t manual · ↑↓ select · ⏎ open · a review · ⇥ switch · s profiles · r refresh · o repo · esc close");
+    assert.equal(M.keyHints({ ...APP, every: "15m", room: 0 }), "t 15m · ↑↓ select · ⏎ open · ⇥ switch · s profiles · r refresh · o repo · esc close");
+    // Whatever the room, what shows of the line has t and the interval whole.
+    for (const choice of M.REFRESH_CHOICES) for (const action of [null, "resolve", "review"]) for (const hints of [TERM, APP]) {
+      for (let room = 10; room <= 130; room++) {
+        const shown = cut(M.keyHints({ ...hints, action, every: choice, room }), room);
+        assert.ok(tEnd(shown, choice) <= room, `${choice} ${action} ${room}: ${shown}`);
+      }
+    }
+  }
+});
+
+test("the app's key hints have room for t and the interval at 455, 340, 280 and 200 px, and all of them at 600 (#47)", async () => {
+  for (const M of [P, await esm()]) {
+    assert.deepEqual([600, 455, 368, 340, 280, 200, 28, 0].map(M.hintRoom), [93, 70, 55, 51, 41, 28, 0, 0]);
+    for (const px of [455, 340, 280, 200]) for (const choice of M.REFRESH_CHOICES) for (const action of [null, "resolve"]) {
+      const room = M.hintRoom(px), shown = cut(M.keyHints({ ...APP, action, every: choice, room }), room);
+      assert.ok(tEnd(shown, choice) <= room, `${px} px ${choice} ${action}: ${shown}`);
+    }
+    assert.equal(M.keyHints({ ...APP, action: "resolve", every: "1m", room: M.hintRoom(600) }),
+      "↑↓ select · ⏎ open · a resolve · ⇥ switch · s profiles · r refresh · t interval: 1m · o repo · esc close");
+  }
+});
+
 test("the CommonJS copy behaves as the app mod's module", async () => {
   const E = await esm();
   assert.deepEqual(Object.keys(E).sort(), Object.keys(P).sort());

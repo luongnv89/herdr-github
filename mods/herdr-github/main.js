@@ -14,7 +14,7 @@ import {
   HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, validateProfile, buildLaunch, storePath, emptyStore,
   parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, parseMccEnv,
   PROMPT_TOKEN, PROMPT_LABELS, validatePrompt, expandPrompt, setPrompt, resolvePrompt, profileChoices, findChoice,
-  parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice,
+  parseRefresh, nextRefresh, refreshDue, refreshNotice, keyHints, hintRoom,
 } from "./profiles.js";
 
 const MOD = "herdr-github";
@@ -924,7 +924,9 @@ export default class GitHub extends View {
     const title = !st ? this.repo?.name ?? this.forge?.name ?? "Pull requests and issues"
       : st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles";
     const hints = this.menu && !st ? "↑↓ choose · ⏎ start · esc cancel"
-      : !st ? `↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · t ${refreshLabel(this.every)} · o repo · esc close`
+      // t and the interval in use stay in view in a narrow panel too, where the header
+      // leaves out its interval button (#47).
+      : !st ? keyHints({ action: action?.key ?? null, every: this.every, close: "esc close", room: hintRoom(this.width ?? 368) })
       : st.mode === "edit" ? `↑↓ field · ${this.inputFocus === null ? "←→ choose" : "type to edit"} · ⏎ save · esc back`
         : this.inputFocus?.startsWith("prompt-") ? "↑↓ prompts and profiles · type to edit · ⏎ save · esc back"
         : st.confirm ? "y delete · any other key keeps it"

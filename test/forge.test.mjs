@@ -473,7 +473,8 @@ test("main.js keeps the interval, and t, the header's interval button and the in
   // Named for a screen reader, and left out of a narrow header, where t still works.
   assert.match(main, /\.accessibility_label\(`Refresh interval: \$\{this\.every\}\. Activate to change it\.`\)/);
   assert.match(main, /\.when\(!st && \(this\.width \?\? 368\) >= INTERVAL_MIN_W, \(el\) => el\.child\(this\.chip\(t, "hg-interval"/);
-  assert.match(main, /t \$\{refreshLabel\(this\.every\)\}/);
+  // Its key hints show the interval at any width, in room reckoned from the panel's (#47).
+  assert.match(main, /: !st \? keyHints\(\{ action: action\?\.key \?\? null, every: this\.every, close: "esc close", room: hintRoom\(this\.width \?\? 368\) \}\)/);
   // The refresh button still presses, in manual too.
   assert.match(main, /"Refresh", \(_e, cx\) => this\.refresh\(cx, false, true\)\)/);
 });

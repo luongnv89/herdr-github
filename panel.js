@@ -917,7 +917,8 @@ function draw() {
 
   // The menu's hints, shorter when the pane is too narrow for them, so esc stays in view.
   const menuKeys = width(MENU_KEYS) <= cols ? MENU_KEYS : MENU_KEYS_SHORT;
-  const keys = ui.menu ? menuKeys : ` ↑↓ select · ⏎ open · ${action ? `a ${action.key} · ` : ""}⇥ switch · s profiles · r refresh · t ${P.refreshLabel(ui.every)} · o repo · q close`;
+  // The list's, with t and the interval in use in view however narrow the pane (#47).
+  const keys = ui.menu ? menuKeys : P.keyHints({ action: action?.key ?? null, every: ui.every, close: "q close", lead: " ", room: cols });
   out.push(dim(fit(keys, cols)));
   paint(out, rows);
 }
