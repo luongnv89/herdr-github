@@ -9,6 +9,7 @@
 
 ### Changed
 
+- The key hints keep `t` and the refresh interval in view in a narrow pane (#47), in the terminal and in the Herdr app. Where `t interval: 1m` would be cut off, they show `t 1m` right after `⏎ open` (or the `a` key), or at the front of the line when even that doesn't fit; the hints after it may still be cut. In the app this applies wherever `t interval: …` would be cut off, the default panel width included, and keeps the interval in view below 340 pixels, where the panel leaves out the interval button. Panes wide enough for the whole `t interval: …` hint show the hints as before.
 - Pressing the refresh button or `r` again while a refresh runs, or holding `r`, no longer starts one refresh per press (#45), in the terminal and in the Herdr app. A press starts a new refresh at once when none runs, and replaces a running one only once it has had 3 seconds, so a burst of presses starts at most one refresh every 3 seconds, and the replaced refreshes' `git` and `gh` calls no longer pile up. A change of folder still replaces a running refresh at once.
 
 ### Fixed

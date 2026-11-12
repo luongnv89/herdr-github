@@ -1545,7 +1545,8 @@ test("at 28 and 30 cells the notice of a started OpenCode keeps its note whole",
       "(OpenCode ignores this profile's model and thinking level: it has no flag for them when it starts)";
     assert.ok(shows(lines, whole), `${cols}:\n${lines.join("\n")}`);
     for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
-    assert.match(lines[23], /^ ↑↓ select/);
+    // The list's key hints, t and the interval first in a pane this narrow (#47).
+    assert.match(lines[23], /^ t 1m · ↑↓ select/);
   }
 });
 
@@ -2365,6 +2366,30 @@ test("the refresh interval chosen is read back when the panel starts again; an u
   ui.every = P.DEFAULT_REFRESH;
   restore();
   assert.equal(ui.every, "1m");
+});
+
+test("in a narrow pane the key hints still show t and the interval whole, after ⏎ open or first (#47)", (t) => {
+  t.after(() => { ui.every = P.DEFAULT_REFRESH; });
+  const footer = (cols) => {
+    const lines = screenAt(cols, 24, draw);
+    for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    return lines[FOOTER];
+  };
+  setup("issues");
+  // As wide as all of them take: as they were, t and the interval after r refresh.
+  assert.equal(footer(73), " ↑↓ select · ⏎ open · ⇥ switch · s profiles · r refresh · t interval: 1m…");
+  // A cell less, and at 55: t and the bare interval after ⏎ open.
+  assert.equal(footer(72), " ↑↓ select · ⏎ open · t 1m · ⇥ switch · s profiles · r refresh · o repo…");
+  assert.equal(footer(55), " ↑↓ select · ⏎ open · t 1m · ⇥ switch · s profiles · r…");
+  assert.doesNotMatch(footer(55), /interval/);
+  ui.every = "manual";
+  assert.match(footer(55), /⏎ open · t manual · ⇥ switch/);
+  ui.every = "1m";
+  // With the a key at 55, and first when even that doesn't fit.
+  setupGitHub("issues");
+  assert.match(footer(55), /^ ↑↓ select · ⏎ open · a resolve · t 1m · ⇥ switch/);
+  assert.equal(footer(38), " t 1m · ↑↓ select · ⏎ open · a resolv…");
+  assert.match(footer(120), /a resolve · ⇥ switch · s profiles · r refresh · t interval: 1m · o repo · q close/);
 });
 
 test("the panel refreshes on its own at the chosen interval, and in manual never, only on r or a new folder (#44)", { timeout: 5000 }, async (t) => {
