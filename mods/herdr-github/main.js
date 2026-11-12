@@ -2,14 +2,15 @@
 // or `glab` (GitLab) on that space's machine: the Herdr app twin of the terminal
 // panel (panel.js). It follows the focused pane. Click a row, or select it and
 // press enter, to open it in your browser. On GitHub, each row's Resolve or Review
-// button starts an agent on it, as the action's agent profile says (the ⚙ view).
+// button starts an agent on it, as the action's agent profile says (the ⚙ view), and
+// each pull request's Merge button merges it, on a second press (#51).
 // The rules for rows, forges and agent actions live in ./forge.js, the profiles in
 // ./profiles.js (shared with the terminal panel); both are shared with the tests.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
 import { spaces, panes, terminals, focused, exec, hc, theme, layout, window, run, home, appHome, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
-import { LIMIT, IDD, ago, firstLine, ACTIONS, readRepo, refreshGate, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, unpickedNotice, isReadyToSend, nextNotice, keepsNotice, pathTo, shown } from "./forge.js";
+import { LIMIT, IDD, ago, firstLine, ACTIONS, readRepo, refreshGate, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, unpickedNotice, isReadyToSend, nextNotice, keepsNotice, pathTo, shown, MERGE_NAMES, mergeStrategy, mergeArgs, mergeGuard } from "./forge.js";
 import {
   HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, validateProfile, buildLaunch, storePath, emptyStore,
   parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, parseMccEnv,
@@ -33,6 +34,10 @@ const TEXT_FIELDS = ["name", "id", "model"];
 // What an action sends with no custom prompt, as Claude Code takes it.
 const DEFAULT_PROMPTS = Object.fromEntries(Object.values(ACTIONS).map((a) => [a.key, `/${a.skill} ${PROMPT_TOKEN}`]));
 const PROMPT_TIP = `A custom prompt replaces the IDD skill: it is sent as written to every harness, with ${PROMPT_TOKEN} as the number. Empty sends the default.`;
+// What a Merge press says when the repo allows no merge method gh can use (#51).
+const noMerge = (number) => `Can't merge #${number}: the repo allows no squash, merge commit or rebase, or gh didn't say which.`;
+// What the key hints' line says while a Merge press asks (#51), as the terminal's does.
+const askingHint = (number, strategy) => `Press Confirm merge #${number} to merge it (${MERGE_NAMES[strategy] ?? "?"}) · any other key or click cancels`;
 // How long a new agent may take to be ready for its prompt, such as while it asks
 // whether you trust the folder, as in the terminal panel. Clicks aren't held meanwhile.
 const ANSWER_MS = 300000;
@@ -91,9 +96,16 @@ export default class GitHub extends View {
     this.launches = 0;
     this.delivering = 0;
     // The profile menu of a Resolve or Review press, while it's open: { view, number,
-    // key, entries, sel, anchor }, anchor being "row" (under that row's button) or
-    // "header" (under the header).
+    // key, entries, sel, anchor }, anchor being "row" (under that row's button, when
+    // it was pressed) or "header" (under the header, for a and the commands: the
+    // selected row may be scrolled out of view, and the header never is).
     this.menu = null;
+    // A Merge press that only asked (#51): { number, root, head, notice }, the pull
+    // request whose button now reads Confirm merge, the repo it's in, its head commit
+    // as the list showed it then, and the notice that says so; null otherwise.
+    this.confirm = null;
+    // The pull requests merged here, kept out of a refresh that began before (#51).
+    this.merges = mergeGuard();
     // The profiles view (⚙): null while the rows show.
     this.settings = null;
     // Each action's custom prompt as last read, for the buttons' tooltips.
@@ -141,6 +153,8 @@ export default class GitHub extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
+        // A command, like a key, takes back a Merge press that only asked (#51).
+        this.cancelMerge(cx);
         if (c === "focus") this.handle.focus();
         else if (c === "refresh") this.refresh(cx, false, true);
         else if (c === "interval") this.cycleRefresh(cx);
@@ -170,8 +184,12 @@ export default class GitHub extends View {
     // otherwise keep the spinner on and stop every later one, for good.
     const n = this.gate.begin(Date.now(), { press: force, moved });
     if (n === null) return;
+    // Numbered for the merge guard: a pull request merged after this began stays out of its answer (#51).
+    const began = this.merges.begin();
     if (moved) {
-      Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 } });
+      // A Merge press that asked was for the old folder's repo: taken back (#51). Not
+      // by cancelMerge: from render, cx.notify() isn't allowed.
+      Object.assign(this, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, confirm: null });
     }
     this.fetchedAt = Date.now();
     if (!loc?.cwd) {
@@ -187,6 +205,7 @@ export default class GitHub extends View {
       try {
         const found = await readRepo({ cwd, on, exec: (cmd, args, opts) => exec(cmd, args, { ...opts, on }), forges: this.forges, current });
         if (!found || !current()) return;
+        if (found.fetched) found.prs = this.merges.filter(found.prs, found.root, began);
         Object.assign(this, found);
         if (found.fetched) for (const v of ["prs", "issues"]) this.sel[v] = Math.min(this.sel[v], Math.max(0, this[v].length - 1));
       } finally {
@@ -237,14 +256,17 @@ export default class GitHub extends View {
     cx.notify();
   }
 
-  // A Resolve or Review button, the header's or a row's, and the a key: a new pane
-  // to the right of the one you're in, in the same tab (as Cmd+D splits), runs the agent of the action's profile
-  // in the repo's folder, with the skill and the number as its first message. With
-  // only the default profile it starts at once; with more, a menu of them opens under
-  // the button pressed (`anchor`: "row" or "header"), and the one you choose starts.
+  // A row's Resolve or Review button, the a key and the commands, for the selected
+  // row: a new pane to the right of the one you're in, in the same tab (as Cmd+D
+  // splits), runs the agent of the action's profile in the repo's folder, with the
+  // skill and the number as its first message. With only the default profile it
+  // starts at once; with more, a menu of them opens (`anchor`: "row", under the
+  // button pressed, or "header", under the header), and the one you choose starts.
   // One launch, or one menu, at a time until its pane is open; the prompt is sent
   // after that.
   act(cx, view = this.view, index = this.sel[view], anchor = "row") {
+    // Its button stops the press, so the panel's own doesn't take back a Merge press that asked (#51).
+    this.cancelMerge(cx);
     const action = actionFor(this.forge, view, this.items(view)[index]);
     if (!action || this.acting || this.menu) return;
     this.sel[view] = index;
@@ -281,6 +303,84 @@ export default class GitHub extends View {
         await this.launch(action, profile, resolvePrompt(store, m.key), cx);
       } catch (e) { this.say("error", `Can't start an agent: ${e?.message ?? e}`); }
       finally { this.acting = false; cx.notify(); }
+    });
+    cx.notify();
+  }
+
+  // A pull request's Merge button (#51). The first press only asks: the button reads
+  // Confirm merge #N, and the key hints' line says pressing it merges. A second press on that
+  // button merges that pull request, found again by its number, so only that one is
+  // ever merged, and only in the repo the first press was in. Any other key, command
+  // or click takes the question back.
+  pressMerge(cx, number) {
+    if (this.acting || this.menu) return;
+    const index = this.prs.findIndex((p) => p.number === number);
+    if (index < 0 || !actionFor(this.forge, "prs", this.prs[index])) return;
+    this.sel.prs = index;
+    const armed = this.armedFor(number);
+    if (armed) {
+      this.confirm = null;
+      // The head the first press saw: a push since then makes GitHub refuse.
+      return this.merge(cx, number, armed.head);
+    }
+    const strategy = mergeStrategy(this.repo);
+    if (!strategy) {
+      this.confirm = null;
+      // Pressing it is seen as reading the last notice, as a launch is.
+      this.notice = null;
+      this.say("error", noMerge(number));
+    } else {
+      // The first press leaves the notice as it is: a notice shown, gone or changed
+      // would change the list's height under the button, and the second press would
+      // land elsewhere. The key hints' line, always there and as tall, asks instead.
+      this.confirm = { number, root: this.root, head: this.prs[index].head ?? null };
+    }
+    cx.notify();
+  }
+
+  // The Merge press that asked about pull request `number`, in the repo on screen;
+  // null when there's none. A press in another repo never counts here.
+  armedFor(number) { return this.confirm?.number === number && this.confirm.root === this.root ? this.confirm : null; }
+
+  // Takes back a Merge press that only asked.
+  cancelMerge(cx) {
+    if (!this.confirm) return;
+    this.confirm = null;
+    cx.notify();
+  }
+
+  // The second press: `gh pr merge` on the repo's machine, by the method the repo
+  // allows, only while the head is `head`, the commit the list showed at the first
+  // press. It holds this.acting as a launch does, so its progress stays up and
+  // nothing else starts meanwhile.
+  merge(cx, number, head) {
+    const pr = this.prs.find((p) => p.number === number), root = this.root, on = this.loc?.on ?? null, strategy = mergeStrategy(this.repo);
+    if (!pr || this.forge?.id !== "github" || !root) { this.say("error", `The pull request #${number} isn't in the list any more, so nothing was merged.`); return cx.notify(); }
+    if (!strategy) { this.say("error", noMerge(number)); return cx.notify(); }
+    const args = mergeArgs(number, strategy, head);
+    this.acting = true;
+    this.say("info", `Merging #${number}…`);
+    cx.spawn(async (cx) => {
+      let merged = false;
+      try {
+        let r;
+        try { r = await exec("gh", args, { cwd: root, on }); }
+        catch (e) { return this.say("error", `Can't merge #${number}: ${cantRun("gh", e)}`); }
+        if (r.code !== 0) return this.say("error", `Can't merge #${number}: ${firstLine(r.stderr) || firstLine(r.stdout) || `gh exited ${r.code}`}`);
+        // Out of the list now, and out of a refresh that was already running.
+        this.merges.add(root, number);
+        if (this.root === root) {
+          this.prs = this.prs.filter((p) => p.number !== number);
+          this.sel.prs = Math.min(this.sel.prs, Math.max(0, this.prs.length - 1));
+        }
+        this.say("ok", `Merged #${number}`);
+        merged = true;
+      } catch (e) { this.say("error", `Can't merge #${number}: ${e?.message ?? e}`); }
+      finally {
+        this.acting = false;
+        if (merged) this.refresh(cx, false, true);
+        cx.notify();
+      }
     });
     cx.notify();
   }
@@ -681,8 +781,10 @@ export default class GitHub extends View {
       cx.stop_propagation();
       return;
     }
-    // Any key clears a notice, except the progress of a launch or of a prompt not yet sent.
+    // Any key clears a notice, except the progress of a launch, a merge or a prompt not yet sent.
     if (this.notice && !keepsNotice(this.notice, this.acting || this.delivering > 0)) this.notice = null;
+    // And takes back a Merge press that only asked (#51).
+    this.cancelMerge(cx);
     if (k === "up" || k === "k") this.move(-1, cx);
     else if (k === "down" || k === "j") this.move(1, cx);
     else if (k === "pageup") this.move(-5, cx);
@@ -731,7 +833,8 @@ export default class GitHub extends View {
   }
 
   // Title up to 2 lines, description up to 3, then the meta line, and on GitHub the
-  // row's Resolve or Review button. 46 px of the panel's width go to its border, the
+  // row's Resolve or Review button, with a pull request's Merge button beside it on
+  // the same line (#51). 46 px of the panel's width go to its border, the
   // list's and row's padding, and the icon column.
   // With the profile menu open under its button, the row is that much taller.
   layoutRow(item, action = null, menu = null) {
@@ -782,17 +885,32 @@ export default class GitHub extends View {
         .child(div().flex_1().min_w(0).truncate().child(meta))
         .children(trailing))
       // The row's own button acts on this row; its press and click stop here, so the
-      // row's open-in-the-browser click doesn't run as well.
-      .when(Boolean(action), (el) => el.child(h_flex().h(ACT_H).pl(20).items_center()
+      // row's open-in-the-browser click doesn't run as well. The line is cut, never
+      // wrapped: the row's height counts one line of buttons.
+      .when(Boolean(action), (el) => el.child(h_flex().h(ACT_H).pl(20).gap(6).items_center().overflow_hidden()
         .child(div().id(`hg-${view}-act-${item.number}`).h(ACT_H).px(8).flex_none().flex().items_center().rounded(6).cursor_pointer().text_size(11.5)
           .border_1().border_color(t.border).bg(this.acting ? t.raised : t.background).text_color(this.acting ? t.dim : t.foreground)
           .hover((s) => s.bg(t.hover))
           .tooltip(this.actTip(action))
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => { cx.stop_propagation(); this.handle.focus(); if (!this.closeMenu(cx)) this.act(cx, view, index, "row"); })
-          .child(`${action.label} #${action.number}`))))
+          .child(`${action.label} #${action.number}`))
+        .when(view === "prs", (el) => el.child(this.mergeChip(t, item.number)))))
       // Its profile menu, under its button.
       .when(Boolean(menu), (el) => el.child(div().pl(20).flex_none().child(this.menuList(t))));
+  }
+
+  // A pull request's Merge button (#51), beside its Review button. Its press and
+  // click stop here, as the Review button's do, so the row doesn't open as well.
+  mergeChip(t, number) {
+    const armed = Boolean(this.armedFor(number)), strategy = mergeStrategy(this.repo);
+    return div().id(`hg-prs-merge-${number}`).h(ACT_H).px(8).flex_none().flex().items_center().rounded(6).cursor_pointer().text_size(11.5)
+      .border_1().border_color(armed ? t.ansi1 : t.border).bg(this.acting ? t.raised : t.background).text_color(this.acting ? t.dim : armed ? t.ansi1 : t.foreground)
+      .hover((s) => s.bg(t.hover))
+      .tooltip(strategy ? `Merge #${number} with gh (${MERGE_NAMES[strategy]}), only while its head is the commit listed at the first press. Press it twice: the first press asks.` : noMerge(number))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); this.handle.focus(); if (!this.closeMenu(cx)) this.pressMerge(cx, number); })
+      .child(armed ? `Confirm merge #${number}` : `Merge #${number}`);
   }
 
   prRow(t, p, i) {
@@ -936,6 +1054,8 @@ export default class GitHub extends View {
     const tones = { info: t.blocked, ok: t.ansi2, error: t.ansi1 };
     const title = !st ? this.repo?.name ?? this.forge?.name ?? "Pull requests and issues"
       : st.mode === "edit" ? (st.form.prev ? `Edit profile ${st.form.prev}` : "New profile") : "Agent profiles";
+    // A Merge press that asked says so on the key hints' line, in the hints' place (#51).
+    const armed = !this.menu && !st && this.confirm ? this.armedFor(this.confirm.number) : null;
     const hints = this.menu && !st ? "↑↓ choose · ⏎ start · esc cancel"
       // t and the interval in use stay in view in a narrow panel too, where the header
       // leaves out its interval button (#47).
@@ -951,16 +1071,15 @@ export default class GitHub extends View {
     ] : st ? st.warnings.map((w) => [w, t.blocked]) : [];
 
     return v_flex().id("herdr-github").track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx))
-      .on_mouse_down("left", () => this.handle.focus())
+      // A press anywhere takes back a Merge press that only asked (#51), except on the
+      // Merge button itself, whose press stops before it gets here.
+      .on_mouse_down("left", (_e, cx) => { this.handle.focus(); this.cancelMerge(cx); })
       .on_size_change((size, cx) => { if (size.width !== this.width) { this.width = size.width; cx.notify(); } })
       .size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(focused ? t.accent : t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().pl(14).pr(8).gap(6).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(title))
         .when(this.loading && !st, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
-        .when(Boolean(action), (el) => el.child(div().id("hg-act").h(24).px(8).flex_none().flex().items_center().rounded(6).cursor_pointer().text_size(11.5)
-          .bg(this.acting ? t.raised : t.solid).text_color(this.acting ? t.dim : t.solid_foreground)
-          .tooltip(this.actTip(action))
-          .on_click((_e, cx) => { cx.stop_propagation(); if (!this.closeMenu(cx)) this.act(cx, view, this.sel[view], "header"); }).child(`${action.label} #${action.number}`)))
+        // Resolve and Review are the rows' own buttons (#51); a and the commands press the selected row's.
         .child(this.iconButton(t, "hg-profiles", "gear", st ? "Back to the list" : "Agent profiles", (_e, cx) => (st ? this.closeSettings(cx) : this.openSettings(cx)), Boolean(st)))
         // How often the lists refresh (#44): a click steps to the next interval, or manual.
         .when(!st && (this.width ?? 368) >= INTERVAL_MIN_W, (el) => el.child(this.chip(t, "hg-interval", this.every === "manual" ? "Manual" : this.every, false,
@@ -968,7 +1087,7 @@ export default class GitHub extends View {
           .accessibility_label(`Refresh interval: ${this.every}. Activate to change it.`)))
         .when(!st, (el) => el.child(this.iconButton(t, "hg-refresh", "refresh", "Refresh", (_e, cx) => this.refresh(cx, false, true))))
         .when(!st && Boolean(this.repo?.url), (el) => el.child(this.iconButton(t, "hg-open", "external", `Open the repo on ${this.forge?.name ?? "the web"}`, (_e, cx) => this.openUrl(this.repo.url, cx)))))
-      // The profile menu of the header's button (or the a key), under the header.
+      // The profile menu of the a key and the commands, under the header.
       .when(!st && this.menu?.anchor === "header", (el) => el.child(h_flex().flex_none().px(8).py(6).justify_end().border_b(1).border_color(t.border)
         .child(this.menuList(t))))
       .when(Boolean(st), (el) => el.child(st.mode === "edit" ? this.profileForm(t) : this.profileList(t))
@@ -993,8 +1112,8 @@ export default class GitHub extends View {
           .when(Boolean(this.notice.url), (el) => el.child(div().id("hg-notice-url").text_color(t.accent).cursor_pointer().truncate()
             .on_click((_e, cx) => { if (!this.closeMenu(cx)) this.openUrl(this.notice.url, cx); }).child(this.notice.url))))))
       // The profiles view's keys wrap onto a second line rather than being cut.
-      .child(div().flex_none().min_h(24).px(14).flex().items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(focused ? t.muted : t.dim)
+      .child(div().flex_none().min_h(24).px(14).flex().items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(armed ? t.blocked : focused ? t.muted : t.dim)
         .when(!st, (el) => el.h(24).truncate()).when(Boolean(st), (el) => el.py(4))
-        .child(focused ? hints : "Click here for keys"));
+        .child(armed ? askingHint(armed.number, mergeStrategy(this.repo)) : focused ? hints : "Click here for keys"));
   }
 }

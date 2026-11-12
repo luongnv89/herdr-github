@@ -30,6 +30,8 @@ let mcc = () => ({ code: 1, stderr: "no mcc in tests" });
 // git answers as not a repository, unless a test scripts it. A call held returns no
 // answer until the test answers it from held, as a refresh that never ends (#42).
 let git = () => ({ code: 1, stderr: "no git in tests" });
+// gh answers as not installed, unless a test scripts it: a Merge press runs it (#51).
+let gh = () => ({ code: 1, stderr: "no gh in tests" });
 let hold = () => false;
 const held = [];
 const answer = (cb, r) => cb(r.error ?? (r.code ? Object.assign(new Error("exit"), { code: r.code }) : null), r.stdout ?? "", r.stderr ?? "");
@@ -38,7 +40,7 @@ require("node:child_process").execFile = (cmd, args, opts, cb) => {
   calls.push([name, ...args]);
   callOpts.push(opts);
   if (hold(name, args)) { held.push({ name, args, answer: (r) => answer(cb, r) }); return; }
-  const r = name === "herdr" ? herdr(args) : name === "mcc" ? mcc(args) : name === "git" ? git(args) : { code: 1, stderr: `no ${name} in tests` };
+  const r = name === "herdr" ? herdr(args) : name === "mcc" ? mcc(args) : name === "git" ? git(args) : name === "gh" ? gh(args) : { code: 1, stderr: `no ${name} in tests` };
   setImmediate(() => answer(cb, r));
 };
 // The panel keeps its view and refresh interval in a state folder of its own here,
@@ -47,7 +49,7 @@ const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-github-state-"));
 process.on("exit", () => fs.rmSync(stateDir, { recursive: true, force: true }));
 Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1", HERDR_PLUGIN_STATE_DIR: stateDir });
 const P = require("../profiles.cjs");
-const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow, refresh, REFRESH, restore, poll, STATE, readCommit, forgetCommit } = require("../panel.js");
+const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow, refresh, REFRESH, restore, poll, STATE, readCommit, forgetCommit, pressMerge, mergeStrategy, mergeArgs } = require("../panel.js");
 // A launch through mcc polls herdr for Claude Code in the new pane: quickly, here.
 Object.assign(TIMING, { pollMs: 1, appearMs: 40 });
 
@@ -178,12 +180,17 @@ test("forgesFor picks by host name, and tries both for a self-hosted one", () =>
 
 test("GitHub JSON maps to the row shape", () => {
   const { github } = FORGES;
-  assert.deepEqual(github.repo({ nameWithOwner: "o/p", url: "https://github.com/o/p" }), { name: "o/p", url: "https://github.com/o/p" });
+  // With the merge methods the repo allows, and each pull request's head commit, for its Merge button (#51).
+  assert.deepEqual(github.repo({ nameWithOwner: "o/p", url: "https://github.com/o/p", squashMergeAllowed: false, mergeCommitAllowed: true, rebaseMergeAllowed: false }),
+    { name: "o/p", url: "https://github.com/o/p", merges: { squash: false, merge: true, rebase: false } });
+  assert.ok(github.repoArgs.at(-1).split(",").includes("squashMergeAllowed"));
+  assert.ok(github.prArgs.at(-1).split(",").includes("headRefOid"));
+  const head = "a".repeat(40);
   const p = github.toPr({
-    number: 3, title: "Fix", body: "## Why\nBecause", author: { login: "ann" }, isDraft: true, headRefName: "fix",
+    number: 3, title: "Fix", body: "## Why\nBecause", author: { login: "ann" }, isDraft: true, headRefName: "fix", headRefOid: head,
     updatedAt: "2026-01-01T00:00:00Z", url: "u", reviewDecision: "CHANGES_REQUESTED", statusCheckRollup: [{ state: "PENDING" }],
   });
-  assert.deepEqual(p, { ref: "#3", number: 3, title: "Fix", body: "Because", author: "ann", branch: "fix", draft: true, review: "changes", checks: "pending", updatedAt: "2026-01-01T00:00:00Z", url: "u" });
+  assert.deepEqual(p, { ref: "#3", number: 3, title: "Fix", body: "Because", author: "ann", branch: "fix", head, draft: true, review: "changes", checks: "pending", updatedAt: "2026-01-01T00:00:00Z", url: "u" });
   const i = github.toIssue({ number: 4, title: "Bug", body: "", author: { login: "ann" }, labels: [{ name: "bug", color: "d73a4a" }], updatedAt: "t", url: "u" });
   assert.deepEqual(i.labels, [{ name: "bug", color: "d73a4a" }]);
   assert.equal(i.ref, "#4");
@@ -245,7 +252,7 @@ function setup(view) {
   Object.assign(ui, {
     view, prs: items("pull"), issues: items("issues"), errors: {}, error: null, repo: { name: "o/p", url: "https://x/o/p" },
     loading: false, fetched: true, follow: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, notice: null,
-    forge: null, root: null, settings: null, acting: null, menu: null,
+    forge: null, root: null, settings: null, acting: null, menu: null, confirm: null,
   });
   follow("w1:p1");
   opened.length = 0;
@@ -581,7 +588,6 @@ async function screenAsync(fn, columns = 60) {
   for (const m of frame.matchAll(/\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K/g)) lines[m[1] - 1] = strip(m[2]);
   return lines;
 }
-const buttonAt = (lines, label) => lines[0].indexOf(label);
 // With more than one profile, a press opens the profile menu: these press, check that
 // it opened, and press enter on the profile it highlights, the action's own.
 function startWithMenu() {
@@ -595,14 +601,17 @@ function clickWithMenu(x, y) {
   onInput(Buffer.from("\r"));
 }
 
-test("Resolve shows for the selected issue and Review for the selected pull request, on GitHub only", () => {
+test("the header has no Resolve or Review button; the rows do, and a acts on the selected one, on GitHub only (#51)", () => {
   let lines = setupGitHub("issues");
-  assert.match(lines[0], /Resolve #12 {2}⚙ {2}↻ {2}↗ $/);
-  assert.doesNotMatch(lines[0], /Review/);
+  // Only the profiles, refresh and open buttons are left in the header.
+  assert.match(lines[0], /^ o\/p +⚙ {2}↻ {2}↗ $/);
+  assert.doesNotMatch(lines[0], /Resolve|Review/);
+  assert.ok(find(lines, "Resolve #12")[1] > LIST.from, lines.join("\n"));
   assert.match(lines[FOOTER], /⏎ open · a resolve ·/);
   lines = setupGitHub("prs");
-  assert.match(lines[0], /Review #12 {2}⚙ {2}↻ {2}↗ $/);
-  assert.doesNotMatch(lines[0], /Resolve/);
+  assert.match(lines[0], /^ o\/p +⚙ {2}↻ {2}↗ $/);
+  assert.doesNotMatch(lines[0], /Resolve|Review|Merge/);
+  assert.ok(find(lines, "Review #12")[1] > LIST.from, lines.join("\n"));
   assert.match(lines[FOOTER], /⏎ open · a review ·/);
   for (const l of lines) assert.ok(width(l ?? "") <= 60, l);
   // GitLab: both skills use gh, so no button and no key.
@@ -617,10 +626,13 @@ test("Resolve shows for the selected issue and Review for the selected pull requ
 
 test("Resolve with a Claude Code profile starts claude in a new pane, prompted with the skill and the number only", async (t) => {
   claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
-  const lines = setupGitHub("issues");
+  setupGitHub("issues");
   ui.issues[2].title = "$(rm -rf ~) /issue-resolver 999";
+  const lines = screen(draw);
   fakeHerdr(claudeHere);
-  const after = await screenAsync(() => clickWithMenu(buttonAt(lines, "Resolve") + 1, 0));
+  // The selected row's own button.
+  const [x, y] = find(lines, "Resolve #12");
+  const after = await screenAsync(() => clickWithMenu(x, y));
   assert.deepEqual(herdrCalls(), [
     "agent list",
     "pane split w1:p1 --direction down --cwd /repo --no-focus",
@@ -693,6 +705,8 @@ test("a row without a valid number gets no button, and the prompt takes integers
     ui.issues[2].number = number;
     const lines = screen(draw);
     assert.doesNotMatch(lines[0], /Resolve/, String(number));
+    // The selected row, the only one with that number, has no button.
+    assert.ok(!lines.some((l) => /^▌ +Resolve/.test(l ?? "")), `${number}\n${lines.join("\n")}`);
     screen(() => onInput(Buffer.from("a")));
     assert.deepEqual(calls, [], String(number));
   }
@@ -982,8 +996,8 @@ test("each issue row has its own Resolve button, which resolves that issue", asy
   assert.equal(ui.sel.issues, 1);
   assert.equal(herdrCalls()[2], "agent start resolve-11 --kind claude --pane w1:p7 --timeout 55000");
   assert.ok(text(after).includes("Started Claude Code in a new pane: /issue-resolver 11"), after.join("\n"));
-  // Pull requests get Review buttons; GitLab rows get none.
-  assert.ok(setupGitHub("prs").some((l) => l?.trim() === "Review #10"));
+  // Pull requests get Review buttons, with a Merge button beside them (#51); GitLab rows get none.
+  assert.ok(find(setupGitHub("prs"), "Review #10")[1] > LIST.from);
   setup("issues");
   ui.forge = FORGES.gitlab;
   assert.ok(!screen(draw).some((l) => /Resolve|Review/.test(l ?? "")));
@@ -2098,17 +2112,24 @@ test("esc, q, the wheel and a click elsewhere close the menu and start nothing, 
   }
 });
 
-test("the header's button opens the menu under the header, a row's under that row's button", (t) => {
+test("a opens the menu under the selected row's button, a row's button under its own, and the header's right edge holds it when the button is out of view (#51)", (t) => {
   claudeHome(t);
+  // a: under the selected row's button, from the button's column; the header has none.
   let lines = setupGitHub("issues");
-  const bx = buttonAt(lines, "Resolve");
-  lines = screen(() => click(bx + 1, 0));
-  assert.equal(ui.menu?.anchor, "header");
-  assert.match(lines[0], /Resolve #12/);
+  const [sx, sy] = find(lines, "Resolve #12");
+  lines = screen(() => onInput(Buffer.from("a")));
+  assert.equal(ui.menu?.anchor, "row");
+  assert.equal(ui.menu.number, 12);
+  assert.doesNotMatch(lines[0], /Resolve/);
+  assert.equal(lines[sy + 1].indexOf("┌ Resolve #12 with"), sx - 1, lines.join("\n"));
+  // A pane too short for the whole selected row: its button is out of view, so the
+  // menu opens under the header, at the right edge.
+  setupGitHub("issues");
+  lines = screenAt(60, 8, () => onInput(Buffer.from("a")));
+  assert.ok(!lines.some((l) => /^▌ +Resolve #12/.test(l ?? "")), lines.join("\n"));
   assert.match(lines[1], /^ *┌ Resolve #12 with ─*┐$/);
-  // At the right edge, as near the button as it fits.
   assert.equal(lines[1].length, 60, lines.join("\n"));
-  assert.ok(lines[1].indexOf("┌") <= bx, lines.join("\n"));
+  for (const l of lines) assert.ok(width(l ?? "") <= 60, l);
   // A row's: right under its button, from the button's column.
   lines = setupGitHub("issues");
   const [x, y] = resolveButton(lines, 11);
@@ -2171,7 +2192,8 @@ test("while a launch is under way, a and the buttons open no menu", (t) => {
   ui.acting = new Promise(() => {});
   try {
     const [x, y] = resolveButton(lines, 11);
-    for (const press of [() => onInput(Buffer.from("a")), () => click(buttonAt(lines, "Resolve") + 1, 0), () => click(x, y)]) {
+    const [sx, sy] = find(lines, "Resolve #12");
+    for (const press of [() => onInput(Buffer.from("a")), () => click(sx, sy), () => click(x, y)]) {
       screen(press);
       assert.equal(ui.menu, null);
     }
@@ -2182,13 +2204,15 @@ test("while a launch is under way, a and the buttons open no menu", (t) => {
 test("at 28, 30, 40 and 60 cells the menu fits, with a 40-character name, and its profiles take a click", async (t) => {
   const dir = home(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
   useProfiles(dir, [{ id: "long", name: LONG_NAME, harness: "pi" }], {});
-  for (const cols of [28, 30, 40, 60]) for (const anchor of ["row", "header"]) {
+  // From a, and from the selected row's button: the header has none (#51).
+  for (const cols of [28, 30, 40, 60]) for (const how of ["a", "button"]) {
     let lines = setupGitHub("issues");
     fakeHerdr(claudeHere);
     lines = screenAt(cols, 24, draw);
-    lines = screenAt(cols, 24, () => (anchor === "row" ? onInput(Buffer.from("a")) : click(lines[0].indexOf("Resolve") + 1, 0)));
-    const where = `${cols} ${anchor}:\n${lines.join("\n")}`;
-    assert.equal(ui.menu?.anchor, anchor, where);
+    const [bx, by] = find(lines, "Resolve #12");
+    lines = screenAt(cols, 24, () => (how === "a" ? onInput(Buffer.from("a")) : click(bx, by)));
+    const where = `${cols} ${how}:\n${lines.join("\n")}`;
+    assert.equal(ui.menu?.anchor, "row", where);
     for (const l of lines) assert.ok(width(l ?? "") <= cols, `${where}\n${l}`);
     // The full key hints when they fit, else the short ones: esc cancel stays in view.
     assert.match(lines[FOOTER], cols >= 33 ? /^ ↑↓ choose · ⏎ start · esc cancel/ : /^ ↑↓ · ⏎ start · esc cancel *$/, where);
@@ -2522,4 +2546,410 @@ test("the panel refreshes on its own at the chosen interval, and in manual never
     assert.equal(gitCalls(), before + 1);
     assert.notEqual(ui.context, "/somewhere/else");
   });
+});
+
+// ── Merging a pull request (#51) ────────────────────────────────────────────
+
+const ALL_MERGES = { squash: true, merge: true, rebase: true };
+// A pull request's head commit: 40 hex digits, its number's two repeated.
+const headOf = (n) => String(n).padStart(2, "0").repeat(20);
+const ghCalls = () => calls.filter((c) => c[0] === "gh").map((c) => c.slice(1));
+const mergeCalls = () => ghCalls().filter((c) => c[0] === "pr" && c[1] === "merge");
+// A press and its release at a cell, as herdr sends a click with mouse capture on.
+const pressAt = (x, y) => `\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`;
+const pressButton = (lines, label) => { const [x, y] = find(lines, label); assert.ok(y > 0, `${label}\n${lines.join("\n")}`); onInput(Buffer.from(pressAt(x, y))); };
+
+// A GitHub repo at /repo whose open pull requests are `open`, read through git and gh
+// as a refresh reads them. gh merges one by taking it out of the list, or answers
+// the merge with `reply`. Restored when the test ends.
+function fakeGitHub(t, { open = [10, 11, 12, 13, 14], merges = ALL_MERGES, reply = { code: 0, stdout: "" } } = {}) {
+  const saved = { git, gh, grace: REFRESH.graceMs };
+  t.after(() => { ({ git, gh } = saved); REFRESH.graceMs = saved.grace; hold = () => false; held.length = 0; });
+  // heads: a pull request's head commit, when a test pushed to it.
+  const state = { open: open.slice(), heads: {} };
+  const list = () => JSON.stringify(state.open.map((n) => ({
+    number: n, title: `Title ${n}`, body: `Body ${n}`, author: { login: "a" }, isDraft: false, headRefName: `b${n}`, headRefOid: n in state.heads ? state.heads[n] : headOf(n),
+    updatedAt: iso(60), url: `https://x/pull/${n}`, reviewDecision: "", statusCheckRollup: [],
+  })));
+  state.list = list;
+  git = (args) => args[0] === "rev-parse" ? { code: 0, stdout: "/repo\n" }
+    : args[0] === "remote" ? { code: 0, stdout: "origin\tgit@github.com:o/p.git (fetch)\n" } : { code: 1, stderr: "no" };
+  gh = (args) => {
+    if (args[0] === "repo") return { code: 0, stdout: JSON.stringify({ nameWithOwner: "o/p", url: "https://x/o/p", squashMergeAllowed: merges.squash, mergeCommitAllowed: merges.merge, rebaseMergeAllowed: merges.rebase }) };
+    if (args[0] === "pr" && args[1] === "list") return { code: 0, stdout: list() };
+    if (args[0] === "pr" && args[1] === "merge") {
+      if (reply.code === 0) state.open = state.open.filter((n) => n !== Number(args[2]));
+      return reply;
+    }
+    if (args[0] === "issue") return { code: 0, stdout: "[]" };
+    return { code: 1, stderr: "no" };
+  };
+  return state;
+}
+
+// The panel on that repo's pull requests, read by a refresh, with nothing held.
+async function loadGitHub(t, options) {
+  const state = fakeGitHub(t, options);
+  setup("prs");
+  REFRESH.graceMs = 0;
+  await quietly(async () => { await refresh(true); await settle(); });
+  assert.equal(ui.forge, FORGES.github);
+  assert.ok(ui.prs.length > 0, ui.error ?? "no pull requests");
+  calls.length = 0;
+  callOpts.length = 0;
+  return { state, lines: screen(draw) };
+}
+
+test("every GitHub pull request row shows a Merge button beside its Review button; issues and GitLab rows show none (#51)", async (t) => {
+  await loadGitHub(t, { open: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19] });
+  // Tall enough for every row.
+  let lines = screenAt(60, 80, draw);
+  for (const p of ui.prs) {
+    const [rx, ry] = find(lines, `Review #${p.number}`), [mx, my] = find(lines, `Merge #${p.number}`);
+    assert.ok(ry > LIST.from, `#${p.number}\n${lines.join("\n")}`);
+    assert.equal(my, ry, `#${p.number}: Merge sits on the Review button's line`);
+    assert.ok(mx > rx + `Review #${p.number}`.length, lines.join("\n"));
+  }
+  // In a narrow pane the Merge button has a line of its own, under Review, asking or not.
+  for (const cols of [28, 30, 40, 60]) {
+    for (const armed of [null, { number: 10, root: ui.root, head: headOf(10) }]) {
+      ui.confirm = armed;
+      lines = screenAt(cols, 80, draw);
+      for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+      const [, ry] = find(lines, "Review #10"), [, my] = find(lines, armed ? "Confirm merge #10" : "Merge #10");
+      assert.equal(my, cols >= 40 ? ry : ry + 1, `${cols}\n${lines.join("\n")}`);
+    }
+  }
+  ui.confirm = null;
+  // Issues have no Merge button, nor do GitLab's merge requests.
+  assert.ok(!setupGitHub("issues").some((l) => /Merge/.test(l ?? "")));
+  setupGitHub("prs");
+  ui.forge = FORGES.gitlab;
+  assert.ok(!screen(draw).some((l) => /Merge #|Review #/.test(l ?? "")));
+});
+
+test("a Merge press only asks: the button reads Confirm merge where Merge was, the key hints' line says so, nothing else moves, and gh merges nothing (#51)", async (t) => {
+  const { lines } = await loadGitHub(t);
+  const [x, y] = find(lines, "Merge #11"), sel = ui.sel.prs, top = ui.top.prs;
+  let after;
+  await quietly(async () => { after = screen(() => pressButton(lines, "Merge #11")); });
+  assert.deepEqual(mergeCalls(), []);
+  assert.equal(ui.acting, null);
+  assert.equal(ui.confirm?.number, 11);
+  // Nothing else moved: not the selection, the scroll or the notice (#51 F2).
+  assert.equal(ui.sel.prs, sel);
+  assert.equal(ui.top.prs, top);
+  assert.equal(ui.notice, null);
+  assert.deepEqual(find(after, "Confirm merge #11"), [x, y], after.join("\n"));
+  for (let r = 0; r < FOOTER; r++) if (r !== y) assert.equal(after[r], lines[r], `line ${r}\n${after.join("\n")}`);
+  assert.ok(!after.some((l) => /Confirm merge #1[^1]/.test(l ?? "")), after.join("\n"));
+  // The key hints' line asks instead, whole in a wider pane.
+  assert.ok(after[FOOTER].startsWith(" Press Confirm merge #11 to merge it (squash)"), after[FOOTER]);
+  const wide = screenAt(100, 24, draw);
+  assert.equal(wide[23], " Press Confirm merge #11 to merge it (squash) · anything else cancels");
+});
+
+test("a second press on the very cell the first one used merges, whichever row was selected and wherever the row sits (#51)", async (t) => {
+  // The lowest Merge button on the screen: [x, y, number].
+  const lowest = (lines) => {
+    const y = lines.findLastIndex((l) => / Merge #\d+ /.test(l ?? "")), n = Number(lines[y].match(/ Merge #(\d+) /)[1]);
+    return [lines[y].indexOf(`Merge #${n}`), y, n];
+  };
+  const cases = [
+    // #10 is selected, and shows its URL line above #12.
+    { cols: 60, rows: 24, pick: (lines) => [...find(lines, "Merge #12"), 12] },
+    // The armed row's buttons are on the list's last line.
+    { cols: 60, rows: 25, pick: lowest, last: true },
+    // The list is scrolled to its end, with a notice under it.
+    { cols: 60, rows: 24, pick: lowest, before: () => { onInput(Buffer.from("G")); ui.notice = { tone: "ok", text: "Merged #9" }; } },
+  ];
+  for (const { cols, rows, pick, last, before } of cases) {
+    const what = `${cols}x${rows}${before ? " scrolled" : ""}`;
+    await loadGitHub(t);
+    if (before) await quietly(async () => before());
+    const lines = screenAt(cols, rows, draw);
+    const [x, y, number] = pick(lines);
+    assert.ok(y >= LIST.from, `${what}\n${lines.join("\n")}`);
+    if (last) assert.equal(y, rows - 2, `${what}\n${lines.join("\n")}`);
+    if (number !== 10) assert.notEqual(ui.prs[ui.sel.prs].number, number, what);
+    await quietly(async () => {
+      const first = screenAt(cols, rows, () => onInput(Buffer.from(pressAt(x, y))));
+      assert.equal(ui.confirm?.number, number, what);
+      assert.equal(first[y].indexOf(`Confirm merge #${number}`), x, `${what}\n${first.join("\n")}`);
+      screenAt(cols, rows, () => onInput(Buffer.from(pressAt(x, y))));
+      await ui.acting;
+      await settle();
+    });
+    assert.deepEqual(mergeCalls(), [["pr", "merge", String(number), "--squash", "--match-head-commit", headOf(number)]], what);
+    assert.deepEqual(opened, [], what);
+  }
+});
+
+test("a Merge press that asked is taken back by a move to another repo, even one with the same pull request number (#51)", async (t) => {
+  const { lines } = await loadGitHub(t);
+  const [x, y] = find(lines, "Merge #12");
+  let after;
+  await quietly(async () => {
+    onInput(Buffer.from(pressAt(x, y)));
+    assert.equal(ui.confirm?.number, 12);
+    // The panel follows a pane in another folder: a second repo, which has a #12 too.
+    const first = git;
+    git = (args) => args[0] === "rev-parse" ? { code: 0, stdout: "/repo-b\n" } : first(args);
+    ui.context = "/the/first/folder";
+    await refresh();
+    await settle();
+    assert.equal(ui.root, "/repo-b");
+    assert.ok(ui.prs.some((p) => p.number === 12));
+    assert.equal(ui.confirm, null);
+    after = screen(draw);
+    // The same cell is the second repo's #12, which only asks.
+    assert.equal(after[y].indexOf("Merge #12"), x, after.join("\n"));
+    onInput(Buffer.from(pressAt(x, y)));
+    await ui.acting;
+  });
+  assert.deepEqual(mergeCalls(), []);
+  assert.deepEqual(opened, []);
+  assert.deepEqual([ui.confirm?.number, ui.confirm?.root], [12, "/repo-b"]);
+  assert.equal(find(after, "Confirm merge #12")[1], -1, after.join("\n"));
+  assert.equal(find(after, "Press Confirm merge")[1], -1, after.join("\n"));
+  // A press that asked in another repo never counts here, even before the move is seen.
+  ui.confirm = { ...ui.confirm, root: "/repo" };
+  after = screen(draw);
+  assert.equal(after[y].indexOf("Merge #12"), x, after.join("\n"));
+  assert.equal(find(after, "Press Confirm merge")[1], -1, after.join("\n"));
+  await quietly(async () => { onInput(Buffer.from(pressAt(x, y))); await ui.acting; });
+  assert.deepEqual(mergeCalls(), []);
+  assert.deepEqual([ui.confirm?.number, ui.confirm?.root], [12, "/repo-b"]);
+});
+
+test("the second press merges the head the first press saw, even after a refresh read a newer one (#51)", async (t) => {
+  const pushed = "b".repeat(40);
+  const { lines, state } = await loadGitHub(t);
+  const [x, y] = find(lines, "Merge #12");
+  await quietly(async () => {
+    onInput(Buffer.from(pressAt(x, y)));
+    assert.equal(ui.confirm?.head, headOf(12));
+    // Someone pushes to #12, and a refresh reads it between the two presses.
+    state.heads[12] = pushed;
+    await refresh(true);
+    await settle();
+    assert.equal(ui.prs.find((p) => p.number === 12).head, pushed);
+    assert.equal(ui.confirm?.number, 12);
+    onInput(Buffer.from(pressAt(x, y)));
+    await ui.acting;
+  });
+  // GitHub then refuses: the head isn't the commit the first press saw.
+  assert.deepEqual(mergeCalls(), [["pr", "merge", "12", "--squash", "--match-head-commit", headOf(12)]]);
+  // Without a head commit at the first press, there's nothing to check against.
+  const { lines: again, state: other } = await loadGitHub(t);
+  other.heads[12] = null;
+  await quietly(async () => {
+    await refresh(true);
+    await settle();
+    onInput(Buffer.from(pressAt(...find(again, "Merge #12"))));
+    other.heads[12] = pushed;
+    await refresh(true);
+    await settle();
+    onInput(Buffer.from(pressAt(...find(again, "Merge #12"))));
+    await ui.acting;
+  });
+  assert.deepEqual(mergeCalls(), [["pr", "merge", "12", "--squash"]]);
+});
+
+test("the second press merges that pull request, and only that one, by the method the repo allows (#51)", async (t) => {
+  for (const [merges, flag] of [[ALL_MERGES, "--squash"], [{ squash: false, merge: true, rebase: true }, "--merge"], [{ squash: false, merge: false, rebase: true }, "--rebase"]]) {
+    const { lines } = await loadGitHub(t, { merges });
+    await quietly(async () => {
+      pressButton(lines, "Merge #11");
+      pressButton(screen(draw), "Confirm merge #11");
+      await ui.acting;
+    });
+    assert.deepEqual(mergeCalls(), [["pr", "merge", "11", flag, "--match-head-commit", headOf(11)]], flag);
+    // gh runs in the repo's root.
+    assert.equal(callOpts[calls.findIndex((c) => c[0] === "gh" && c[2] === "merge")].cwd, "/repo");
+  }
+});
+
+test("a merge says Merged and takes the pull request out of the list, and the next refresh doesn't bring it back (#51)", async (t) => {
+  const { lines, state } = await loadGitHub(t);
+  await quietly(async () => {
+    pressButton(lines, "Merge #12");
+    pressButton(screen(draw), "Confirm merge #12");
+    await ui.acting;
+    // Taken out at once, before the refresh the merge starts has answered.
+    assert.deepEqual(ui.prs.map((p) => p.number), [10, 11, 13, 14]);
+    await settle(); await settle();
+  });
+  assert.deepEqual(state.open, [10, 11, 13, 14]);
+  assert.equal(ui.notice?.tone, "ok");
+  assert.equal(ui.notice.text, "Merged #12");
+  // The merge's refresh read the list again.
+  assert.ok(ghCalls().some((c) => c[0] === "pr" && c[1] === "list"), JSON.stringify(ghCalls()));
+  assert.deepEqual(ui.prs.map((p) => p.number), [10, 11, 13, 14]);
+  assert.equal(ui.confirm, null);
+  const after = screen(draw);
+  assert.ok(after.some((l) => l?.includes("Merged #12")), after.join("\n"));
+  assert.equal(find(after, "Merge #12")[1], -1, after.join("\n"));
+});
+
+test("a merge gh refuses shows gh's reason in red and keeps the pull request (#51)", async (t) => {
+  const { lines } = await loadGitHub(t, { reply: { code: 1, stderr: "GraphQL: Head branch was modified. Review and try the merge again.\nmore\n" } });
+  await quietly(async () => {
+    pressButton(lines, "Merge #12");
+    pressButton(screen(draw), "Confirm merge #12");
+    await ui.acting;
+    await settle();
+  });
+  assert.equal(mergeCalls().length, 1);
+  assert.equal(ui.notice?.tone, "error");
+  assert.equal(ui.notice.text, "Can't merge #12: GraphQL: Head branch was modified. Review and try the merge again.");
+  assert.ok(ui.prs.some((p) => p.number === 12));
+  // Nothing was merged, so nothing more ran.
+  assert.ok(!calls.some((c) => c[0] === "git"), JSON.stringify(calls));
+  // gh missing says so.
+  gh = () => ({ error: Object.assign(new Error("spawn gh ENOENT"), { code: "ENOENT" }) });
+  await quietly(async () => {
+    pressButton(screen(draw), "Merge #12");
+    pressButton(screen(draw), "Confirm merge #12");
+    await ui.acting;
+  });
+  assert.equal(ui.notice?.text, "Can't merge #12: gh isn't installed");
+  assert.ok(ui.prs.some((p) => p.number === 12));
+});
+
+test("a refresh that began before a merge and answers after it doesn't list the merged pull request again (#51)", { timeout: 5000 }, async (t) => {
+  const { lines } = await loadGitHub(t);
+  await quietly(async () => {
+    // The timer's refresh is reading the list, as the old one gh still has.
+    REFRESH.graceMs = 60 * 60000;
+    hold = (name, args) => name === "gh" && args[0] === "pr" && args[1] === "list";
+    const stale = refresh();
+    await settle();
+    const reading = held.find((h) => h.args[1] === "list");
+    assert.ok(reading, "the refresh is reading the list");
+    hold = () => false;
+    pressButton(lines, "Merge #12");
+    pressButton(screen(draw), "Confirm merge #12");
+    await ui.acting;
+    assert.equal(ui.notice?.text, "Merged #12");
+    // The merge's own refresh waits: the running one is within its grace.
+    assert.equal(held.filter((h) => h.args[1] === "list").length, 1);
+    // The old refresh answers with #12 still open.
+    reading.answer({ code: 0, stdout: JSON.stringify([10, 11, 12, 13, 14].map((n) => ({ number: n, title: `Title ${n}`, body: "", author: { login: "a" }, headRefName: "b", headRefOid: headOf(n), updatedAt: iso(60), url: `https://x/pull/${n}` }))) });
+    await stale;
+  });
+  assert.deepEqual(ui.prs.map((p) => p.number), [10, 11, 13, 14]);
+});
+
+test("any other key or click takes back a Merge press that asked; a second press then only asks again (#51)", async (t) => {
+  // Review opens the menu of these profiles, which starts nothing.
+  claudeHome(t);
+  fakeHerdr(claudeHere);
+  const presses = {
+    "a key": () => onInput(Buffer.from("j")),
+    "a click on a row": (lines) => onInput(Buffer.from(pressAt(10, find(lines, "Title 10")[1]))),
+    "another row's Merge": (lines) => pressButton(lines, "Merge #11"),
+    "its Review": (lines) => pressButton(lines, "Review #12"),
+    "the header's ↻": (lines) => onInput(Buffer.from(pressAt(lines[0].indexOf("↻"), 0))),
+  };
+  for (const [what, other] of Object.entries(presses)) {
+    const { lines } = await loadGitHub(t);
+    await quietly(async () => {
+      pressButton(lines, "Merge #12");
+      assert.equal(ui.confirm?.number, 12, what);
+      other(screen(draw));
+      assert.notEqual(ui.confirm?.number, 12, what);
+      assert.equal(ui.acting, null, what);
+      // Its notice went with it.
+      assert.ok(!ui.notice?.text?.startsWith("Press Confirm merge #12"), what);
+      const after = screen(draw);
+      assert.equal(find(after, "Confirm merge #12")[1], -1, `${what}\n${after.join("\n")}`);
+      ui.menu = null;
+      // The next press on #12 asks again.
+      pressButton(screen(draw), "Merge #12");
+      assert.equal(ui.confirm?.number, 12, what);
+      await ui.acting;
+    });
+    assert.deepEqual(mergeCalls(), [], what);
+    ui.confirm = null;
+  }
+  // The scroll wheel doesn't: it only moves the list.
+  const { lines } = await loadGitHub(t);
+  await quietly(async () => {
+    pressButton(lines, "Merge #12");
+    onInput(Buffer.from(wheelDown));
+    assert.equal(ui.confirm?.number, 12);
+  });
+});
+
+test("a repo that allows no merge method, or doesn't say, keeps the Merge button, says why and runs no merge (#51)", async (t) => {
+  for (const merges of [{ squash: false, merge: false, rebase: false }, { squash: undefined, merge: undefined, rebase: undefined }]) {
+    const { lines } = await loadGitHub(t, { merges });
+    assert.ok(find(lines, "Merge #12")[1] > LIST.from, lines.join("\n"));
+    await quietly(async () => {
+      // The first press already says why: there's nothing to ask.
+      pressButton(lines, "Merge #12");
+      assert.equal(ui.confirm, null);
+      assert.equal(ui.notice?.tone, "error");
+      pressButton(screen(draw), "Merge #12");
+      await ui.acting;
+    });
+    assert.deepEqual(mergeCalls(), [], JSON.stringify(merges));
+    assert.equal(ui.confirm, null);
+    assert.equal(ui.notice?.tone, "error");
+    assert.equal(ui.notice.text, "Can't merge #12: the repo allows no squash, merge commit or rebase, or gh didn't say which.");
+  }
+});
+
+test("while a merge runs its progress stays up, and a, Review and another Merge start nothing (#51)", { timeout: 5000 }, async (t) => {
+  claudeHome(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
+  fakeHerdr(claudeHere);
+  const { lines } = await loadGitHub(t);
+  await quietly(async () => {
+    hold = (name, args) => name === "gh" && args[1] === "merge";
+    pressButton(lines, "Merge #12");
+    pressButton(screen(draw), "Confirm merge #12");
+    assert.ok(ui.acting);
+    assert.equal(ui.notice?.text, "Merging #12…");
+    onInput(Buffer.from("ja"));
+    pressButton(screen(draw), "Review #11");
+    pressButton(screen(draw), "Merge #11");
+    pressButton(screen(draw), "Merge #11");
+    assert.equal(ui.notice?.text, "Merging #12…");
+    assert.equal(ui.menu, null);
+    assert.equal(herdrCalls().length, 0);
+    assert.equal(mergeCalls().length, 1);
+    hold = () => false;
+    held.find((h) => h.args[1] === "merge").answer({ code: 0, stdout: "" });
+    await ui.acting;
+  });
+  assert.equal(ui.notice?.text, "Merged #12");
+  assert.deepEqual(mergeCalls(), [["pr", "merge", "12", "--squash", "--match-head-commit", headOf(12)]]);
+});
+
+test("beside Merge, a pull request's Review button and a still start a review of that row (#51)", async (t) => {
+  claudeHome(t, { ".claude/skills/issue-pr-review/SKILL.md": "x" });
+  let lines = setupGitHub("prs");
+  fakeHerdr(claudeHere);
+  const [x, y] = find(lines, "Review #11");
+  assert.equal(find(lines, "Merge #11")[1], y);
+  await screenAsync(() => clickWithMenu(x, y));
+  assert.equal(herdrCalls()[2], "agent start review-11 --kind claude --pane w1:p7 --timeout 55000");
+  assert.deepEqual(opened, []);
+  setupGitHub("prs");
+  fakeHerdr(claudeHere);
+  await screenAsync(() => startWithMenu());
+  assert.equal(herdrCalls()[2], "agent start review-12 --kind claude --pane w1:p7 --timeout 55000");
+  assert.ok(!calls.some((c) => c[0] === "gh"));
+});
+
+test("mergeArgs builds gh's arguments from an integer, a known method and a commit hash only (#51)", () => {
+  assert.deepEqual(mergeArgs(7, "squash", headOf(7)), ["pr", "merge", "7", "--squash", "--match-head-commit", headOf(7)]);
+  assert.deepEqual(mergeArgs(7, "rebase"), ["pr", "merge", "7", "--rebase"]);
+  for (const head of ["abc", "$(id)", headOf(7).toUpperCase().replace(/\d/g, "A"), `${headOf(7)} --admin`]) assert.deepEqual(mergeArgs(7, "merge", head), ["pr", "merge", "7", "--merge"], head);
+  for (const n of [0, -1, 1.5, "7", "7; id", NaN]) assert.throws(() => mergeArgs(n, "squash"), /not a number/, String(n));
+  for (const s of ["admin", "--squash", "", undefined, "toString"]) assert.throws(() => mergeArgs(7, s), /not a merge method/, String(s));
+  assert.equal(mergeStrategy({ merges: { squash: false, merge: true, rebase: true } }), "merge");
+  assert.equal(mergeStrategy(null), null);
+  assert.equal(typeof pressMerge, "function");
 });

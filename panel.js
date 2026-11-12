@@ -133,10 +133,12 @@ function plain(md) {
 
 // ── Forges: GitHub through `gh`, GitLab through `glab` ──────────────────────
 // Each turns its CLI's JSON into one shape the rows draw from:
-//   repo  { name, url }
-//   pr    { ref, number, title, body, author, branch, draft, review, checks, updatedAt, url }
+//   repo  { name, url, merges? }
+//   pr    { ref, number, title, body, author, branch, head?, draft, review, checks, updatedAt, url }
 //   issue { ref, number, title, body, author, labels: [{ name, color }], updatedAt, url }
-// `number` is the bare number an agent is handed; `ref` is only for display.
+// `number` is the bare number an agent is handed; `ref` is only for display. On
+// GitHub, `merges` says which merge methods the repo allows and `head` is the pull
+// request's head commit, for its Merge button (#51).
 
 const hex = (color) => (color || "").replace(/^#/, "");
 const REVIEW = { APPROVED: "approved", CHANGES_REQUESTED: "changes", REVIEW_REQUIRED: "review" };
@@ -147,12 +149,12 @@ const MERGE_REVIEW = { requested_changes: "changes", not_approved: "review" };
 const FORGES = {
   github: {
     name: "GitHub", cli: "gh", prs: "Pull requests", pr: "pull request",
-    repoArgs: ["repo", "view", "--json", "nameWithOwner,url"],
-    prArgs: ["pr", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,isDraft,headRefName,updatedAt,url,reviewDecision,statusCheckRollup"],
+    repoArgs: ["repo", "view", "--json", "nameWithOwner,url,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"],
+    prArgs: ["pr", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,isDraft,headRefName,headRefOid,updatedAt,url,reviewDecision,statusCheckRollup"],
     issueArgs: ["issue", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,labels,updatedAt,url"],
-    repo: (r) => ({ name: r.nameWithOwner, url: r.url }),
+    repo: (r) => ({ name: r.nameWithOwner, url: r.url, merges: { squash: r.squashMergeAllowed, merge: r.mergeCommitAllowed, rebase: r.rebaseMergeAllowed } }),
     toPr: (p) => ({
-      ref: `#${p.number}`, number: p.number, title: clean(p.title), body: plain(p.body), author: p.author?.login, branch: p.headRefName,
+      ref: `#${p.number}`, number: p.number, title: clean(p.title), body: plain(p.body), author: p.author?.login, branch: p.headRefName, head: p.headRefOid,
       draft: Boolean(p.isDraft), review: REVIEW[p.reviewDecision] ?? null, checks: checks(p.statusCheckRollup),
       updatedAt: p.updatedAt, url: p.url,
     }),
@@ -235,9 +237,12 @@ const ui = {
   rows: [], buttons: [], visible: true, notice: null,
   root: null, tab: null, acting: null, settings: null,
   // The profile menu of a Resolve or Review press, while it's open: { view, number,
-  // key, entries, sel, top, anchor }, anchor being "row" (under that row's button)
-  // or "header" (under the header's).
+  // key, entries, sel, top, anchor }, anchor being "row": under that row's button.
   menu: null,
+  // A Merge press that only asked (#51): { number, root, head }, the pull request
+  // whose button now reads Confirm merge, the repo it's in, and its head commit as
+  // the list showed it then; null otherwise.
+  confirm: null,
 };
 let cwd = process.env.HERDR_GITHUB_CWD || process.cwd();
 let target = process.env.HERDR_GITHUB_PANE || null;
@@ -312,8 +317,11 @@ async function refresh(force = false) {
   // later one, for good.
   const n = gate.begin(Date.now(), { press: force, moved });
   if (n === null) return;
+  // Numbered for the merge guard: a pull request merged after this began stays out of its answer (#51).
+  const began = merges.begin();
   if (moved) {
-    Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 } });
+    // A Merge press that asked was for the old folder's repo, so it's taken back (#51).
+    Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, confirm: null });
   }
   ui.fetchedAt = Date.now();
   if (!fs.existsSync(context)) {
@@ -340,6 +348,7 @@ async function refresh(force = false) {
       if (!live()) return;
       if (result.error) { errors.push(result.error); continue; }
       forgeCache.set(host, id);
+      result.prs = merges.filter(result.prs, root, began);
       Object.assign(ui, result, { forge: FORGES[id], error: null, fetched: true });
       for (const v of ["prs", "issues"]) ui.sel[v] = Math.min(ui.sel[v], Math.max(0, ui[v].length - 1));
       return;
@@ -418,6 +427,135 @@ function actionFor(view, index = ui.sel[view]) {
   if (ui.forge !== FORGES.github) return null;
   const item = ui[view]?.[index];
   return item && isNumber(item.number) ? { ...ACTIONS[view], number: item.number } : null;
+}
+
+// ── Merging a pull request (#51) ────────────────────────────────────────────
+// Each pull request with a Review button has a Merge button beside it. The first
+// press only asks: the button reads Confirm merge #N in the same place, and the key
+// hints' line says pressing it merges. A second press on that button merges that
+// pull request with `gh pr merge`, by the method the repo allows, and only while
+// its head is still the commit the list showed at the first press. Any other key
+// or click, or a move to another folder or repo, takes the question back. The
+// same rules as the app's, in forge.js.
+
+const MERGE_FLAGS = { squash: "--squash", merge: "--merge", rebase: "--rebase" };
+const MERGE_NAMES = { squash: "squash", merge: "merge commit", rebase: "rebase" };
+
+// The merge method for a repo (forge.repo's shape): squash, else a merge commit,
+// else rebase, as the repo allows; null when it allows none, or gh didn't say.
+function mergeStrategy(repo) {
+  const m = repo?.merges;
+  return ["squash", "merge", "rebase"].find((s) => m?.[s] === true) ?? null;
+}
+
+// `gh pr merge`'s arguments, built from an integer, a known method and a commit
+// hash only: never from a title or body. Without a hash it can't check the head.
+function mergeArgs(number, strategy, head = null) {
+  if (!isNumber(number)) throw new Error("not a number");
+  if (!["squash", "merge", "rebase"].includes(strategy)) throw new Error("not a merge method");
+  const args = ["pr", "merge", String(number), MERGE_FLAGS[strategy]];
+  if (typeof head === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) args.push("--match-head-commit", head);
+  return args;
+}
+
+// The pull requests merged from the panel. A refresh that began before a merge
+// finished can answer after it, with the pull request still open: its answer
+// mustn't list it again. begin() numbers each refresh as it starts, add() notes a
+// merge in a repo's root as it finishes, and filter() drops, from a refresh's pull
+// requests, those merged in that root since the refresh began. A refresh that
+// began after a merge is gh's own word on it, so filter() then forgets it.
+function mergeGuard() {
+  let latest = 0;
+  const merged = new Map();
+  const key = (root, number) => `${root}\n${number}`;
+  return {
+    begin: () => ++latest,
+    add(root, number) { merged.set(key(root, number), latest); },
+    filter(prs, root, began) {
+      const kept = (prs ?? []).filter((p) => !(merged.get(key(root, p.number)) >= began));
+      for (const [k, at] of merged) if (at < began && k.startsWith(key(root, ""))) merged.delete(k);
+      return kept;
+    },
+  };
+}
+const merges = mergeGuard();
+
+// The Merge press that asked about pull request `number`, in the repo on screen;
+// null when there's none. A press in another repo never counts here.
+const armedFor = (number) => ui.confirm?.number === number && ui.confirm.root === ui.root ? ui.confirm : null;
+
+// The Merge button of pull request `index`: on the rows that have a Review button,
+// so on GitHub only. `armed` once a press has asked.
+function mergeFor(index) {
+  const action = actionFor("prs", index);
+  return action ? { number: action.number, armed: Boolean(armedFor(action.number)) } : null;
+}
+
+const noMerge = (number) => `Can't merge #${number}: the repo allows no squash, merge commit or rebase, or gh didn't say which.`;
+
+// A Merge button pressed. The pull request is found again by its number, so only
+// that one is ever merged, and only in the repo the first press was in. One merge,
+// or one launch, at a time.
+function pressMerge(number) {
+  if (ui.acting || ui.menu) return ui.acting;
+  const index = ui.prs.findIndex((p) => p.number === number);
+  if (index < 0 || !mergeFor(index)) return null;
+  const armed = armedFor(number);
+  if (armed) {
+    ui.confirm = null;
+    // The head the first press saw: a push since then makes GitHub refuse.
+    return merge(number, armed.head);
+  }
+  const strategy = mergeStrategy(ui.repo);
+  if (!strategy) {
+    ui.confirm = null;
+    say("error", noMerge(number));
+    return null;
+  }
+  // The first press moves nothing: not the selection, the notice or the scroll, so
+  // Confirm merge is drawn where Merge was, and a second press there finds it. The
+  // key hints' line asks instead of a notice, which would shorten the list.
+  ui.confirm = { number, root: ui.root, head: ui.prs[index].head ?? null };
+  draw();
+  return null;
+}
+
+// What the key hints' line says while a Merge press asks.
+const askingHint = (number) => ` Press Confirm merge #${number} to merge it (${MERGE_NAMES[mergeStrategy(ui.repo)] ?? "?"}) · anything else cancels`;
+
+// Takes back a press that only asked.
+function cancelMerge() {
+  ui.confirm = null;
+  draw();
+}
+
+// The second press: like a launch, it holds ui.acting while gh runs, so its
+// progress stays up and nothing else starts meanwhile. `head` is the pull request's
+// head commit as the first press saw it.
+function merge(number, head) {
+  ui.acting = mergePr(number, head)
+    .catch((e) => say("error", `Can't merge #${number}: ${e.message}`))
+    .finally(() => { ui.acting = null; });
+  return ui.acting;
+}
+
+async function mergePr(number, head) {
+  const pr = ui.prs.find((p) => p.number === number), root = ui.root, strategy = mergeStrategy(ui.repo);
+  if (!pr || ui.forge !== FORGES.github || !root) return say("error", `The pull request #${number} isn't in the list any more, so nothing was merged.`);
+  if (!strategy) return say("error", noMerge(number));
+  const args = mergeArgs(number, strategy, head);
+  say("info", `Merging #${number}…`);
+  const r = await run("gh", args, { cwd: root }).catch((e) =>
+    ({ code: -1, stdout: "", stderr: e.code === "ENOENT" ? "gh isn't installed" : e.message }));
+  if (r.code !== 0) return say("error", `Can't merge #${number}: ${firstLine(r.stderr) || firstLine(r.stdout) || `gh exited ${r.code}`}`);
+  // Out of the list now, and out of a refresh that was already running.
+  merges.add(root, number);
+  if (ui.root === root) {
+    ui.prs = ui.prs.filter((p) => p.number !== number);
+    ui.sel.prs = Math.min(ui.sel.prs, Math.max(0, ui.prs.length - 1));
+  }
+  say("ok", `Merged #${number}`);
+  refresh(true);
 }
 
 const readable = (file) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
@@ -501,10 +639,9 @@ function readStore() {
   return { file, text, ...parsed };
 }
 
-// A Resolve or Review button, the header's or a row's, and the a key. With only the
-// default profile it starts at once; with more, it opens a menu of them under the
-// button pressed (`anchor`: "row" or "header"), and the one you choose starts. One
-// launch, or one menu, at a time.
+// A row's Resolve or Review button, and the a key, for the selected row. With only
+// the default profile it starts at once; with more, it opens a menu of them under
+// that row's button, and the one you choose starts. One launch, or one menu, at a time.
 function act(view = ui.view, index = ui.sel[view], anchor = "row") {
   const action = actionFor(view, index);
   if (!action || ui.acting || ui.menu) return ui.acting;
@@ -712,8 +849,10 @@ async function submit(herdr, pane, text) {
 // One row: the selection bar, a 1-cell icon, the title (2 lines), the description
 // (3 lines) and the meta line, left text cut so the right-hand parts always fit.
 // With an action, a Resolve or Review button follows on a line of its own; the
-// lines then carry `hit`: { line, from, to }, where the button is.
-function rowLines(item, selected, cols, icon, meta, trailing, action = null) {
+// lines then carry `hit`: { line, from, to }, where the button is. With `merge`
+// ({ number, armed }), a pull request's Merge button (#51) follows it, and the lines
+// carry `mergeHit` too.
+function rowLines(item, selected, cols, icon, meta, trailing, action = null, merge = null) {
   const inner = Math.max(10, cols - 5);
   const bar = selected ? accent("▌") : " ";
   const lines = [];
@@ -730,6 +869,19 @@ function rowLines(item, selected, cols, icon, meta, trailing, action = null) {
     const label = ` ${fit(`${action.label} #${action.number}`, cols - 6)} `;
     lines.hit = { line: lines.length, from: 4, to: 4 + width(label) };
     lines.push(`${bar}   ${invert(label)}`);
+    if (merge) {
+      // Beside the Review button when its asking form, Confirm merge #N, fits there
+      // too, so the second press finds the button where the first one did; on a line
+      // of its own in a narrower pane.
+      const asking = ` Confirm merge #${merge.number} `;
+      const text = ` ${fit(merge.armed ? `Confirm merge #${merge.number}` : `Merge #${merge.number}`, cols - 6)} `;
+      const beside = lines.hit.to + 1 + width(asking) <= cols;
+      const from = beside ? lines.hit.to + 1 : 4;
+      lines.mergeHit = { line: beside ? lines.length - 1 : lines.length, from, to: from + width(text) };
+      const button = merge.armed ? invert(red(text)) : invert(text);
+      if (beside) lines[lines.length - 1] += ` ${button}`;
+      else lines.push(`${bar}   ${button}`);
+    }
   }
   // The selected row also shows its URL as plain text: herdr ignores OSC 8 links,
   // but Ctrl-click on a visible http(s) URL opens it on the machine you sit at.
@@ -751,7 +903,7 @@ const part = (text, style = dim) => ({ w: width(text), s: style(text) });
 
 const REVIEWS = { approved: ["Approved", green], changes: ["Changes requested", red], review: ["Review", muted] };
 
-function prRow(p, selected, cols, action = null) {
+function prRow(p, selected, cols, action = null, merge = null) {
   const review = REVIEWS[p.review];
   const trailing = [];
   if (p.draft) trailing.push(part("[Draft]"));
@@ -759,7 +911,7 @@ function prRow(p, selected, cols, action = null) {
   if (p.checks) trailing.push(p.checks === "fail" ? part("✗", red) : p.checks === "pending" ? part("●", yellow) : part("✓", green));
   trailing.push(part(ago(p.updatedAt)));
   return rowLines(p, selected, cols, p.draft ? dim("◌") : green("●"),
-    [p.ref, p.author ?? "?", p.branch].filter(Boolean).join(" · "), trailing, action);
+    [p.ref, p.author ?? "?", p.branch].filter(Boolean).join(" · "), trailing, action, merge);
 }
 
 function issueRow(i, selected, cols, action = null) {
@@ -833,17 +985,15 @@ function draw() {
   const out = [];
   ui.buttons = [];
 
-  // Header: repo, spinner, then the Resolve or Review button for the selected row,
-  // and the profiles, refresh and open-on-the-forge buttons.
+  // Header: repo, spinner, then the profiles, refresh and open-on-the-forge buttons.
+  // Resolve and Review are the rows' own buttons (#51); a presses the selected row's.
   const right = ui.repo?.url ? " ⚙  ↻  ↗ " : " ⚙  ↻ ";
   const action = actionFor(ui.view);
-  const button = action ? ` ${action.label} #${action.number} ` : "";
   const spin = ui.loading ? yellow(SPIN[ui.frame % SPIN.length]) + " " : "";
-  const title = fit(ui.repo?.name ?? ui.forge?.name ?? "Pull requests and issues", cols - width(right) - 3 - (button ? width(button) + 1 : 0) - (spin ? 2 : 0));
-  const gap = " ".repeat(Math.max(0, cols - 1 - width(title) - (spin ? 2 : 0) - width(button) - width(right)));
-  out.push(` ${link(ui.repo?.url, bold(title))}${gap}${spin}${button ? invert(button) : ""}${dim(right)}`);
+  const title = fit(ui.repo?.name ?? ui.forge?.name ?? "Pull requests and issues", cols - width(right) - 3 - (spin ? 2 : 0));
+  const gap = " ".repeat(Math.max(0, cols - 1 - width(title) - (spin ? 2 : 0) - width(right)));
+  out.push(` ${link(ui.repo?.url, bold(title))}${gap}${spin}${dim(right)}`);
   const at = cols - width(right);
-  if (button) ui.buttons.push({ row: 0, from: at - width(button), to: at, action: () => act(ui.view, ui.sel[ui.view], "header") });
   ui.buttons.push({ row: 0, from: at, to: at + 3, action: () => openSettings() });
   ui.buttons.push({ row: 0, from: at + 3, to: at + 6, action: () => refresh(true) });
   if (ui.repo?.url) ui.buttons.push({ row: 0, from: at + 6, to: at + 9, action: () => openUrl(ui.repo.url) });
@@ -865,13 +1015,14 @@ function draw() {
   // The list, scrolled so the selected row is in full view, above any notice.
   const notice = ui.notice ? noticeLines(ui.notice, cols, rows - out.length - 2) : [];
   const view = ui.view, items = ui[view], listTop = out.length, height = Math.max(1, rows - listTop - 1 - notice.length);
-  const lines = [], owner = [], hits = [];
+  const lines = [], owner = [], hits = [], mergeHits = [];
   let selStart = 0, selEnd = 0;
   items.forEach((x, i) => {
     if (i) { lines.push(""); owner.push(-1); }
     if (i === ui.sel[view]) selStart = lines.length;
-    const a = actionFor(view, i), row = view === "prs" ? prRow(x, i === ui.sel[view], cols, a) : issueRow(x, i === ui.sel[view], cols, a);
+    const a = actionFor(view, i), row = view === "prs" ? prRow(x, i === ui.sel[view], cols, a, mergeFor(i)) : issueRow(x, i === ui.sel[view], cols, a);
     if (row.hit) hits[lines.length + row.hit.line] = { ...row.hit, index: i };
+    if (row.mergeHit) mergeHits[lines.length + row.mergeHit.line] = { ...row.mergeHit, number: x.number };
     for (const l of row) { lines.push(l); owner.push(i); }
     if (i === ui.sel[view]) selEnd = lines.length;
   });
@@ -894,6 +1045,10 @@ function draw() {
     // A row's own Resolve or Review button acts on that row.
     const hit = hits[ui.top[view] + r];
     if (hit) ui.buttons.push({ row: listTop + r, from: hit.from, to: hit.to, action: () => { ui.sel[view] = hit.index; draw(); return act(view, hit.index, "row"); } });
+    // A pull request's Merge button merges that pull request (#51); `merge` names it,
+    // so a click there doesn't take back the press that asked.
+    const mh = mergeHits[ui.top[view] + r];
+    if (mh) ui.buttons.push({ row: listTop + r, from: mh.from, to: mh.to, merge: mh.number, action: () => pressMerge(mh.number) });
   }
 
   // The profile menu, over the list: under the button pressed, or above it when
@@ -901,13 +1056,12 @@ function draw() {
   if (ui.menu) {
     const m = ui.menu, index = ui[m.view].findIndex((x) => x.number === m.number);
     if (m.view !== view || index < 0) { ui.menu = null; return gone(m); }
-    // A row's button where it's drawn; the header's when the row's is out of view.
-    let y = 0, x = button ? at - width(button) : cols;
-    if (m.anchor === "row") {
-      for (let r = 0; r < height; r++) {
-        const hit = hits[ui.top[view] + r];
-        if (hit?.index === index) { y = listTop + r; x = hit.from; break; }
-      }
+    // Under the row's button where it's drawn. When it's out of view, as in a pane
+    // too short for the whole row, under the header at its right edge.
+    let y = 0, x = cols;
+    for (let r = 0; r < height; r++) {
+      const hit = hits[ui.top[view] + r];
+      if (hit?.index === index) { y = listTop + r; x = hit.from; break; }
     }
     const n = m.entries.length, limit = listTop + height, below = limit - y - 1, above = y - 1;
     const down = y === 0 || below >= n + 2 || (above < n + 2 && below >= above);
@@ -929,8 +1083,10 @@ function draw() {
   // The menu's hints, shorter when the pane is too narrow for them, so esc stays in view.
   const menuKeys = width(MENU_KEYS) <= cols ? MENU_KEYS : MENU_KEYS_SHORT;
   // The list's, with t and the interval in use in view however narrow the pane (#47).
-  const keys = ui.menu ? menuKeys : P.keyHints({ action: action?.key ?? null, every: ui.every, close: "q close", lead: " ", room: cols });
-  out.push(dim(fit(keys, cols)));
+  // A Merge press that asked says so here, in the line's place (#51).
+  const armed = !ui.menu && ui.confirm && armedFor(ui.confirm.number);
+  const keys = ui.menu ? menuKeys : armed ? askingHint(armed.number) : P.keyHints({ action: action?.key ?? null, every: ui.every, close: "q close", lead: " ", room: cols });
+  out.push((armed ? yellow : dim)(fit(keys, cols)));
   paint(out, rows);
 }
 
@@ -1429,6 +1585,8 @@ function move(by) {
 
 function click(x, y) {
   const button = ui.buttons.find((b) => b.row === y && x >= b.from && x < b.to);
+  // A click anywhere but on the Merge button that asked takes the question back (#51).
+  if (ui.confirm && button?.merge !== ui.confirm.number) cancelMerge();
   if (button) return button.action();
   // Anywhere but on one of its profiles, a click closes the menu, and nothing else.
   if (ui.menu) return closeMenu();
@@ -1462,8 +1620,10 @@ function onInput(data) {
       continue;
     }
     if (k === "q" || k === "\x03" || (k === "\x1b" && data.length === 1)) return quit();
-    // Any key clears a notice, except the progress of a launch still under way.
+    // Any key clears a notice, except the progress of a launch or merge still under way.
     if (ui.notice && !(ui.acting && ui.notice.tone === "info")) { ui.notice = null; draw(); }
+    // And takes back a Merge press that only asked (#51).
+    if (ui.confirm) cancelMerge();
     if (k === "\x1b[A" || k === "\x1bOA" || k === "k") move(-1);
     else if (k === "\x1b[B" || k === "\x1bOB" || k === "j") move(1);
     else if (k === "\x1b[5~") move(-5);
@@ -1527,6 +1687,8 @@ else {
   module.exports = {
     width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput,
     act, startChoice, launch, findSkill, promptFor, readStore, IDD, TIMING,
+    // A pull request's Merge button (#51): its press, and the rules it builds gh's arguments by.
+    pressMerge, mergeStrategy, mergeArgs, mergeGuard,
     // scripts/capture-screenshots.mjs reads the repo once, as the panel does.
     refresh, REFRESH,
     // The refresh interval (#44): kept in the state folder, and checked every POLL.
