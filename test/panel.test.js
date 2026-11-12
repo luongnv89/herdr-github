@@ -47,7 +47,7 @@ const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-github-state-"));
 process.on("exit", () => fs.rmSync(stateDir, { recursive: true, force: true }));
 Object.assign(process.env, { HERDR_BIN_PATH: "herdr", HERDR_PANE_ID: "w1:p9", HERDR_GITHUB_PANE: "w1:p1", HERDR_PLUGIN_STATE_DIR: stateDir });
 const P = require("../profiles.cjs");
-const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow, refresh, REFRESH, restore, poll, STATE } = require("../panel.js");
+const { width, fit, wrap, ago, checks, clean, plain, prRow, issueRow, FORGES, remoteHost, pickHost, forgesFor, firstLine, ui, draw, click, onInput, act, launch, findSkill, promptFor, readStore, IDD, TIMING, follow, refresh, REFRESH, restore, poll, STATE, readCommit, forgetCommit } = require("../panel.js");
 // A launch through mcc polls herdr for Claude Code in the new pane: quickly, here.
 Object.assign(TIMING, { pollMs: 1, appearMs: 40 });
 
@@ -1344,6 +1344,87 @@ test("the profiles footer goes onto two lines when it doesn't fit, rather than b
   const lines = screenAt(100, 24, draw);
   assert.match(lines[23], /^ ↑↓ select · n new · e edit · d delete · R\/V assign · esc back/);
   assert.equal(lines[22], "");
+});
+
+// ── The plugin's version and commit (#49) ───────────────────────────────────
+
+const H40 = "ff6822fe22be21f7436214d631e8226f2e848e69", B40 = "afcb452501d124458edbdb6c9043f293e11c43c6";
+// Looks up the commit as the panel does when it starts, with git answering the
+// lookup as `reply` says (else as it does by default: not a repository).
+async function lookUpCommit(t, reply) {
+  const before = git;
+  t.after(() => { git = before; forgetCommit(); });
+  if (reply) git = (args) => args[0] === "rev-parse" && args[1] === "--show-prefix" ? reply : before(args);
+  calls.length = 0;
+  callOpts.length = 0;
+  await readCommit();
+}
+const versionAt = (lines) => lines.find((l) => l?.includes("herdr-github v"));
+
+test("the profiles view shows the plugin's version and the commit its folder is at (#49)", async (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  await lookUpCommit(t, { code: 0, stdout: `\n${H40}\n${B40}\n` });
+  // One git call, in the plugin's own folder, never the repo's.
+  assert.deepEqual(calls, [["git", ...P.COMMIT_ARGS]]);
+  assert.equal(callOpts[0].cwd, path.join(__dirname, ".."));
+  const lines = screenAt(60, 40, () => onInput(Buffer.from("s")));
+  assert.equal(versionAt(lines), `  herdr-github v${P.PLUGIN_VERSION} · ff6822f`, lines.join("\n"));
+  // Under the prompts, and in a narrow pane too, cut to its width.
+  assert.ok(lines.indexOf(versionAt(lines)) > lines.findLastIndex((l) => l?.includes("default: /issue-pr-review")), lines.join("\n"));
+  for (const cols of [40, 24]) {
+    const narrow = screenAt(cols, 40, draw);
+    for (const l of narrow) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
+    assert.ok(versionAt(narrow)?.trim().startsWith("herdr-github v"), `${cols}:\n${narrow.join("\n")}`);
+  }
+  assert.match(versionAt(screenAt(40, 40, draw)), /^ {2}herdr-github v\d+\.\d+\.\d+ · ff6822f$/);
+  // The form shows no version.
+  assert.equal(versionAt(screenAt(60, 40, () => onInput(Buffer.from("n")))), undefined);
+});
+
+test("the profiles view says the commit is unknown when git can't tell it, never another repo's (#49)", async (t) => {
+  claudeHome(t);
+  for (const reply of [
+    null, // not a repository: git's default here
+    { code: 0, stdout: `herdr-app/plugins/herdr-github/\n${H40}\n${B40}\n` }, // a copy inside another repo
+    { code: 128, stdout: `\n${H40}\nHEAD:herdr-plugin.toml\n` }, // a repo without the plugin's manifest
+    { error: Object.assign(new Error("spawn git ENOENT"), { code: "ENOENT" }) }, // no git
+  ]) {
+    setupGitHub("issues");
+    await lookUpCommit(t, reply);
+    const lines = screenAt(60, 40, () => onInput(Buffer.from("s")));
+    assert.equal(versionAt(lines), `  herdr-github v${P.PLUGIN_VERSION} · commit unknown`, `${JSON.stringify(reply)}\n${lines.join("\n")}`);
+    assert.ok(!lines.join("\n").includes("ff6822f"), JSON.stringify(reply));
+  }
+});
+
+test("the version shows while the commit is looked up, and the commit once git answers (#49)", async (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  t.after(() => { hold = () => false; held.length = 0; forgetCommit(); });
+  forgetCommit();
+  let lines = screenAt(60, 40, () => onInput(Buffer.from("s")));
+  assert.equal(versionAt(lines), `  herdr-github v${P.PLUGIN_VERSION}`, lines.join("\n"));
+  // The answer redraws the open view.
+  hold = (name) => name === "git";
+  const pending = readCommit();
+  assert.equal(held.length, 1);
+  let frame = "";
+  const { write } = process.stdout, { columns, rows } = process.stdout;
+  Object.assign(process.stdout, { columns: 60, rows: 40, write: (s) => { frame = s; return true; } });
+  try { held[0].answer({ code: 0, stdout: `\n${H40}\n${B40}\n` }); await pending; } finally { Object.assign(process.stdout, { write, columns, rows }); }
+  lines = [];
+  for (const m of frame.matchAll(/\x1b\[(\d+);1H(.*?)\x1b\[0m\x1b\[K/g)) lines[m[1] - 1] = strip(m[2]);
+  assert.equal(versionAt(lines), `  herdr-github v${P.PLUGIN_VERSION} · ff6822f`, lines.join("\n"));
+});
+
+test("with the last prompt selected, the version under it shows in a short pane (#49)", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from("s")));
+  Object.assign(ui.settings, { sel: 1, promptSel: P.ACTION_KEYS.at(-1) });
+  const lines = screenAt(60, 12, draw);
+  assert.ok(versionAt(lines), lines.join("\n"));
 });
 
 test("the form names the id's rule, fits a narrow pane, and shows each field's reason under it", (t) => {
