@@ -239,8 +239,9 @@ const ui = {
   // The profile menu of a Resolve or Review press, while it's open: { view, number,
   // key, entries, sel, top, anchor }, anchor being "row": under that row's button.
   menu: null,
-  // A Merge press that only asked (#51): { number, notice }, the pull request whose
-  // button now reads Confirm merge, and the notice that says so; null otherwise.
+  // A Merge press that only asked (#51): { number, root, head }, the pull request
+  // whose button now reads Confirm merge, the repo it's in, and its head commit as
+  // the list showed it then; null otherwise.
   confirm: null,
 };
 let cwd = process.env.HERDR_GITHUB_CWD || process.cwd();
@@ -319,7 +320,8 @@ async function refresh(force = false) {
   // Numbered for the merge guard: a pull request merged after this began stays out of its answer (#51).
   const began = merges.begin();
   if (moved) {
-    Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 } });
+    // A Merge press that asked was for the old folder's repo, so it's taken back (#51).
+    Object.assign(ui, { context, prs: [], issues: [], errors: {}, repo: null, root: null, forge: null, error: null, fetched: false, sel: { prs: 0, issues: 0 }, top: { prs: 0, issues: 0 }, confirm: null });
   }
   ui.fetchedAt = Date.now();
   if (!fs.existsSync(context)) {
@@ -477,25 +479,31 @@ function mergeGuard() {
 }
 const merges = mergeGuard();
 
+// The Merge press that asked about pull request `number`, in the repo on screen;
+// null when there's none. A press in another repo never counts here.
+const armedFor = (number) => ui.confirm?.number === number && ui.confirm.root === ui.root ? ui.confirm : null;
+
 // The Merge button of pull request `index`: on the rows that have a Review button,
 // so on GitHub only. `armed` once a press has asked.
 function mergeFor(index) {
   const action = actionFor("prs", index);
-  return action ? { number: action.number, armed: ui.confirm?.number === action.number } : null;
+  return action ? { number: action.number, armed: Boolean(armedFor(action.number)) } : null;
 }
 
 const noMerge = (number) => `Can't merge #${number}: the repo allows no squash, merge commit or rebase, or gh didn't say which.`;
 
 // A Merge button pressed. The pull request is found again by its number, so only
-// that one is ever merged. One merge, or one launch, at a time.
+// that one is ever merged, and only in the repo the first press was in. One merge,
+// or one launch, at a time.
 function pressMerge(number) {
   if (ui.acting || ui.menu) return ui.acting;
   const index = ui.prs.findIndex((p) => p.number === number);
   if (index < 0 || !mergeFor(index)) return null;
-  ui.sel.prs = index;
-  if (ui.confirm?.number === number) {
+  const armed = armedFor(number);
+  if (armed) {
     ui.confirm = null;
-    return merge(number);
+    // The head the first press saw: a push since then makes GitHub refuse.
+    return merge(number, armed.head);
   }
   const strategy = mergeStrategy(ui.repo);
   if (!strategy) {
@@ -503,33 +511,38 @@ function pressMerge(number) {
     say("error", noMerge(number));
     return null;
   }
-  ui.confirm = { number, notice: null };
-  say("info", `Press Confirm merge #${number} to merge it (${MERGE_NAMES[strategy]}). Any other key or click cancels.`);
-  ui.confirm.notice = ui.notice;
+  // The first press moves nothing: not the selection, the notice or the scroll, so
+  // Confirm merge is drawn where Merge was, and a second press there finds it. The
+  // key hints' line asks instead of a notice, which would shorten the list.
+  ui.confirm = { number, root: ui.root, head: ui.prs[index].head ?? null };
+  draw();
   return null;
 }
 
-// Takes back a press that only asked, and the notice that asked.
+// What the key hints' line says while a Merge press asks.
+const askingHint = (number) => ` Press Confirm merge #${number} to merge it (${MERGE_NAMES[mergeStrategy(ui.repo)] ?? "?"}) · anything else cancels`;
+
+// Takes back a press that only asked.
 function cancelMerge() {
-  if (ui.notice && ui.notice === ui.confirm?.notice) ui.notice = null;
   ui.confirm = null;
   draw();
 }
 
 // The second press: like a launch, it holds ui.acting while gh runs, so its
-// progress stays up and nothing else starts meanwhile.
-function merge(number) {
-  ui.acting = mergePr(number)
+// progress stays up and nothing else starts meanwhile. `head` is the pull request's
+// head commit as the first press saw it.
+function merge(number, head) {
+  ui.acting = mergePr(number, head)
     .catch((e) => say("error", `Can't merge #${number}: ${e.message}`))
     .finally(() => { ui.acting = null; });
   return ui.acting;
 }
 
-async function mergePr(number) {
+async function mergePr(number, head) {
   const pr = ui.prs.find((p) => p.number === number), root = ui.root, strategy = mergeStrategy(ui.repo);
   if (!pr || ui.forge !== FORGES.github || !root) return say("error", `The pull request #${number} isn't in the list any more, so nothing was merged.`);
   if (!strategy) return say("error", noMerge(number));
-  const args = mergeArgs(number, strategy, pr.head);
+  const args = mergeArgs(number, strategy, head);
   say("info", `Merging #${number}…`);
   const r = await run("gh", args, { cwd: root }).catch((e) =>
     ({ code: -1, stdout: "", stderr: e.code === "ENOENT" ? "gh isn't installed" : e.message }));
@@ -1069,8 +1082,10 @@ function draw() {
   // The menu's hints, shorter when the pane is too narrow for them, so esc stays in view.
   const menuKeys = width(MENU_KEYS) <= cols ? MENU_KEYS : MENU_KEYS_SHORT;
   // The list's, with t and the interval in use in view however narrow the pane (#47).
-  const keys = ui.menu ? menuKeys : P.keyHints({ action: action?.key ?? null, every: ui.every, close: "q close", lead: " ", room: cols });
-  out.push(dim(fit(keys, cols)));
+  // A Merge press that asked says so here, in the line's place (#51).
+  const armed = !ui.menu && ui.confirm && armedFor(ui.confirm.number);
+  const keys = ui.menu ? menuKeys : armed ? askingHint(armed.number) : P.keyHints({ action: action?.key ?? null, every: ui.every, close: "q close", lead: " ", room: cols });
+  out.push((armed ? yellow : dim)(fit(keys, cols)));
   paint(out, rows);
 }
 
