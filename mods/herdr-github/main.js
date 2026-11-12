@@ -8,13 +8,14 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, focused, exec, hc, theme, layout, window, run, home, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
+import { spaces, panes, terminals, focused, exec, hc, theme, layout, window, run, home, appHome, readTextFile, writeTextFile, knownAgents, nextCommand } from "herdr";
 import { LIMIT, IDD, ago, firstLine, ACTIONS, readRepo, refreshGate, actionFor, promptFor, findSkill, cantRun, tabStart, chooseAnchor, pickNewTerminal, unpickedNotice, isReadyToSend, nextNotice, keepsNotice, pathTo, shown } from "./forge.js";
 import {
   HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, validateProfile, buildLaunch, storePath, emptyStore,
   parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, parseMccEnv,
   PROMPT_TOKEN, PROMPT_LABELS, validatePrompt, expandPrompt, setPrompt, resolvePrompt, profileChoices, findChoice,
   parseRefresh, nextRefresh, refreshDue, refreshNotice, keyHints, hintRoom,
+  PLUGIN_VERSION, COMMIT_ARGS, parseCommit, versionLine,
 } from "./profiles.js";
 
 const MOD = "herdr-github";
@@ -72,6 +73,10 @@ const TITLE_LH = 18, BODY_LH = 16, META_H = 16, PAD = 7, GAP = 4, ACT_H = 24;
 // box with 4 px of padding and a 1 px border.
 const MENU_TITLE_H = 16, MENU_ITEM_H = 24;
 const menuHeight = (n) => 2 + 8 + MENU_TITLE_H + n * (MENU_ITEM_H + 2);
+// The commit this mod's code was loaded from, for the profiles view (#49): looked up
+// by the first copy of the view, once per load, so a copy opened after a git pull
+// that the app hasn't reloaded still shows the commit of the code it runs.
+let commitLookup = null;
 
 export default class GitHub extends View {
   init(_props, cx) {
@@ -124,6 +129,12 @@ export default class GitHub extends View {
       this.promptInputs[action] = input;
     }
     cx.spawn(async (cx) => { await this.readStore(); cx.notify(); });
+    // The commit this mod was built from, for the profiles view (#49): read in its
+    // own folder on this computer. undefined until then, null when it can't be told,
+    // as in a copy with no .git of its own.
+    this.commit = undefined;
+    commitLookup ??= exec("git", COMMIT_ARGS, { cwd: `${appHome()}/mods/${MOD}`, timeout: 5000 }).then((r) => parseCommit(r, `mods/${MOD}/`), () => null);
+    cx.spawn(async (cx) => { this.commit = await commitLookup; cx.notify(); });
     // The timer's refresh, when the lists are due at the chosen interval; never in manual.
     cx.timer.every(TICK_MS, (cx) => { if (this.visible() && refreshDue(this.every, this.fetchedAt, Date.now())) this.refresh(cx); });
     // keys.json can send "herdr-github:<command>": focus, refresh, interval, resolve, settings.
@@ -906,7 +917,9 @@ export default class GitHub extends View {
         .children(ACTION_KEYS.map((a) => this.promptField(t, a))))
       .child(h_flex().gap(6).items_center()
         .child(this.chip(t, "hg-new", "New profile", false, (_e, cx) => this.editProfile(null, cx)))
-        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(st.file ?? "")));
+        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(st.file ?? "")))
+      // The plugin's version and commit (#49).
+      .child(div().flex_none().px(2).truncate().text_size(10.5).text_color(t.dim).child(versionLine(PLUGIN_VERSION, this.commit)));
   }
 
   render(cx) {

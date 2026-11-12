@@ -216,6 +216,14 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+// The commit of the plugin's own folder, looked up once when the panel starts (#49),
+// so it is the one this panel runs. Anything but a clear answer is unknown.
+function readCommit() {
+  return run("git", P.COMMIT_ARGS, { cwd: __dirname, timeout: 5000 })
+    .then((r) => P.parseCommit(r, ""), () => null)
+    .then((c) => { commit = c; if (ui.settings) draw(); });
+}
+
 // ── State ───────────────────────────────────────────────────────────────────
 
 const ui = {
@@ -233,6 +241,9 @@ const ui = {
 };
 let cwd = process.env.HERDR_GITHUB_CWD || process.cwd();
 let target = process.env.HERDR_GITHUB_PANE || null;
+// The commit this plugin was built from, for the profiles view (#49): undefined until
+// looked up, then its short hash, or null when it can't be told.
+let commit;
 
 let registry = null;
 
@@ -1360,6 +1371,10 @@ function settingsLines(cols, rows) {
       owner.push(select, select);
       if (on) selEnd = body.length;
     }
+    // The plugin's version and commit, last (#49): with the last prompt selected, it
+    // shows too. Narrow, it drops the plugin's name to keep the commit.
+    body.push("", `  ${dim(fit(P.versionLine(P.PLUGIN_VERSION, commit, cols - 2), cols - 2))}`); owner.push(null, null);
+    if (st.promptSel === P.ACTION_KEYS[P.ACTION_KEYS.length - 1] && st.mode === "list") selEnd = body.length;
   }
   // Keep the selected entry (or field) in view. A prompt keeps its end in view: the
   // line you type on, and its reason. The wheel scrolls the form and the prompt
@@ -1504,6 +1519,7 @@ function main() {
 
   draw();
   locate().then(() => refresh());
+  readCommit();
 }
 
 if (require.main === module) main();
@@ -1517,5 +1533,7 @@ else {
     restore, poll, STATE,
     // Tests point the panel at another followed pane, or none.
     follow: (pane) => { target = pane; },
+    // The commit in the profiles view (#49): looked up as main() does, or forgotten.
+    readCommit, forgetCommit: () => { commit = undefined; },
   };
 }

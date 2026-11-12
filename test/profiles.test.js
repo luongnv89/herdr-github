@@ -476,6 +476,62 @@ test("the app's key hints have room for t and the interval at 455, 340, 280 and 
   }
 });
 
+// ── The plugin's version and commit (#49) ───────────────────────────────────
+
+const H40 = "ff6822fe22be21f7436214d631e8226f2e848e69", B40 = "afcb452501d124458edbdb6c9043f293e11c43c6";
+const answer = (stdout, code = 0) => ({ code, stdout, stderr: "" });
+// Git's answer to COMMIT_ARGS asked in a folder at `prefix` in the repo.
+const revParse = (prefix, hash = H40, blob = B40) => answer(`${prefix}\n${hash}\n${blob}\n`);
+
+test("the version is the one herdr-plugin.toml releases", () => {
+  const toml = fs.readFileSync(path.join(__dirname, "..", "herdr-plugin.toml"), "utf8");
+  const version = /^version = "([^"]+)"$/m.exec(toml)?.[1];
+  assert.ok(version, "herdr-plugin.toml has a version");
+  assert.equal(P.PLUGIN_VERSION, version);
+});
+
+test("parseCommit: the short hash only when git answered for the plugin's own folder, in a repo with its manifest", () => {
+  assert.deepEqual(P.COMMIT_ARGS, ["rev-parse", "--show-prefix", "HEAD", "HEAD:herdr-plugin.toml"]);
+  assert.equal(P.parseCommit(revParse(""), ""), "ff6822f");
+  assert.equal(P.parseCommit(revParse("mods/herdr-github/"), "mods/herdr-github/"), "ff6822f");
+  // SHA-256 repos, and no final line break.
+  assert.equal(P.parseCommit(revParse("", "a".repeat(64), "b".repeat(64)), ""), "aaaaaaa");
+  assert.equal(P.parseCommit(answer(`\n${H40}\n${B40}`), ""), "ff6822f");
+  // Another folder of the repo, or a repo around a copy with no .git: never its hash.
+  assert.equal(P.parseCommit(revParse("mods/herdr-github/"), ""), null);
+  assert.equal(P.parseCommit(revParse(""), "mods/herdr-github/"), null);
+  assert.equal(P.parseCommit(revParse("herdr-app/mods/herdr-github/"), "mods/herdr-github/"), null);
+  // No manifest at the repo's root: git exits non-zero, after printing the hash.
+  assert.equal(P.parseCommit(answer(`\n${H40}\nHEAD:herdr-plugin.toml\n`, 128), ""), null);
+  assert.equal(P.parseCommit(answer(`\n${H40}\nHEAD:herdr-plugin.toml\n`), ""), null);
+  // Whatever it printed, git didn't succeed.
+  assert.equal(P.parseCommit(answer(`\n${H40}\n${B40}\n`, 1), ""), null);
+  // Not a repo, no git, or anything else.
+  for (const r of [answer("", 128), answer(""), answer("\n"), answer(`\n${H40}\n`), answer(`\n${H40}\n${B40}\n${B40}\n`),
+    revParse("", H40.toUpperCase()), revParse("", H40.slice(0, 39)), revParse("", `${H40}x`), revParse("", "not a hash"),
+    { code: 0, stdout: null }, null, undefined]) {
+    assert.equal(P.parseCommit(r, ""), null, JSON.stringify(r));
+  }
+});
+
+test("versionLine: the version, then the commit, commit unknown, or nothing while it's looked up", () => {
+  assert.equal(P.versionLine("0.6.0", "ff6822f"), "herdr-github v0.6.0 · ff6822f");
+  assert.equal(P.versionLine("0.6.0", null), "herdr-github v0.6.0 · commit unknown");
+  assert.equal(P.versionLine("0.6.0", undefined), "herdr-github v0.6.0");
+});
+
+test("versionLine: longer than its room, it drops the plugin's name and keeps the commit", () => {
+  // It fits: the whole line.
+  assert.equal(P.versionLine("0.6.0", "ff6822f", 29), "herdr-github v0.6.0 · ff6822f");
+  assert.equal(P.versionLine("0.6.0", null, 36), "herdr-github v0.6.0 · commit unknown");
+  // One short: the version and what's after it.
+  assert.equal(P.versionLine("0.6.0", "ff6822f", 28), "v0.6.0 · ff6822f");
+  assert.equal(P.versionLine("0.6.0", null, 35), "v0.6.0 · commit unknown");
+  assert.equal(P.versionLine("0.6.0", undefined, 10), "v0.6.0");
+  // Shorter still, the caller cuts it.
+  assert.equal(P.versionLine("0.6.0", "ff6822f", 4), "v0.6.0 · ff6822f");
+});
+
 test("the CommonJS copy behaves as the app mod's module", async () => {
   const E = await esm();
   assert.deepEqual(Object.keys(E).sort(), Object.keys(P).sort());
@@ -507,6 +563,13 @@ test("the CommonJS copy behaves as the app mod's module", async () => {
   const store = { ...P.emptyStore(), profiles: [ok({ id: "a", harness: "pi" })], assign: { resolve: "a", review: null } };
   for (const action of ["resolve", "review"]) assert.deepEqual(E.profileChoices(store, action), P.profileChoices(store, action), action);
   for (const id of ["default", "a", "gone"]) assert.deepEqual(E.findChoice(store, id), P.findChoice(store, id), id);
+  for (const k of ["PLUGIN_VERSION", "COMMIT_ARGS"]) assert.deepEqual(E[k], P[k], k);
+  for (const [r, prefix] of [[revParse(""), ""], [revParse("mods/herdr-github/"), "mods/herdr-github/"], [revParse("x/"), ""], [answer("", 128), ""]]) {
+    assert.equal(E.parseCommit(r, prefix), P.parseCommit(r, prefix), JSON.stringify(r));
+  }
+  for (const c of ["ff6822f", null, undefined]) {
+    for (const room of [undefined, 40, 30, 20]) assert.equal(E.versionLine(P.PLUGIN_VERSION, c, room), P.versionLine(P.PLUGIN_VERSION, c, room), `${c} ${room}`);
+  }
 });
 
 test("profiles.cjs is up to date with the app mod's profiles.js", () => {

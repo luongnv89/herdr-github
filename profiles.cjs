@@ -416,4 +416,36 @@ function hintRoom(width) {
   return Math.max(0, Math.floor((width - 28) / (10.5 * 0.58)));
 }
 
-module.exports = { HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice, keyHints, hintRoom };
+// The plugin's version (#49), as herdr-plugin.toml gives it: a release changes both.
+const PLUGIN_VERSION = "0.6.0";
+
+// What `git rev-parse` is asked in the plugin's folder for the commit it was built
+// from (#49): the folder's path in the repo, the commit, and the manifest at the
+// repo's root, which git can't find (and exits non-zero) in another repo.
+const COMMIT_ARGS = ["rev-parse", "--show-prefix", "HEAD", "HEAD:herdr-plugin.toml"];
+
+// The commit's short hash from git's answer to COMMIT_ARGS ({ code, stdout }), or
+// null when it can't be told. `prefix` is where the folder asked from sits in the
+// repo: "" for the plugin's root (panel.js), "mods/herdr-github/" for the app mod.
+// A copy with no .git of its own is read from whatever repo holds it, if any: an
+// answer for another folder, or without the manifest at its root, is that repo's.
+function parseCommit(result, prefix) {
+  if (!result || result.code !== 0 || typeof result.stdout !== "string") return null;
+  const lines = result.stdout.split("\n");
+  if (lines[lines.length - 1] === "") lines.pop();
+  const hash = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+  if (lines.length !== 3 || lines[0] !== prefix || !hash.test(lines[1]) || !hash.test(lines[2])) return null;
+  return lines[1].slice(0, 7);
+}
+
+// The profiles view's version line (#49): the commit's short hash, "commit unknown"
+// when it can't be told (null), and nothing while it's still looked up (undefined).
+// Longer than `room` characters, it drops the plugin's name, so a narrow pane that
+// cuts it from the right still shows the commit.
+function versionLine(version, commit, room = Infinity) {
+  const tail = `v${version}${commit === undefined ? "" : ` · ${commit ?? "commit unknown"}`}`;
+  const line = `herdr-github ${tail}`;
+  return line.length > room ? tail : line;
+}
+
+module.exports = { HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice, keyHints, hintRoom, PLUGIN_VERSION, COMMIT_ARGS, parseCommit, versionLine };

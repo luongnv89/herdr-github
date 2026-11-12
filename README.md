@@ -189,6 +189,8 @@ A model is letters, digits and `. _ : / @ + -`, starting with a letter or digit.
 
 A profile that can't be saved shows why, in red, and nothing is written.
 
+At the bottom of the list, both views show the plugin's version and the commit it was built from, such as `herdr-github v0.6.0 · ff6822f`. In a terminal pane too narrow for all of it, the line drops the `herdr-github` name and keeps the version and commit. The commit is the one the plugin's own folder is at when the panel opens, read with `git`. When that can't be told, as in a copied folder that isn't in a clone of this repo, the line says `commit unknown` instead.
+
 ### Where they're kept
 
 Both panels read and write the same file:
@@ -220,7 +222,7 @@ In the app, a Resolve or Review click (after you choose a profile, when there's 
 
 In the app, the interval button in the header (`1m`, or `Manual`) changes the refresh interval as `t` does. A panel narrower than 340 pixels leaves the button out, to keep room for the title and the other buttons; `t` still works, and the key hints still show the interval in use.
 
-Besides its own `localStorage` (which list you chose and the refresh interval), the app mod writes only the profiles file, and runs `mkdir -p` for its folder the first time it saves one.
+Besides its own `localStorage` (which list you chose and the refresh interval), the app mod writes only the profiles file, and runs `mkdir -p` for its folder the first time it saves one. When it opens, it runs `git rev-parse` once in its own folder, on your computer, for the commit the profiles view shows.
 
 `keys.json` can send the panel `herdr-github:focus`, `herdr-github:refresh`, `herdr-github:interval` (the next refresh interval), `herdr-github:resolve` (or `review`, `act`) and `herdr-github:settings`.
 
@@ -247,6 +249,7 @@ A plain click on a remote machine still can't open a browser on your computer.
 A herdr plugin runs as your user, with no sandbox. This one:
 
 - runs `git` in the repo's folder to find its remote, then `gh` or `glab` there to read the repo and its open pull requests (or merge requests) and issues;
+- runs `git rev-parse` once in its own folder when it starts, for the commit the profiles view shows;
 - runs `herdr` to find the focused pane, and to open, resize and close its own pane;
 - when you click Resolve or Review, or press `a`: reads the profiles file, runs `herdr` to list the agents and split a new pane below your agent (or below the pane the panel follows), then either starts the profile's agent in it (`herdr agent start`) and sends it the skill and the number, or your custom prompt, or, for mcc, runs `mcc env` in the repo and types `mcc run -- … <prompt>` into the new pane (`herdr pane run`), and closes that pane again if `herdr agent start` or `herdr pane run` fails, except while the agent is asking you something; it reads the skill folders listed under [Resolve and review with an agent](#resolve-and-review-with-an-agent). With a custom prompt it doesn't run `mcc env` or read the skill folders;
 - runs `open` (macOS) or `xdg-open` (Linux) when you open a row or the repo, on the computer where its herdr server runs (see [Remote machines](#remote-machines));
@@ -298,7 +301,7 @@ A linked plugin runs straight from your folder, so a change shows the next time 
 - `mods/herdr-github/`: the Herdr app mod. `main.js` is the panel, `forge.js` its rules for rows, forges and agent actions, and `profiles.js` the agent profiles, shared with `panel.js`.
 - `scripts/capture-screenshots.mjs`: takes the README's pictures of the terminal panel (see [Take the screenshots again](#take-the-screenshots-again)). `scripts/ansi-svg.mjs` turns a frame of the panel into an SVG. `scripts/capture-app-screenshots.mjs` takes the pictures of the Herdr app's panel.
 - `profiles.cjs`: the terminal panel's copy of `mods/herdr-github/profiles.js`, generated. Edit `profiles.js`, then run `node scripts/sync-profiles.mjs`. CI fails when the two differ (`node scripts/sync-profiles.mjs --check`).
-- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, for what Resolve and Review run for each harness, with stand-ins for `herdr` and `mcc`, for the profiles and their file, for the app mod's rules, for which key `bind-key` picks and how it edits the config, for how a frame of the panel becomes an SVG, and for what the app's screenshots set up and when they count a frame as settled.
+- `test/`: unit tests for the text and row rendering, for reading GitHub and GitLab JSON, for which row a click opens, for what a failed open shows and how URLs and links are drawn, for what Resolve and Review run for each harness, with stand-ins for `herdr` and `mcc`, for the profiles and their file, for the version and commit the profiles views show, for the app mod's rules, for which key `bind-key` picks and how it edits the config, for how a frame of the panel becomes an SVG, and for what the app's screenshots set up and when they count a frame as settled.
 
 `mods/herdr-github/gpui-kit.d.ts` is written by the app's runtime each time the mod runs, and is not in git.
 

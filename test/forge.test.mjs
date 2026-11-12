@@ -478,3 +478,23 @@ test("main.js keeps the interval, and t, the header's interval button and the in
   // The refresh button still presses, in manual too.
   assert.match(main, /"Refresh", \(_e, cx\) => this\.refresh\(cx, false, true\)\)/);
 });
+
+// ── The plugin's version and commit (#49) ──────────────────────────────────
+
+test("main.js looks up its commit once, in its own folder on this computer, and shows it in the profiles view (#49)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  assert.match(main, /import \{[^}]*\bappHome\b[^}]*\} from "herdr";/);
+  // Once per load of the code, by the first copy's init: git on this computer (no
+  // `on`), in the mod's folder under the app's; a failure is unknown.
+  assert.match(main, /^let commitLookup = null;$/m);
+  const fn = main.slice(main.indexOf("  init(_props, cx) {"));
+  const init = fn.slice(0, fn.indexOf("\n  }\n") + 4);
+  assert.match(init, /this\.commit = undefined;\s*commitLookup \?\?= exec\("git", COMMIT_ARGS, \{ cwd: `\$\{appHome\(\)\}\/mods\/\$\{MOD\}`, timeout: 5000 \}\)\.then\(\(r\) => parseCommit\(r, `mods\/\$\{MOD\}\/`\), \(\) => null\);/);
+  assert.match(init, /cx\.spawn\(async \(cx\) => \{ this\.commit = await commitLookup; cx\.notify\(\); \}\);/);
+  assert.equal(main.match(/COMMIT_ARGS/g).length, 2, "imported, and run once");
+  assert.equal(main.match(/commitLookup = /g).length, 1, "set in one place only");
+  assert.match(main, /const MOD = "herdr-github";/);
+  // The profile list's last line: it keeps its height when the list overflows.
+  const list = main.slice(main.indexOf("  profileList(t) {"));
+  assert.match(list.slice(0, list.indexOf("\n  }\n")), /\.child\(div\(\)\.flex_none\(\)[^\n]*\.truncate\(\)[^\n]*\.child\(versionLine\(PLUGIN_VERSION, this\.commit\)\)\);$/);
+});
