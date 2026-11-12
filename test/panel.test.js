@@ -1353,11 +1353,11 @@ const H40 = "ff6822fe22be21f7436214d631e8226f2e848e69", B40 = "afcb452501d124458
 // lookup as `reply` says (else as it does by default: not a repository).
 async function lookUpCommit(t, reply) {
   const before = git;
-  t.after(() => { git = before; forgetCommit(); });
+  t.after(() => forgetCommit());
   if (reply) git = (args) => args[0] === "rev-parse" && args[1] === "--show-prefix" ? reply : before(args);
   calls.length = 0;
   callOpts.length = 0;
-  await readCommit();
+  try { await readCommit(); } finally { git = before; }
 }
 const versionAt = (lines) => lines.find((l) => l?.includes("herdr-github v"));
 
