@@ -58,10 +58,12 @@ export function plain(md) {
 
 // ── Forges: GitHub through `gh`, GitLab through `glab` ──────────────────────
 // Each turns its CLI's JSON into one shape the rows draw from:
-//   repo  { name, url }
-//   pr    { ref, number, title, body, author, branch, draft, review, checks, updatedAt, url }
+//   repo  { name, url, merges? }
+//   pr    { ref, number, title, body, author, branch, head?, draft, review, checks, updatedAt, url }
 //   issue { ref, number, title, body, author, labels: [{ name, color }], updatedAt, url }
-// `number` is the bare number an agent is handed; `ref` is only for display.
+// `number` is the bare number an agent is handed; `ref` is only for display. On
+// GitHub, `merges` says which merge methods the repo allows and `head` is the pull
+// request's head commit, for its Merge button (#51).
 
 const hex = (color) => (color || "").replace(/^#/, "");
 const REVIEW = { APPROVED: "approved", CHANGES_REQUESTED: "changes", REVIEW_REQUIRED: "review" };
@@ -72,12 +74,12 @@ const MERGE_REVIEW = { requested_changes: "changes", not_approved: "review" };
 export const FORGES = {
   github: {
     id: "github", name: "GitHub", cli: "gh", prs: "Pull requests", pr: "pull request",
-    repoArgs: ["repo", "view", "--json", "nameWithOwner,url"],
-    prArgs: ["pr", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,isDraft,headRefName,updatedAt,url,reviewDecision,statusCheckRollup"],
+    repoArgs: ["repo", "view", "--json", "nameWithOwner,url,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"],
+    prArgs: ["pr", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,isDraft,headRefName,headRefOid,updatedAt,url,reviewDecision,statusCheckRollup"],
     issueArgs: ["issue", "list", "--limit", String(LIMIT), "--json", "number,title,body,author,labels,updatedAt,url"],
-    repo: (r) => ({ name: r.nameWithOwner, url: r.url }),
+    repo: (r) => ({ name: r.nameWithOwner, url: r.url, merges: { squash: r.squashMergeAllowed, merge: r.mergeCommitAllowed, rebase: r.rebaseMergeAllowed } }),
     toPr: (p) => ({
-      ref: `#${p.number}`, number: p.number, title: clean(p.title), body: plain(p.body), author: p.author?.login, branch: p.headRefName,
+      ref: `#${p.number}`, number: p.number, title: clean(p.title), body: plain(p.body), author: p.author?.login, branch: p.headRefName, head: p.headRefOid,
       draft: Boolean(p.isDraft), review: REVIEW[p.reviewDecision] ?? null, checks: checks(p.statusCheckRollup),
       updatedAt: p.updatedAt, url: p.url,
     }),
@@ -241,6 +243,53 @@ export const isKind = (k) => typeof k === "string" && /^[a-z][\w-]*$/.test(k);
 export function actionFor(forge, view, item) {
   if (forge?.id !== "github" || !item || !isNumber(item.number)) return null;
   return { ...ACTIONS[view], number: item.number };
+}
+
+// ── Merging a pull request (#51) ────────────────────────────────────────────
+// Each GitHub pull request row has a Merge button. The first press only asks; a
+// second press on the same row merges that pull request with `gh pr merge`, by the
+// method the repo allows, and only while its head is still the commit the list
+// showed. GitLab rows have none.
+
+const MERGE_FLAGS = { squash: "--squash", merge: "--merge", rebase: "--rebase" };
+export const MERGE_NAMES = { squash: "squash", merge: "merge commit", rebase: "rebase" };
+
+// The merge method for a repo (forge.repo's shape): squash, else a merge commit,
+// else rebase, as the repo allows; null when it allows none, or gh didn't say.
+export function mergeStrategy(repo) {
+  const m = repo?.merges;
+  return ["squash", "merge", "rebase"].find((s) => m?.[s] === true) ?? null;
+}
+
+// `gh pr merge`'s arguments, built from an integer, a known method and a commit
+// hash only: never from a title or body. Without a hash it can't check the head.
+export function mergeArgs(number, strategy, head = null) {
+  if (!isNumber(number)) throw new Error("not a number");
+  if (!["squash", "merge", "rebase"].includes(strategy)) throw new Error("not a merge method");
+  const args = ["pr", "merge", String(number), MERGE_FLAGS[strategy]];
+  if (typeof head === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) args.push("--match-head-commit", head);
+  return args;
+}
+
+// The pull requests merged from the panel. A refresh that began before a merge
+// finished can answer after it, with the pull request still open: its answer
+// mustn't list it again. begin() numbers each refresh as it starts, add() notes a
+// merge in a repo's root as it finishes, and filter() drops, from a refresh's pull
+// requests, those merged in that root since the refresh began. A refresh that
+// began after a merge is gh's own word on it, so filter() then forgets it.
+export function mergeGuard() {
+  let latest = 0;
+  const merged = new Map();
+  const key = (root, number) => `${root}\n${number}`;
+  return {
+    begin: () => ++latest,
+    add(root, number) { merged.set(key(root, number), latest); },
+    filter(prs, root, began) {
+      const kept = (prs ?? []).filter((p) => !(merged.get(key(root, p.number)) >= began));
+      for (const [k, at] of merged) if (at < began && k.startsWith(key(root, ""))) merged.delete(k);
+      return kept;
+    },
+  };
 }
 
 // Claude Code, started directly or by `mcc run`, takes a skill as a slash command.
