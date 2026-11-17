@@ -17,6 +17,7 @@ import {
   PROMPT_TOKEN, PROMPT_LABELS, validatePrompt, expandPrompt, setPrompt, resolvePrompt, profileChoices, findChoice,
   parseRefresh, nextRefresh, refreshDue, refreshNotice, keyHints, hintRoom,
   PLUGIN_VERSION, COMMIT_ARGS, parseCommit, versionLine,
+  takesModel, isCustomModel, modelChoices, modelKeep, stepChoice, addModel, removeModel,
 } from "./profiles.js";
 
 const MOD = "herdr-github";
@@ -30,7 +31,7 @@ const parent = (file) => file.slice(0, file.lastIndexOf("/"));
 // The profile form's fields, in the order ↑ and ↓ move through them; the others are
 // choices, which ← and → step through.
 const FORM_FIELDS = ["name", "id", "harness", "model", "thinking"];
-const TEXT_FIELDS = ["name", "id", "model"];
+const TEXT_FIELDS = ["name", "id"];
 // What an action sends with no custom prompt, as Claude Code takes it.
 const DEFAULT_PROMPTS = Object.fromEntries(Object.values(ACTIONS).map((a) => [a.key, `/${a.skill} ${PROMPT_TOKEN}`]));
 const PROMPT_TIP = `A custom prompt replaces the IDD skill: it is sent as written to every harness, with ${PROMPT_TOKEN} as the number. Empty sends the default.`;
@@ -117,7 +118,7 @@ export default class GitHub extends View {
     // The profile form's text fields, made once and refilled for each profile.
     this.inputFocus = null;
     this.inputs = {};
-    for (const [key, placeholder] of [["name", "My profile"], ["id", "my-profile"], ["model", "harness default"]]) {
+    for (const [key, placeholder] of [["name", "My profile"], ["id", "my-profile"]]) {
       const input = InputState.new({ placeholder });
       input.on("change", (_e, cx) => { if (this.settings?.form) { this.settings.form[key] = input.value(); this.settings.error = null; } cx.notify(); });
       input.on("submit", (_e, cx) => this.saveForm(cx));
@@ -129,6 +130,17 @@ export default class GitHub extends View {
       input.on("blur", (_e, cx) => { if (this.inputFocus === key) this.inputFocus = null; cx.notify(); });
       this.inputs[key] = input;
     }
+    // A model of your own for the form's harness (#54): Add, or enter, adds it to the
+    // harness's choices and chooses it. Focused, it is "add-model".
+    this.modelInput = InputState.new({ placeholder: "Add a model, e.g. provider/model" });
+    this.modelInput.on("change", (_e, cx) => { if (this.settings) this.settings.error = null; cx.notify(); });
+    this.modelInput.on("submit", (_e, cx) => this.addOwnModel(cx));
+    this.modelInput.on("focus", (_e, cx) => {
+      this.inputFocus = "add-model";
+      if (this.settings?.form) this.settings.field = FORM_FIELDS.indexOf("model");
+      cx.notify();
+    });
+    this.modelInput.on("blur", (_e, cx) => { if (this.inputFocus === "add-model") this.inputFocus = null; cx.notify(); });
     // Each action's prompt, in the profiles view: made once, filled from the store
     // whenever the view reads it. Focused, it is "prompt-resolve" or "prompt-review".
     this.promptInputs = {};
@@ -566,7 +578,8 @@ export default class GitHub extends View {
 
   openSettings(cx) {
     this.menu = null;
-    const st = { mode: "list", sel: 0, field: 0, confirm: null, form: null, error: null, info: null, promptErrors: {}, saving: false, loading: true, file: null, text: null, store: emptyStore(), warnings: [], readOnly: true };
+    // In the form, `modelFrom` is the edited profile's harness and model, null for a new one.
+    const st = { mode: "list", sel: 0, field: 0, confirm: null, form: null, modelFrom: null, error: null, info: null, promptErrors: {}, saving: false, loading: true, file: null, text: null, store: emptyStore(), warnings: [], readOnly: true };
     this.settings = st;
     cx.spawn(async (cx) => {
       Object.assign(st, await this.readStore(), { loading: false });
@@ -588,7 +601,7 @@ export default class GitHub extends View {
     const st = this.settings;
     if (!st) return;
     if (st.mode === "list" && !st.confirm) return this.closeSettings(cx);
-    Object.assign(st, { mode: "list", form: null, confirm: null, error: null });
+    Object.assign(st, { mode: "list", form: null, modelFrom: null, confirm: null, error: null });
     this.handle.focus();
     cx.notify();
   }
@@ -630,9 +643,10 @@ export default class GitHub extends View {
     const st = this.settings;
     st.form = { prev: p?.id ?? null, name: p?.name ?? "", id: p?.id ?? "", harness: p?.harness ?? "mcc", model: p?.model ?? "", thinking: p?.thinking ?? "" };
     const values = { ...st.form };
-    for (const key of ["name", "id", "model"]) this.inputs[key].set_value(values[key]);
-    Object.assign(st.form, { name: values.name, id: values.id, model: values.model });
-    Object.assign(st, { mode: "edit", field: 0, confirm: null, error: null, info: null });
+    for (const key of TEXT_FIELDS) this.inputs[key].set_value(values[key]);
+    this.modelInput.set_value("");
+    Object.assign(st.form, { name: values.name, id: values.id });
+    Object.assign(st, { mode: "edit", field: 0, confirm: null, error: null, info: null, modelFrom: p ? { harness: p.harness, model: p.model ?? "" } : null });
     // The field exists only once the form is drawn: focus it again after that, as
     // Herdr's own mods do, unless you've clicked into a field meanwhile.
     this.inputs.name.focus();
@@ -652,15 +666,47 @@ export default class GitHub extends View {
     });
   }
 
-  // A harness or thinking level: only the values the profile can take.
+  // What the form's Model offers (#54): the harness's models, yours, and the edited
+  // profile's own while the form has its harness, so one in neither list shows.
+  modelValues(f) {
+    const st = this.settings;
+    return modelChoices(f.harness, st.store, modelKeep(st.modelFrom, f.harness));
+  }
+
+  // A harness, model or thinking level: only the values the profile can take. A
+  // model or level the new harness doesn't take goes back to its default.
   pickChoice(key, value, cx) {
     const st = this.settings, f = st?.form;
     if (!f) return;
     f[key] = value;
     st.field = FORM_FIELDS.indexOf(key);
+    if (!this.modelValues(f).includes(f.model)) f.model = "";
     if (!["", ...THINKING[f.harness]].includes(f.thinking)) f.thinking = "";
     st.error = null;
     cx.notify();
+  }
+
+  // The add box's Add, or enter in it: a model of your own for the form's harness,
+  // chosen once it's saved. The rest of the form stays as it is.
+  addOwnModel(cx) {
+    const st = this.settings, f = st?.form;
+    if (!f) return;
+    const m = this.modelInput.value().trim(), harness = f.harness;
+    this.change((s) => addModel(s, harness, m), `Added ${m} to ${HARNESS_NAMES[harness]}'s models`, cx, () => {
+      this.modelInput.set_value("");
+      if (st.form === f && f.harness === harness) f.model = m;
+    });
+  }
+
+  // Remove, or - on Model: the chosen model of yours, gone from the harness's choices;
+  // the form goes back to the harness default. Profiles that use it keep it.
+  removeOwnModel(cx) {
+    const st = this.settings, f = st?.form;
+    if (!f) return;
+    const m = f.model, harness = f.harness;
+    this.change((s) => removeModel(s, harness, m), `Removed ${m} from ${HARNESS_NAMES[harness]}'s models`, cx, () => {
+      if (st.form === f && f.harness === harness && f.model === m) f.model = "";
+    });
   }
 
   // The profiles in the list, the default first, with the selection kept inside
@@ -716,10 +762,9 @@ export default class GitHub extends View {
   stepChoice(by, cx) {
     const f = this.settings.form, key = FORM_FIELDS[this.settings.field];
     if (TEXT_FIELDS.includes(key)) return false;
-    const values = key === "harness" ? HARNESSES : ["", ...THINKING[f.harness]];
+    const values = key === "harness" ? HARNESSES : key === "model" ? this.modelValues(f) : ["", ...THINKING[f.harness]];
     if (values.length < 2) return true;
-    const at = Math.max(0, values.indexOf(f[key]));
-    this.pickChoice(key, values[(at + by + values.length) % values.length], cx);
+    this.pickChoice(key, stepChoice(values, f[key], by), cx);
     return true;
   }
 
@@ -736,11 +781,23 @@ export default class GitHub extends View {
       cx.notify();
       return true;
     }
+    // Esc in the add-model box leaves the box, back to the form's Model.
+    if (k === "escape" && st.mode === "edit" && this.inputFocus === "add-model") {
+      this.inputFocus = null;
+      this.handle.focus();
+      cx.notify();
+      return true;
+    }
     if (k === "escape") { this.settingsBack(cx); return true; }
     if (st.mode === "edit") {
       if (k === "up" || k === "down") { this.moveField(k === "up" ? -1 : 1, cx); return true; }
       if (this.inputFocus !== null) return false;
       if (k === "left" || k === "right" || k === "space") return this.stepChoice(k === "left" ? -1 : 1, cx);
+      // On Model, + goes to the add box and - removes the chosen model of yours.
+      if (FORM_FIELDS[st.field] === "model" && takesModel(st.form.harness)) {
+        if (k === "+" || (k === "=" && m.shift)) { this.modelInput.focus(); cx.notify(); return true; }
+        if (k === "-" && !m.shift) { this.removeOwnModel(cx); return true; }
+      }
       if (k === "enter") { this.saveForm(cx); return true; }
       return false;
     }
@@ -960,12 +1017,35 @@ export default class GitHub extends View {
 
   // A row of choices: only the values the profile can take.
   // The one the keys are on shows it: its label in the accent color, and a frame.
-  choices(t, label, key, values, shownAs) {
+  // `idOf` names each chip; a model's goes by its place, as one of yours could be
+  // called "default".
+  choices(t, label, key, values, shownAs, idOf = (v) => v || "default", hint = "← → to change") {
     const f = this.settings.form, on = this.choiceFocused(key);
     return v_flex().gap(4)
-      .child(div().text_size(11.5).text_color(on ? t.accent : t.dim).child(on ? `${label}  ·  ← → to change` : label))
+      .child(div().text_size(11.5).text_color(on ? t.accent : t.dim).child(on ? `${label}  ·  ${hint}` : label))
       .child(h_flex().flex_wrap().gap(4).p(3).rounded(8).border_1().border_color(on ? t.accent : t.background)
-        .children(values.map((v) => this.chip(t, `hg-${key}-${v || "default"}`, shownAs(v), f[key] === v, (_e, cx) => this.pickChoice(key, v, cx)))));
+        .children(values.map((v, i) => this.chip(t, `hg-${key}-${idOf(v, i)}`, shownAs(v), f[key] === v, (_e, cx) => this.pickChoice(key, v, cx)))));
+  }
+
+  // The form's Model (#54): the harness's models and yours as choices, then a box to
+  // add one of yours, and Remove while one of yours is chosen. OpenCode takes none.
+  modelField(t) {
+    const st = this.settings, f = st.form, own = isCustomModel(st.store, f.harness, f.model);
+    const takes = takesModel(f.harness);
+    const row = this.choices(t, "Model (optional)", "model", this.modelValues(f), (v) => !v ? "harness default" : isCustomModel(st.store, f.harness, v) ? `${v} · custom` : v,
+      (_v, i) => i, takes ? `← → to change · + add${own ? " · - remove" : ""}` : "← → to change");
+    if (!takes) {
+      return v_flex().gap(4).child(row)
+        .child(div().text_size(12).text_color(t.muted).child(`${HARNESS_NAMES[f.harness]} takes no model`));
+    }
+    return v_flex().gap(6).child(row)
+      .child(h_flex().gap(6).items_center()
+        .child(div().id("hg-model-new").flex_1().min_w(0).h(30).px(8).flex().items_center().rounded(6).border_1().cursor_text()
+          .border_color(this.inputFocus === "add-model" ? t.accent : t.input).bg(t.background)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .child(Input.new(this.modelInput).w_full().text_size(12.5).text_color(t.foreground)))
+        .child(this.chip(t, "hg-model-add", "Add", false, (_e, cx) => this.addOwnModel(cx)))
+        .when(own, (el) => el.child(this.chip(t, "hg-model-remove", "Remove", false, (_e, cx) => this.removeOwnModel(cx)))));
   }
 
   choiceFocused(key) {
@@ -979,12 +1059,12 @@ export default class GitHub extends View {
       .child(this.field(t, "name", "Name"))
       .child(this.field(t, "id", "Id: lowercase letters, digits and -"))
       .child(this.choices(t, "Harness", "harness", HARNESSES, (h) => HARNESS_NAMES[h]))
-      .child(this.field(t, "model", "Model (optional)"))
+      .child(this.modelField(t))
       .child(levels.length > 1
         ? this.choices(t, "Thinking (optional)", "thinking", levels, (v) => v || "harness default")
         : v_flex().gap(4).child(div().text_size(11.5).text_color(this.choiceFocused("thinking") ? t.accent : t.dim).child("Thinking"))
           .child(div().text_size(12).text_color(t.muted).child(`${HARNESS_NAMES[f.harness]} takes no thinking level`)))
-      .when(f.harness === "opencode" && Boolean(f.model.trim() || f.thinking), (el) => el.child(div().text_size(12).text_color(t.blocked).child(OPENCODE_NOTE)))
+      .when(f.harness === "opencode" && Boolean(f.model || f.thinking), (el) => el.child(div().text_size(12).text_color(t.blocked).child(OPENCODE_NOTE)))
       .when(Boolean(st.error), (el) => el.child(div().text_size(12).text_color(t.ansi1).child(st.error)))
       .child(h_flex().gap(6)
         .child(this.chip(t, "hg-form-save", st.saving ? "Saving…" : "Save", false, (_e, cx) => this.saveForm(cx), true))

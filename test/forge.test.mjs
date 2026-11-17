@@ -659,3 +659,35 @@ test("main.js merges through gh on the repo's machine, once a second press confi
   assert.match(body("  onKey(e, cx) {"), /this\.cancelMerge\(cx\);/);
   assert.match(main, /const c = await nextCommand\(\);\n(\s*\/\/[^\n]*\n)*\s*this\.cancelMerge\(cx\);/);
 });
+
+test("main.js offers each harness's models as a chip row, with an add box, Add and Remove that save through change (#54)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  const body = (head) => { const fn = main.slice(main.indexOf(head)); return fn.slice(0, fn.indexOf("\n  }\n")); };
+  // It imports the model helpers; the import check above makes sure they exist.
+  const imports = /import \{([^}]*)\} from "\.\/profiles\.js"/.exec(main)[1].split(",").map((n) => n.trim());
+  for (const n of ["takesModel", "isCustomModel", "modelChoices", "modelKeep", "stepChoice", "addModel", "removeModel"]) assert.ok(imports.includes(n), n);
+  // Model is a choice now, not a text field.
+  assert.match(main, /const TEXT_FIELDS = \["name", "id"\];/);
+  assert.doesNotMatch(main, /this\.field\(t, "model"/);
+  assert.match(body("  profileForm(t) {"), /\.child\(this\.modelField\(t\)\)/);
+  // Its choices: the harness's, yours, and the edited profile's own, in a chip row
+  // whose chips go by their place.
+  assert.match(body("  modelValues(f) {"), /modelChoices\(f\.harness, st\.store, modelKeep\(st\.modelFrom, f\.harness\)\)/);
+  const field = body("  modelField(t) {");
+  assert.match(field, /this\.choices\(t, "Model \(optional\)", "model", this\.modelValues\(f\)/);
+  assert.match(field, /\(_v, i\) => i/);
+  assert.match(field, /id\("hg-model-new"\)/);
+  assert.match(field, /Input\.new\(this\.modelInput\)/);
+  assert.match(field, /this\.chip\(t, "hg-model-add", "Add", false, \(_e, cx\) => this\.addOwnModel\(cx\)\)/);
+  assert.match(field, /\.when\(own, \(el\) => el\.child\(this\.chip\(t, "hg-model-remove", "Remove", false, \(_e, cx\) => this\.removeOwnModel\(cx\)\)\)\)/);
+  assert.match(field, /if \(!takes\)/);
+  // Both write through change, which saves only while the file holds what was read.
+  assert.match(body("  addOwnModel(cx) {"), /this\.change\(\(s\) => addModel\(s, harness, m\)/);
+  assert.match(body("  removeOwnModel(cx) {"), /this\.change\(\(s\) => removeModel\(s, harness, m\)/);
+  // A new harness resets a model it doesn't take; ← and → step through the models.
+  assert.match(body("  pickChoice(key, value, cx) {"), /if \(!this\.modelValues\(f\)\.includes\(f\.model\)\) f\.model = "";/);
+  assert.match(body("  stepChoice(by, cx) {"), /key === "model" \? this\.modelValues\(f\)/);
+  // The add box's enter adds, and its esc goes back to the form, not the list.
+  assert.match(main, /this\.modelInput\.on\("submit", \(_e, cx\) => this\.addOwnModel\(cx\)\);/);
+  assert.match(body("  settingsKey(k, m, cx) {"), /if \(k === "escape" && st\.mode === "edit" && this\.inputFocus === "add-model"\)/);
+});
