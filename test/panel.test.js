@@ -1658,11 +1658,13 @@ test("- removes a model of yours; a profile that uses it keeps it, and the last 
   assert.equal(ui.settings.form.model, "openai/x");
   let lines = screen(() => onInput(Buffer.from("-")));
   assert.ok(text(lines).includes("Removed openai/x from Pi's models"), lines.join("\n"));
-  assert.equal(ui.settings.form.model, "");
+  // The edited profile's own model stays chosen: saving now would keep it.
+  assert.equal(ui.settings.form.model, "openai/x");
   assert.deepEqual(stored().models, { pi: ["openai/y"] });
   assert.deepEqual(stored().profiles, [{ id: "p", name: "P", harness: "pi", model: "openai/x" }]);
-  // The profile's own model is still offered, last, as its own and not as yours.
-  assert.deepEqual(stepModels(1, "\x1b[D"), ["openai/x"]);
+  // It is still offered, last, as its own and not as yours.
+  assert.deepEqual(stepModels(2, "\x1b[C"), ["", P.MODELS.pi[0]]);
+  assert.deepEqual(stepModels(2, "\x1b[D"), ["", "openai/x"]);
   lines = screen(draw);
   assert.ok(lines.some((l) => /^▌ Model +‹ openai\/x ›$/.test(l?.trimEnd() ?? "")), lines.join("\n"));
   assert.ok(!text(lines.slice(-3)).includes("- remove"), lines.join("\n"));
@@ -1680,6 +1682,21 @@ test("- removes a model of yours; a profile that uses it keeps it, and the last 
   screen(() => onInput(Buffer.from(`n${"\x1b[B".repeat(2)}\x1b[C\x1b[C\x1b[C\x1b[B\x1b[D`)));
   assert.equal(ui.settings.form.model, "openai/y");
   screen(() => onInput(Buffer.from("-")));
+  // A new profile has no model of its own: it goes back to the harness default.
+  assert.equal(ui.settings.form.model, "");
+  assert.deepEqual(stored(), { version: 1, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: { resolve: null, review: null } });
+});
+
+test("- on the edited profile's own model, then enter: the profile keeps it (#54)", (t) => {
+  const dir = home(t);
+  useStore(dir, {
+    version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {},
+    prompts: { resolve: null, review: null }, models: { pi: ["openai/x"] },
+  });
+  setupGitHub("issues");
+  const stored = () => JSON.parse(fs.readFileSync(storeFile(), "utf8"));
+  screen(() => onInput(Buffer.from(`sje${DOWN3}`)));
+  screen(() => onInput(Buffer.from("-\r")));
   assert.deepEqual(stored(), { version: 1, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: { resolve: null, review: null } });
 });
 

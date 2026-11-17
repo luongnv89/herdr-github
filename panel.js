@@ -1264,7 +1264,9 @@ function removeModelKey(st) {
   const form = st.form, m = form.model;
   modelChange(() => {
     saveStore(P.removeModel(st.store, form.harness, m));
-    form.model = "";
+    // The edited profile's own model stays chosen, so saving keeps it; any other
+    // goes back to the harness default.
+    if (m !== P.modelKeep(st.modelFrom, form.harness)) form.model = "";
   }, `Removed ${m} from ${P.HARNESS_NAMES[form.harness]}'s models`);
 }
 

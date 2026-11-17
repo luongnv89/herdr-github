@@ -705,7 +705,9 @@ export default class GitHub extends View {
     if (!f) return;
     const m = f.model, harness = f.harness;
     this.change((s) => removeModel(s, harness, m), `Removed ${m} from ${HARNESS_NAMES[harness]}'s models`, cx, () => {
-      if (st.form === f && f.harness === harness && f.model === m) f.model = "";
+      // The edited profile's own model stays chosen, so saving keeps it; any other
+      // goes back to the harness default.
+      if (st.form === f && f.harness === harness && f.model === m && m !== modelKeep(st.modelFrom, harness)) f.model = "";
     });
   }
 

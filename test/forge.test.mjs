@@ -684,6 +684,8 @@ test("main.js offers each harness's models as a chip row, with an add box, Add a
   // Both write through change, which saves only while the file holds what was read.
   assert.match(body("  addOwnModel(cx) {"), /this\.change\(\(s\) => addModel\(s, harness, m\)/);
   assert.match(body("  removeOwnModel(cx) {"), /this\.change\(\(s\) => removeModel\(s, harness, m\)/);
+  // Removing the edited profile's own model keeps it chosen, so saving keeps it.
+  assert.match(body("  removeOwnModel(cx) {"), /m !== modelKeep\(st\.modelFrom, harness\)\) f\.model = "";/);
   // A new harness resets a model it doesn't take; ← and → step through the models.
   assert.match(body("  pickChoice(key, value, cx) {"), /if \(!this\.modelValues\(f\)\.includes\(f\.model\)\) f\.model = "";/);
   assert.match(body("  stepChoice(by, cx) {"), /key === "model" \? this\.modelValues\(f\)/);
