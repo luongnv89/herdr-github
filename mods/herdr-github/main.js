@@ -687,7 +687,8 @@ export default class GitHub extends View {
   }
 
   // The add box's Add, or enter in it: a model of your own for the form's harness,
-  // chosen once it's saved. The rest of the form stays as it is.
+  // chosen once it's saved. Focus leaves the box for Model, as in the terminal, so
+  // the next enter saves the profile. The rest of the form stays as it is.
   addOwnModel(cx) {
     const st = this.settings, f = st?.form;
     if (!f) return;
@@ -695,6 +696,10 @@ export default class GitHub extends View {
     this.change((s) => addCustomModel(s, harness, m), `Added ${m} to ${HARNESS_NAMES[harness]}'s models`, cx, () => {
       this.modelInput.set_value("");
       if (st.form === f && f.harness === harness) f.model = m;
+      if (this.settings === st && st.form === f && this.inputFocus === "add-model") {
+        this.inputFocus = null;
+        this.handle.focus();
+      }
     });
   }
 

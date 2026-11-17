@@ -684,6 +684,9 @@ test("main.js offers each harness's models as a chip row, with an add box, Add a
   // Both write through change, which saves only while the file holds what was read.
   assert.match(body("  addOwnModel(cx) {"), /this\.change\(\(s\) => addCustomModel\(s, harness, m\)/);
   assert.match(body("  removeOwnModel(cx) {"), /this\.change\(\(s\) => removeCustomModel\(s, harness, m\)/);
+  // Once added, focus leaves the add box for Model, as the terminal leaves add mode,
+  // so the next enter saves the profile instead of adding an empty model.
+  assert.match(body("  addOwnModel(cx) {"), /if \(this\.settings === st && st\.form === f && this\.inputFocus === "add-model"\) \{\s*this\.inputFocus = null;\s*this\.handle\.focus\(\);/);
   // Removing the edited profile's own model keeps it chosen, so saving keeps it.
   assert.match(body("  removeOwnModel(cx) {"), /m !== modelKeep\(st\.modelFrom, harness\)\) f\.model = "";/);
   // A new harness resets a model it doesn't take; ← and → step through the models.
