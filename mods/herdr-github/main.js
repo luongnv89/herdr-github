@@ -1018,13 +1018,15 @@ export default class GitHub extends View {
   // A row of choices: only the values the profile can take.
   // The one the keys are on shows it: its label in the accent color, and a frame.
   // `idOf` names each chip; a model's goes by its place, as one of yours could be
-  // called "default".
-  choices(t, label, key, values, shownAs, idOf = (v) => v || "default", hint = "← → to change") {
+  // called "default". With `fit`, a chip no wider than the row: a long name shrinks
+  // to an ellipsis, and the chip's tooltip holds it in full.
+  choices(t, label, key, values, shownAs, idOf = (v) => v || "default", hint = "← → to change", fit = null) {
     const f = this.settings.form, on = this.choiceFocused(key);
     return v_flex().gap(4)
       .child(div().text_size(11.5).text_color(on ? t.accent : t.dim).child(on ? `${label}  ·  ${hint}` : label))
       .child(h_flex().flex_wrap().gap(4).p(3).rounded(8).border_1().border_color(on ? t.accent : t.background)
-        .children(values.map((v, i) => this.chip(t, `hg-${key}-${idOf(v, i)}`, shownAs(v), f[key] === v, (_e, cx) => this.pickChoice(key, v, cx)))));
+        .children(values.map((v, i) => this.chip(t, `hg-${key}-${idOf(v, i)}`, shownAs(v), f[key] === v, (_e, cx) => this.pickChoice(key, v, cx))
+          .when(Boolean(fit), (el) => el.flex_shrink(1).min_w(0).max_w_full().tooltip(fit(v))))));
   }
 
   // The form's Model (#54): the harness's models and yours as choices, then a box to
@@ -1032,8 +1034,12 @@ export default class GitHub extends View {
   modelField(t) {
     const st = this.settings, f = st.form, own = isCustomModel(st.store, f.harness, f.model);
     const takes = takesModel(f.harness);
-    const row = this.choices(t, "Model (optional)", "model", this.modelValues(f), (v) => !v ? "harness default" : isCustomModel(st.store, f.harness, v) ? `${v} · custom` : v,
-      (_v, i) => i, takes ? `← → to change · + add${own ? " · - remove" : ""}` : "← → to change");
+    // A model's name shrinks to fit the row; "custom" stays in view after it.
+    const shownAs = (v) => h_flex().min_w(0).items_center()
+      .child(div().min_w(0).truncate().child(v || "harness default"))
+      .when(isCustomModel(st.store, f.harness, v), (el) => el.child(div().flex_none().pl(4).child("· custom")));
+    const row = this.choices(t, "Model (optional)", "model", this.modelValues(f), shownAs,
+      (_v, i) => i, takes ? `← → to change · + add${own ? " · - remove" : ""}` : "← → to change", (v) => v || "harness default");
     if (!takes) {
       return v_flex().gap(4).child(row)
         .child(div().text_size(12).text_color(t.muted).child(`${HARNESS_NAMES[f.harness]} takes no model`));
@@ -1155,6 +1161,8 @@ export default class GitHub extends View {
       // t and the interval in use stay in view in a narrow panel too, where the header
       // leaves out its interval button (#47).
       : !st ? keyHints({ action: action?.key ?? null, every: this.every, close: "esc close", room: hintRoom(this.width ?? 368) })
+      // In the add-model box, enter adds and esc goes back to Model, as in the terminal.
+      : st.mode === "edit" && this.inputFocus === "add-model" ? "↑↓ field · type the model · ⏎ add · esc to Model"
       : st.mode === "edit" ? `↑↓ field · ${this.inputFocus === null ? "←→ choose" : "type to edit"} · ⏎ save · esc back`
         : this.inputFocus?.startsWith("prompt-") ? "↑↓ prompts and profiles · type to edit · ⏎ save · esc back"
         : st.confirm ? "y delete · any other key keeps it"

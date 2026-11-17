@@ -690,4 +690,17 @@ test("main.js offers each harness's models as a chip row, with an add box, Add a
   // The add box's enter adds, and its esc goes back to the form, not the list.
   assert.match(main, /this\.modelInput\.on\("submit", \(_e, cx\) => this\.addOwnModel\(cx\)\);/);
   assert.match(body("  settingsKey(k, m, cx) {"), /if \(k === "escape" && st\.mode === "edit" && this\.inputFocus === "add-model"\)/);
+  // Its key hints say so while it has the keys, as the terminal's do, before the form's own.
+  const hints = /const hints = [\s\S]*?;\n/.exec(body("  render(cx) {"))[0];
+  assert.match(hints, /st\.mode === "edit" && this\.inputFocus === "add-model" \? "↑↓ field · type the model · ⏎ add · esc to Model"/);
+  assert.ok(hints.indexOf('this.inputFocus === "add-model"') < hints.indexOf("⏎ save · esc back"));
+  // A long model's chip fits the row: it shrinks, its name truncates, "custom" stays
+  // after it, and the tooltip holds the full name. Only the model row does this.
+  assert.match(body("  choices(t, "), /\.when\(Boolean\(fit\), \(el\) => el\.flex_shrink\(1\)\.min_w\(0\)\.max_w_full\(\)\.tooltip\(fit\(v\)\)\)/);
+  assert.match(field, /div\(\)\.min_w\(0\)\.truncate\(\)\.child\(v \|\| "harness default"\)/);
+  assert.match(field, /isCustomModel\(st\.store, f\.harness, v\), \(el\) => el\.child\(div\(\)\.flex_none\(\)[^\n]*"· custom"/);
+  assert.match(field, /"← → to change", \(v\) => v \|\| "harness default"\);/);
+  const form = body("  profileForm(t) {");
+  assert.match(form, /this\.choices\(t, "Harness", "harness", HARNESSES, \(h\) => HARNESS_NAMES\[h\]\)\)/);
+  assert.match(form, /this\.choices\(t, "Thinking \(optional\)", "thinking", levels, \(v\) => v \|\| "harness default"\)/);
 });
