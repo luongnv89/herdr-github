@@ -462,6 +462,16 @@ export default class GitHub extends View {
         }
       }
     }
+    if (harness === "vibe") {
+      // Herdr has no agent kind for Mistral Vibe, so nothing else checks that it's
+      // there: a missing vibe would only show as a failed command in the new pane.
+      try { await exec("vibe", ["--version"], { cwd: root, on, timeout: 10000 }); }
+      catch (e) {
+        const why = cantRun("vibe", e);
+        if (why !== "vibe isn't installed") return say("error", why);
+        return say("error", `Mistral Vibe (vibe) isn't on your PATH${on ? ` on ${on}` : ""}: click ⚙ to pick another profile for ${action.label}, or install it.`);
+      }
+    }
     let text = custom;
     if (text === null) {
       const skill = await findSkill(harness, action.skill, root, io);
@@ -471,7 +481,7 @@ export default class GitHub extends View {
     const plan = buildLaunch(profile, text);
     const note = plan.warnings.length ? ` (${plan.warnings.join("; ")})` : "";
 
-    // mcc runs as its own command; any other agent as programs.json says to start it.
+    // mcc and Mistral Vibe run as their own command; any other agent as programs.json says to start it.
     let known = null;
     if (plan.mode === "agent") {
       known = (await knownAgents({ on }).catch(() => [])).find((k) => k.key === plan.kind) ?? null;
@@ -487,8 +497,13 @@ export default class GitHub extends View {
     run("pane.focus", { pane: anchor.pane });
     run("terminal.open", { argv: start.argv, folder: root, place: "right" });
     // The app doesn't say when mcc is ready: it may first ask about a usage limit.
-    if (plan.mode === "command") {
+    if (plan.mode === "command" && harness === "mcc") {
       return say("info", `Opened mcc in a new pane to ${action.key} ${what}. If mcc asks something first, such as about a usage limit, answer it there; Claude Code then works on: ${text}`);
+    }
+    // Nor when Mistral Vibe is: it takes the prompt on its command line, after any
+    // question it asks first, such as whether you trust the folder.
+    if (plan.mode === "command") {
+      return say("info", `Opened ${name} in a new pane to ${action.key} ${what}. If it asks something first, such as whether you trust the folder, answer it there; it then works on: ${text}${note}`);
     }
     const who = known?.name ?? name;
     let terminal = null;

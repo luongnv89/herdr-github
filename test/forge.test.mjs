@@ -104,6 +104,13 @@ test("tabStart: a custom prompt, its {number}s filled in, is the first message, 
   assert.throws(() => P.buildLaunch(P.DEFAULT_PROFILE, P.expandPrompt("-{number}", 7)), /Invalid prompt/);
 });
 
+test("tabStart: Mistral Vibe, which herdr has no kind for, runs as its own command, the prompt its last word", () => {
+  const text = "Use the issue-resolver skill on issue #7.";
+  const withModel = P.buildLaunch({ id: "v", name: "V", harness: "vibe", model: "mistral-medium-3.5" }, text);
+  assert.deepEqual(F.tabStart(withModel, undefined, text), { argv: ["env", "VIBE_ACTIVE_MODEL=mistral-medium-3.5", "vibe", text], task: null });
+  assert.deepEqual(F.tabStart(P.buildLaunch({ id: "v", name: "V", harness: "vibe" }, text), undefined, text), { argv: ["vibe", text], task: null });
+});
+
 test("tabStart: an agent herdr has no run for is refused", () => {
   const plan = P.buildLaunch({ id: "o", name: "O", harness: "opencode" }, "x");
   for (const run of [undefined, null, [], [""], [3], "opencode"]) {
