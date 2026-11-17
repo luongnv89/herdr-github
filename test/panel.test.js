@@ -1184,25 +1184,27 @@ test("s opens the profiles; a new profile is typed, saved and assigned, then use
     onInput(Buffer.from("\x1b[B"));
     onInput(Buffer.from("qj"));
     onInput(Buffer.from("\x1b[B\x1b[C\x1b[C"));
+    // Model is a choice now (#54): typing in it changes nothing, → picks Codex's first.
     onInput(Buffer.from("\x1b[B"));
     onInput(Buffer.from("gpt-5"));
+    onInput(Buffer.from("\x1b[C"));
     onInput(Buffer.from("\x1b[B\x1b[C"));
   }));
   assert.equal(exit, null, "a key in the form closed the panel");
   assert.equal(ui.settings.mode, "edit");
-  assert.deepEqual({ ...ui.settings.form, prev: undefined }, { prev: undefined, name: "Quick job", id: "qj", harness: "codex", model: "gpt-5", thinking: "low" });
+  assert.deepEqual({ ...ui.settings.form, prev: undefined }, { prev: undefined, name: "Quick job", id: "qj", harness: "codex", model: P.MODELS.codex[0], thinking: "low" });
   lines = screen(() => onInput(Buffer.from("\r")));
   assert.equal(ui.settings.mode, "list");
   assert.ok(lines.some((l) => l?.includes("Saved Quick job")), lines.join("\n"));
   screen(() => onInput(Buffer.from("R")));
   assert.deepEqual(JSON.parse(fs.readFileSync(storeFile(), "utf8")), {
-    version: 1, profiles: [{ id: "qj", name: "Quick job", harness: "codex", model: "gpt-5", thinking: "low" }], assign: { resolve: "qj", review: null },
+    version: 1, profiles: [{ id: "qj", name: "Quick job", harness: "codex", model: P.MODELS.codex[0], thinking: "low" }], assign: { resolve: "qj", review: null },
   });
   assert.equal(noExit(() => screen(() => onInput(Buffer.from("\x1b")))), null);
   assert.equal(ui.settings, null);
   fakeHerdr(claudeHere);
   await screenAsync(() => startWithMenu());
-  assert.equal(herdrCalls()[2], `agent start resolve-12 --kind codex --pane w1:p7 --timeout 55000 -- -m gpt-5 -c model_reasoning_effort="low"`);
+  assert.equal(herdrCalls()[2], `agent start resolve-12 --kind codex --pane w1:p7 --timeout 55000 -- -m ${P.MODELS.codex[0]} -c model_reasoning_effort="low"`);
 });
 
 test("a click inside the profile views opens nothing and starts nothing", (t) => {
@@ -1243,11 +1245,12 @@ test("the header's ⚙ opens the profiles; e edits and d deletes, and the defaul
   let store = JSON.parse(fs.readFileSync(storeFile(), "utf8"));
   assert.deepEqual(store.profiles.map((p) => p.id), ["mine"]);
   assert.deepEqual(store.assign, { resolve: "mine", review: "mine" });
-  // An invalid model stays in the form with the reason.
-  shown = screen(() => onInput(Buffer.from("e\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
+  // An invalid model, added with + on Model (#54), stays in the form with the reason;
+  // esc leaves the model being added, then the form.
+  shown = screen(() => onInput(Buffer.from("e\x1b[B\x1b[B\x1b[B+opus[1m]\r")));
   assert.equal(ui.settings.mode, "edit");
   assert.ok(text(shown).includes("Model:"), shown.join("\n"));
-  screen(() => onInput(Buffer.from("\x1b")));
+  screen(() => onInput(Buffer.from("\x1b\x1b")));
   assert.equal(ui.settings.mode, "list");
   // d asks first; n keeps it, y deletes it and its assignments.
   screen(() => onInput(Buffer.from("dn")));
@@ -1283,7 +1286,7 @@ test("a store changed elsewhere since it was read isn't overwritten", (t) => {
 
 test("a corrupt or newer store is shown read only, and actions use the default", async (t) => {
   const dir = home(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
-  for (const bad of ["{ not json", JSON.stringify({ version: 3, profiles: [], assign: {} })]) {
+  for (const bad of ["{ not json", JSON.stringify({ version: 4, profiles: [], assign: {} })]) {
     const file = useProfiles(dir, []);
     fs.writeFileSync(file, bad);
     setupGitHub("issues");
@@ -1501,8 +1504,10 @@ test("the form names the id's rule, fits a narrow pane, and shows each field's r
   let lines = screen(() => onInput(Buffer.from("n")));
   // The id's rule is the empty field's hint, beside a short label.
   assert.ok(lines.some((l) => /^ {2}Id {7}a-z 0-9 -/.test(l ?? "")), lines.join("\n"));
-  // Two bad fields: both reasons show, each under its own field.
-  lines = screen(() => onInput(Buffer.from("\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
+  // Three bad fields: each reason shows under its own field. The model is one added
+  // with + on Model (#54), refused there; the name's and id's reasons stay.
+  screen(() => onInput(Buffer.from("\r")));
+  lines = screen(() => onInput(Buffer.from("\x1b[B\x1b[B\x1b[B+opus[1m]\r")));
   assert.equal(ui.settings.mode, "edit");
   const at = (label) => lines.findIndex((l) => l?.trimStart().replace(/^▌ /, "").startsWith(label));
   const name = at("Name"), id = at("Id"), model = at("Model");
@@ -1510,9 +1515,10 @@ test("the form names the id's rule, fits a narrow pane, and shows each field's r
   assert.ok(id > name + 1 && lines.slice(id + 1, at("Harness")).join(" ").includes("Id:"), lines.join("\n"));
   assert.ok(lines.slice(model + 1, at("Thinking")).join(" ").replace(/\s+/g, " ").includes("Model: letters, digits"), lines.join("\n"));
   for (const l of lines) assert.ok(width(l ?? "") <= 60, l);
-  // Typing in a field takes its reason away.
+  // Typing in a field takes its reason away; ↓ then leaves the model being added.
   lines = screen(() => onInput(Buffer.from("\x7f")));
   assert.ok(!text(lines).includes("Model: letters"), lines.join("\n"));
+  assert.equal(ui.settings.adding, "opus[1m");
   // A narrow pane puts a wide choice under its label, and cuts its name, not its ›.
   lines = screenAt(28, 24, () => onInput(Buffer.from("\x1b[B\x1b[B\x1b[B\x1b[B")));
   for (const l of lines) assert.ok(width(l ?? "") <= 28, l);
@@ -1534,7 +1540,8 @@ test("at 30 and 40 cells the form shows each reason whole, and each choice with 
   };
   for (const cols of [30, 40]) {
     screenAt(cols, 24, () => { ui.settings = null; onInput(Buffer.from("sn")); });
-    let lines = screenAt(cols, 24, () => onInput(Buffer.from("\x1b[B\x1b[B\x1b[Bopus[1m]\r")));
+    screenAt(cols, 24, () => onInput(Buffer.from("\r")));
+    let lines = screenAt(cols, 24, () => onInput(Buffer.from("\x1b[B\x1b[B\x1b[B+opus[1m]\r")));
     assert.equal(ui.settings.mode, "edit");
     for (const l of lines) assert.ok(width(l ?? "") <= cols, `${cols}: ${l}`);
     const all = text(lines).replace(/\s+/g, " ");
@@ -1547,8 +1554,236 @@ test("at 30 and 40 cells the form shows each reason whole, and each choice with 
     // The harness and thinking choices whole, ending in ›.
     assert.ok(lines.some((l) => l?.trimEnd().endsWith("‹ Claude Code via mcc run ›")), `${cols}:\n${lines.join("\n")}`);
     assert.ok(lines.some((l) => l?.includes("Thinking") && l.trimEnd().endsWith("‹ harness default ›")), `${cols}:\n${lines.join("\n")}`);
-    screenAt(cols, 24, () => onInput(Buffer.from("\x1b\x1b")));
+    screenAt(cols, 24, () => onInput(Buffer.from("\x1b\x1b\x1b")));
   }
+});
+
+// ── Models in the form (#54) ────────────────────────────────────────────────
+
+// A store file as the app or a newer panel writes it, in a HOME.
+function useStore(dir, data) {
+  const file = useProfiles(dir, []);
+  fs.writeFileSync(file, JSON.stringify(data));
+  return file;
+}
+const DOWN3 = "\x1b[B\x1b[B\x1b[B";
+const stepModels = (n, key = "\x1b[C") => Array.from({ length: n }, () => { screen(() => onInput(Buffer.from(key))); return ui.settings.form.model; });
+
+test("Model steps through the harness's models: Mistral Vibe lists its own, and another harness resets it (#54)", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  // s, n, Mistral Vibe (← from the first harness), then Model.
+  screen(() => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D")));
+  assert.equal(ui.settings.form.harness, "vibe");
+  let lines = screen(() => onInput(Buffer.from("\x1b[B")));
+  assert.ok(lines.some((l) => /^▌ Model +‹ harness default ›/.test(l ?? "")), lines.join("\n"));
+  assert.ok(text(lines.slice(-3)).includes("+ add model"), lines.join("\n"));
+  // → steps through Vibe's four models and back to the default; space and ← too.
+  assert.deepEqual(stepModels(5), ["mistral-large-4-0-3", "mistral-medium-3.5", "glm-5-3", "zai-glm-5-3-flash", ""]);
+  assert.deepEqual(stepModels(1, "\x1b[D"), ["zai-glm-5-3-flash"]);
+  assert.deepEqual(stepModels(2, " "), ["", "mistral-large-4-0-3"]);
+  lines = screen(() => onInput(Buffer.from("\x1b[C\x1b[C")));
+  assert.ok(lines.some((l) => /^▌ Model +‹ glm-5-3 ›/.test(l ?? "")), lines.join("\n"));
+  // Typing on it changes nothing.
+  screen(() => onInput(Buffer.from("xyz")));
+  assert.equal(ui.settings.form.model, "glm-5-3");
+  // Another harness doesn't take it: back to the default. Claude Code lists its own.
+  screen(() => onInput(Buffer.from("\x1b[A\x1b[C")));
+  assert.deepEqual([ui.settings.form.harness, ui.settings.form.model], ["mcc", ""]);
+  screen(() => onInput(Buffer.from("\x1b[B")));
+  assert.deepEqual(stepModels(4), P.MODELS.mcc);
+  // One both take stays: mcc's haiku is Claude Code's too.
+  screen(() => onInput(Buffer.from("\x1b[A\x1b[C")));
+  assert.deepEqual([ui.settings.form.harness, ui.settings.form.model], ["claude", "haiku"]);
+  // OpenCode takes none: + says so, and adds nothing.
+  lines = screen(() => onInput(Buffer.from("\x1b[C\x1b[C\x1b[C\x1b[B+")));
+  assert.deepEqual([ui.settings.form.harness, ui.settings.form.model, ui.settings.adding], ["opencode", "", null]);
+  assert.ok(text(lines).includes("Model: OpenCode takes no model"), lines.join("\n"));
+  assert.ok(!text(lines.slice(-3)).includes("+ add model"), lines.join("\n"));
+});
+
+test("+ adds a model of yours: chosen, kept as version 3, and the profile then saves in the same form (#54)", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  const stored = () => JSON.parse(fs.readFileSync(storeFile(), "utf8"));
+  // A half-filled form: name, id, Pi, then + on Model.
+  screen(() => onInput(Buffer.from("snMine\x1b[Bmine\x1b[B\x1b[C\x1b[C\x1b[C\x1b[B")));
+  assert.equal(ui.settings.form.harness, "pi");
+  let lines = screen(() => onInput(Buffer.from("+")));
+  assert.equal(ui.settings.adding, "");
+  assert.equal(text(lines.slice(-1)), "type the model · ⏎ add · esc back");
+  // q, j and s are text in it.
+  lines = screen(() => onInput(Buffer.from("openai/gpt-5.5-sq")));
+  assert.ok(lines.some((l) => /^▌ Model +openai\/gpt-5\.5-sq/.test(l ?? "")), lines.join("\n"));
+  lines = screen(() => onInput(Buffer.from("\x7f\x7f\x7f\r")));
+  assert.equal(ui.settings.adding, null);
+  assert.equal(ui.settings.mode, "edit");
+  assert.deepEqual({ ...ui.settings.form, prev: undefined }, { prev: undefined, name: "Mine", id: "mine", harness: "pi", model: "openai/gpt-5.5", thinking: "" });
+  assert.ok(text(lines).includes("Added openai/gpt-5.5 to Pi's models"), lines.join("\n"));
+  assert.ok(lines.some((l) => /^▌ Model +‹ openai\/gpt-5\.5 › custom/.test(l ?? "")), lines.join("\n"));
+  assert.ok(text(lines.slice(-3)).includes("- remove"), lines.join("\n"));
+  assert.deepEqual(stored(), {
+    version: 3, profiles: [{ id: "cc", name: "Claude Code", harness: "claude" }], assign: { resolve: "cc", review: "cc" },
+    prompts: { resolve: null, review: null }, customModels: { pi: ["openai/gpt-5.5"] },
+  });
+  // Enter saves the profile: what was just written isn't taken for a change elsewhere.
+  lines = screen(() => onInput(Buffer.from("\r")));
+  assert.ok(!text(lines).includes("changed elsewhere"), lines.join("\n"));
+  assert.equal(ui.settings.mode, "list");
+  assert.deepEqual(stored().profiles.at(-1), { id: "mine", name: "Mine", harness: "pi", model: "openai/gpt-5.5" });
+  assert.deepEqual(stored().customModels, { pi: ["openai/gpt-5.5"] });
+  // Offered again once the view opens anew, after Pi's own, for a new profile.
+  screen(() => onInput(Buffer.from("\x1b")));
+  screen(() => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[C\x1b[C\x1b[C\x1b[B")));
+  assert.deepEqual(stepModels(6), [...P.MODELS.pi, "openai/gpt-5.5", ""]);
+  // Not twice, nor a built-in one, nor one a harness can't take: each says why.
+  lines = screen(() => onInput(Buffer.from("+openai/gpt-5.5\r")));
+  assert.ok(text(lines).includes("Model: openai/gpt-5.5 is already offered for Pi"), lines.join("\n"));
+  lines = screen(() => onInput(Buffer.from(`\x1b+${P.MODELS.pi[0]}\r`)));
+  assert.ok(text(lines).includes(`Model: ${P.MODELS.pi[0]} is already offered for Pi`), lines.join("\n"));
+  lines = screen(() => onInput(Buffer.from("\x1b+opus[1m]\r")));
+  assert.ok(text(lines).replace(/\s+/g, " ").includes("Model: letters, digits and . _ : / @ + - only"), lines.join("\n"));
+  assert.deepEqual(stored().customModels, { pi: ["openai/gpt-5.5"] });
+});
+
+test("- removes a model of yours; a profile that uses it keeps it, and the last one gone writes version 1 (#54)", (t) => {
+  const dir = home(t);
+  useStore(dir, {
+    version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {},
+    prompts: { resolve: null, review: null }, customModels: { pi: ["openai/x", "openai/y"] },
+  });
+  setupGitHub("issues");
+  const stored = () => JSON.parse(fs.readFileSync(storeFile(), "utf8"));
+  screen(() => onInput(Buffer.from(`sje${DOWN3}`)));
+  assert.equal(ui.settings.form.model, "openai/x");
+  let lines = screen(() => onInput(Buffer.from("-")));
+  assert.ok(text(lines).includes("Removed openai/x from Pi's models"), lines.join("\n"));
+  // The edited profile's own model stays chosen: saving now would keep it.
+  assert.equal(ui.settings.form.model, "openai/x");
+  assert.deepEqual(stored().customModels, { pi: ["openai/y"] });
+  assert.deepEqual(stored().profiles, [{ id: "p", name: "P", harness: "pi", model: "openai/x" }]);
+  // It is still offered, last, as its own and not as yours.
+  assert.deepEqual(stepModels(2, "\x1b[C"), ["", P.MODELS.pi[0]]);
+  assert.deepEqual(stepModels(2, "\x1b[D"), ["", "openai/x"]);
+  lines = screen(draw);
+  assert.ok(lines.some((l) => /^▌ Model +‹ openai\/x ›$/.test(l?.trimEnd() ?? "")), lines.join("\n"));
+  assert.ok(!text(lines.slice(-3)).includes("- remove"), lines.join("\n"));
+  // - on it, or on a built-in one, removes nothing and says why.
+  lines = screen(() => onInput(Buffer.from("-")));
+  assert.ok(text(lines).includes("Model: openai/x isn't one you added"), lines.join("\n"));
+  screen(() => onInput(Buffer.from("\x1b[C\x1b[C")));
+  assert.equal(ui.settings.form.model, P.MODELS.pi[0]);
+  lines = screen(() => onInput(Buffer.from("-")));
+  assert.ok(text(lines).includes(`Model: ${P.MODELS.pi[0]} is built in, so it can't be removed`), lines.join("\n"));
+  // Saved, the profile keeps its model.
+  screen(() => onInput(Buffer.from("\x1b[D\x1b[D\r")));
+  assert.deepEqual(stored().profiles, [{ id: "p", name: "P", harness: "pi", model: "openai/x" }]);
+  // The last one of yours gone: version 1 again, with no models key.
+  screen(() => onInput(Buffer.from(`n${"\x1b[B".repeat(2)}\x1b[C\x1b[C\x1b[C\x1b[B\x1b[D`)));
+  assert.equal(ui.settings.form.model, "openai/y");
+  screen(() => onInput(Buffer.from("-")));
+  // A new profile has no model of its own: it goes back to the harness default.
+  assert.equal(ui.settings.form.model, "");
+  assert.deepEqual(stored(), { version: 1, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: { resolve: null, review: null } });
+});
+
+test("- on the edited profile's own model, then enter: the profile keeps it (#54)", (t) => {
+  const dir = home(t);
+  useStore(dir, {
+    version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {},
+    prompts: { resolve: null, review: null }, customModels: { pi: ["openai/x"] },
+  });
+  setupGitHub("issues");
+  const stored = () => JSON.parse(fs.readFileSync(storeFile(), "utf8"));
+  screen(() => onInput(Buffer.from(`sje${DOWN3}`)));
+  screen(() => onInput(Buffer.from("-\r")));
+  assert.deepEqual(stored(), { version: 1, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: { resolve: null, review: null } });
+});
+
+test("a read-only store: + and - change nothing and say why, as Not saved (#54)", (t) => {
+  const dir = home(t);
+  const file = useStore(dir, {
+    version: 3, profiles: [{ id: "g", name: "G", harness: "pi", model: "openai/x" }, { id: "bad", name: "Bad", harness: "claude", model: "opus[1m]" }],
+    assign: {}, prompts: { resolve: null, review: null }, customModels: { pi: ["openai/x"] },
+  });
+  const before = fs.readFileSync(file, "utf8");
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from(`sje${DOWN3}`)));
+  assert.equal(ui.settings.readOnly, true);
+  assert.equal(ui.settings.form.model, "openai/x");
+  let lines = screen(() => onInput(Buffer.from("-")));
+  assert.ok(text(lines).includes("Not saved: Some profiles in the file can't be used"), lines.join("\n"));
+  assert.equal(ui.settings.form.model, "openai/x");
+  lines = screen(() => onInput(Buffer.from("+openai/z\r")));
+  assert.ok(text(lines).includes("Not saved: Some profiles in the file can't be used"), lines.join("\n"));
+  assert.equal(ui.settings.adding, "openai/z");
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+});
+
+test("+ and - never overwrite a change made elsewhere: the file is read again, and what you typed stays (#54)", (t) => {
+  const dir = home(t);
+  const file = useStore(dir, {
+    version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {},
+    prompts: { resolve: null, review: null }, customModels: { pi: ["openai/x"] },
+  });
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from(`sje${DOWN3}+openai/z`)));
+  // The app saves meanwhile: a model of its own.
+  const theirs = JSON.stringify({ version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {}, customModels: { pi: ["openai/x", "app/m"] } });
+  fs.writeFileSync(file, theirs);
+  let lines = screen(() => onInput(Buffer.from("\r")));
+  assert.equal(fs.readFileSync(file, "utf8"), theirs);
+  assert.ok(text(lines).includes("changed elsewhere"), lines.join("\n"));
+  assert.equal(ui.settings.adding, "openai/z");
+  // Read again, theirs is offered; enter now adds yours beside it.
+  assert.ok(P.modelChoices("pi", ui.settings.store).includes("app/m"));
+  screen(() => onInput(Buffer.from("\r")));
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).customModels, { pi: ["openai/x", "app/m", "openai/z"] });
+  // The same for -: nothing written over theirs, the model still chosen.
+  const again = JSON.stringify({ version: 1, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: { resolve: "p" } });
+  fs.writeFileSync(file, again);
+  lines = screen(() => onInput(Buffer.from("-")));
+  assert.equal(fs.readFileSync(file, "utf8"), again);
+  assert.ok(text(lines).includes("changed elsewhere"), lines.join("\n"));
+  assert.equal(ui.settings.form.model, "openai/z");
+});
+
+test("a profile whose model is in neither list shows it unchanged, and offers it again after another harness (#54)", (t) => {
+  const dir = home(t);
+  useProfiles(dir, [{ id: "u", name: "U", harness: "codex", model: "gpt-5", thinking: "high" }]);
+  setupGitHub("issues");
+  const stored = () => JSON.parse(fs.readFileSync(storeFile(), "utf8"));
+  let lines = screen(() => onInput(Buffer.from("sje")));
+  assert.equal(ui.settings.form.model, "gpt-5");
+  assert.ok(lines.some((l) => /^ {2}Model +‹ gpt-5 ›$/.test(l?.trimEnd() ?? "")), lines.join("\n"));
+  // Saved as it is, it is the same profile.
+  screen(() => onInput(Buffer.from("\r")));
+  assert.deepEqual(stored().profiles, [{ id: "u", name: "U", harness: "codex", model: "gpt-5", thinking: "high" }]);
+  // Pi doesn't list it; back on Codex it is offered again, last.
+  screen(() => onInput(Buffer.from("e\x1b[B\x1b[B\x1b[C")));
+  assert.deepEqual([ui.settings.form.harness, ui.settings.form.model], ["pi", ""]);
+  screen(() => onInput(Buffer.from("\x1b[D\x1b[B")));
+  assert.deepEqual(stepModels(1, "\x1b[D"), ["gpt-5"]);
+  assert.deepEqual(P.modelChoices("codex", ui.settings.store, "gpt-5").slice(-1), ["gpt-5"]);
+  // Another profile on Codex doesn't get it.
+  screen(() => onInput(Buffer.from("\x1bn\x1b[B\x1b[B\x1b[C\x1b[C\x1b[B")));
+  assert.equal(ui.settings.form.harness, "codex");
+  assert.ok(!stepModels(P.MODELS.codex.length + 1).includes("gpt-5"));
+});
+
+test("esc while a model is typed goes back to the form, not the list, with the form as it was (#54)", (t) => {
+  claudeHome(t);
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from(`snHalf\x1b[Bhalf${"\x1b[B".repeat(2)}+abc`)));
+  assert.equal(ui.settings.adding, "abc");
+  let lines = screen(() => onInput(Buffer.from("\x1b")));
+  assert.equal(ui.settings.mode, "edit");
+  assert.equal(ui.settings.adding, null);
+  assert.deepEqual([ui.settings.form.name, ui.settings.form.id, ui.settings.form.model], ["Half", "half", ""]);
+  assert.ok(lines.some((l) => /^▌ Model +‹ harness default ›/.test(l ?? "")), lines.join("\n"));
+  assert.deepEqual(JSON.parse(fs.readFileSync(storeFile(), "utf8")).customModels, undefined);
+  screen(() => onInput(Buffer.from("\x1b")));
+  assert.equal(ui.settings.mode, "list");
 });
 
 test("at 30 cells a profile keeps its name, its Resolve and Review tags move down, and notices wrap", (t) => {
@@ -1630,10 +1865,12 @@ test("at 28, 30 and 40 cells the profiles show each warning, note and question w
       return lines;
     };
     // The OpenCode note, in the form, under an OpenCode profile with a model.
-    useProfiles(dir, []);
+    // Model is a choice (#54), so the profile comes with its model.
+    useProfiles(dir, [{ id: "oc", name: "OC", harness: "opencode", model: "x" }]);
     setupGitHub("issues");
-    let lines = at(() => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[D\x1b[Bx")));
+    let lines = at(() => onInput(Buffer.from("sje\x1b[B\x1b[B\x1b[B")));
     assert.equal(ui.settings.form.harness, "opencode");
+    assert.equal(ui.settings.form.model, "x");
     assert.ok(shows(lines, note), `${cols}:\n${lines.join("\n")}`);
     assert.ok(lines.at(-1).trimEnd().endsWith("esc back"), `${cols}:\n${lines.join("\n")}`);
     at(() => onInput(Buffer.from("\x1b\x1b")));
@@ -1655,10 +1892,10 @@ test("at 28, 30 and 40 cells the profiles show each warning, note and question w
     at(() => onInput(Buffer.from("\x1b")));
 
     // A file from another version: 1 and 2 are read (2 since #20's prompts).
-    fs.writeFileSync(useProfiles(dir, []), JSON.stringify({ version: 3, profiles: [], assign: {} }));
+    fs.writeFileSync(useProfiles(dir, []), JSON.stringify({ version: 4, profiles: [], assign: {} }));
     setupGitHub("issues");
     lines = at(() => onInput(Buffer.from("s")));
-    assert.ok(shows(lines, "The profiles file is version 3, not 1 or 2: it is read only here"), `${cols}:\n${lines.join("\n")}`);
+    assert.ok(shows(lines, "The profiles file is version 4, not 1, 2 or 3: it is read only here"), `${cols}:\n${lines.join("\n")}`);
     at(() => onInput(Buffer.from("\x1b")));
 
     // A 40-character name in what a change did, and in the delete question.
@@ -1742,16 +1979,18 @@ test("the profiles keep their key hints however much there is to say, and cut it
     assert.ok(aboveHints(lines, "↑↓ select").endsWith("…"), `${cols}x${rows}:\n${lines.join("\n")}`);
     screenAt(cols, rows, () => onInput(Buffer.from("\x1b")));
   }
-  // The OpenCode form on a 28x10 pane: the field, the note cut, the key hints whole.
-  useProfiles(dir, []);
+  // The OpenCode form on a 28x9 pane: the field, the note cut, the key hints whole.
+  // Model is a choice (#54), so the profile comes with its model, and its key hints
+  // take two lines, not three: one row fewer still cuts the note.
+  useProfiles(dir, [{ id: "oc", name: "OC", harness: "opencode", model: "x" }]);
   setupGitHub("issues");
-  const lines = screenAt(28, 10, () => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[D\x1b[Bx")));
+  const lines = screenAt(28, 9, () => onInput(Buffer.from("sje\x1b[B\x1b[B\x1b[B")));
   assert.equal(ui.settings.form.harness, "opencode");
-  fitsWithHints(lines, 28, 10, "↑↓ field", "esc back");
+  fitsWithHints(lines, 28, 9, "↑↓ field", "esc back");
   assert.ok(lines.some((l) => l?.startsWith("▌ Model")), lines.join("\n"));
   assert.ok(text(lines).includes("OpenCode ignores"), lines.join("\n"));
   assert.ok(aboveHints(lines, "↑↓ field").endsWith("…"), lines.join("\n"));
-  screenAt(28, 10, () => onInput(Buffer.from("\x1b\x1b")));
+  screenAt(28, 9, () => onInput(Buffer.from("\x1b\x1b")));
 });
 
 test("on a short pane a failed open keeps the whole URL, before its reason", () => {

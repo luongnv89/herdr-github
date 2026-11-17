@@ -1125,14 +1125,18 @@ const FIELDS = [
   { key: "name", label: "Name", word: "Name", max: 40 },
   { key: "id", label: "Id", word: "Id", max: 32, hint: "a-z 0-9 -" },
   { key: "harness", label: "Harness", word: "Harness" },
-  { key: "model", label: "Model", word: "Model", max: 128, hint: "harness default" },
+  { key: "model", label: "Model", word: "Model" },
   { key: "thinking", label: "Thinking", word: "Thinking" },
 ];
 // The form's label column: "▌ ", the widest label, a space.
 const LABEL_W = Math.max(...FIELDS.map((f) => f.label.length)), VALUE_AT = LABEL_W + 3;
 // A choice in `max` cells: its name is cut before the closing ›.
 const choiceText = (name, max) => width(`‹ ${name} ›`) <= max ? `‹ ${name} ›` : `‹ ${fit(name, max - 4)} ›`;
-const choices = (form, key) => key === "harness" ? P.HARNESSES : ["", ...P.THINKING[form.harness]];
+// The model's: the harness's, yours, and the edited profile's own while the form has
+// its harness, so a model in neither list shows unchanged.
+const choices = (form, key) => key === "harness" ? P.HARNESSES
+  : key === "model" ? P.modelChoices(form.harness, ui.settings.store, P.modelKeep(ui.settings.modelFrom, form.harness))
+    : ["", ...P.THINKING[form.harness]];
 // What OpenCode does with a model or thinking level, in the profiles module's words.
 const OPENCODE_NOTE = P.buildLaunch({ id: "x", name: "x", harness: "opencode", model: "m" }, "x").warnings[0];
 const entries = () => [P.DEFAULT_PROFILE, ...ui.settings.store.profiles];
@@ -1146,8 +1150,10 @@ const PROMPT_FIELDS = P.ACTION_KEYS.map((a) => ({ key: "prompt", word: P.PROMPT_
 // `promptSel` is the action whose prompt row is selected, under the profiles; null
 // while a profile is. `prompt` is the prompt being edited: { action, text }.
 // `scroll` is how far the wheel moved the form or the prompt from where it shows.
+// In the form, `modelFrom` is the edited profile's harness and model (null for a new
+// one), and `adding` the model being typed after + on Model (null otherwise).
 function openSettings() {
-  ui.settings = { mode: "list", sel: 0, promptSel: null, form: null, prompt: null, field: 0, scroll: 0, error: null, fieldErrors: {}, info: null, ...readStore() };
+  ui.settings = { mode: "list", sel: 0, promptSel: null, form: null, prompt: null, field: 0, scroll: 0, error: null, fieldErrors: {}, info: null, modelFrom: null, adding: null, ...readStore() };
   draw();
 }
 
@@ -1167,7 +1173,7 @@ function selectedEntry(st) {
 function settingsBack() {
   const st = ui.settings;
   if (st.mode === "list") return closeSettings();
-  Object.assign(st, { mode: "list", form: null, prompt: null, scroll: 0, error: null, fieldErrors: {} });
+  Object.assign(st, { mode: "list", form: null, prompt: null, scroll: 0, error: null, fieldErrors: {}, modelFrom: null, adding: null });
   draw();
 }
 
@@ -1215,16 +1221,62 @@ function change(fn, info) {
 function editProfile(p) {
   const st = ui.settings;
   st.form = { prev: p?.id ?? null, name: p?.name ?? "", id: p?.id ?? "", harness: p?.harness ?? "mcc", model: p?.model ?? "", thinking: p?.thinking ?? "" };
-  Object.assign(st, { mode: "edit", field: 0, scroll: 0, error: null, fieldErrors: {}, info: null });
+  Object.assign(st, { mode: "edit", field: 0, scroll: 0, error: null, fieldErrors: {}, info: null, modelFrom: p ? { harness: p.harness, model: p.model ?? "" } : null, adding: null });
   draw();
+}
+
+// A change to your models from the form: the rest of the form stays as it is, its
+// other fields' reasons too. saveStore keeps what it wrote as what was read, so the
+// profile's own save after it isn't taken for a change made elsewhere.
+function modelChange(fn, info) {
+  const st = ui.settings, others = { ...st.fieldErrors };
+  delete others.model;
+  change(fn, info);
+  st.fieldErrors = { ...others, ...st.fieldErrors };
+  draw();
+}
+
+// + on Model: a model of your own for the harness, typed after it. Enter adds it
+// and chooses it; esc goes back to the form.
+function addModelKey(st, k) {
+  const form = st.form;
+  if (k === "\x1b") { st.adding = null; delete st.fieldErrors.model; return draw(); }
+  if (k === "\r" || k === "\n") {
+    const m = st.adding.trim(), name = P.HARNESS_NAMES[form.harness];
+    return modelChange(() => {
+      saveStore(P.addCustomModel(st.store, form.harness, m));
+      Object.assign(st, { adding: null });
+      form.model = m;
+    }, `Added ${m} to ${name}'s models`);
+  }
+  // ↑ and ↓ leave it for the next field, what was typed dropped.
+  if (UP.includes(k) || DOWN.includes(k) || k === "\t" || k === "\x1b[Z") { st.adding = null; return formKey(st, k); }
+  if (k === "\x7f" || k === "\b") st.adding = [...st.adding].slice(0, -1).join("");
+  else if (!k.startsWith("\x1b") && !/[\x00-\x1f\x7f-\x9f]/.test(k) && st.adding.length < 128) st.adding += k;
+  else return;
+  delete st.fieldErrors.model;
+  draw();
+}
+
+// - on Model: the model you added, removed from the harness's choices; the form goes
+// back to the harness default. Profiles that use it keep it.
+function removeModelKey(st) {
+  const form = st.form, m = form.model;
+  modelChange(() => {
+    saveStore(P.removeCustomModel(st.store, form.harness, m));
+    // The edited profile's own model stays chosen, so saving keeps it; any other
+    // goes back to the harness default.
+    if (m !== P.modelKeep(st.modelFrom, form.harness)) form.model = "";
+  }, `Removed ${m} from ${P.HARNESS_NAMES[form.harness]}'s models`);
 }
 
 function saveForm() {
   const st = ui.settings, f = st.form;
+  st.adding = null;
   const profile = { id: f.id, name: f.name.trim(), harness: f.harness, model: f.model, thinking: f.thinking };
   change(() => {
     saveStore(P.upsertProfile(st.store, profile, f.prev));
-    Object.assign(st, { mode: "list", form: null, promptSel: null });
+    Object.assign(st, { mode: "list", form: null, promptSel: null, modelFrom: null });
     st.sel = Math.max(0, entries().findIndex((p) => p.id === profile.id));
   }, `Saved ${profile.name}`);
 }
@@ -1342,6 +1394,7 @@ function promptKey(st, k) {
 
 function formKey(st, k) {
   const form = st.form, field = FIELDS[st.field];
+  if (st.adding !== null) return addModelKey(st, k);
   if (k === "\x1b") return settingsBack();
   if (k === "\r" || k === "\n") return saveForm();
   if (UP.includes(k) || DOWN.includes(k) || k === "\t" || k === "\x1b[Z") {
@@ -1350,10 +1403,17 @@ function formKey(st, k) {
     return draw();
   }
   if (!field.max) {
-    // A choice: ← and → (or space) step through what the harness takes.
+    // On Model, + adds a model of your own and - removes one.
+    if (field.key === "model" && k === "+") {
+      if (P.takesModel(form.harness)) { st.adding = ""; delete st.fieldErrors.model; return draw(); }
+      return modelChange(() => P.addCustomModel(st.store, form.harness, ""), null);
+    }
+    if (field.key === "model" && k === "-") return removeModelKey(st);
+    // A choice: ← and → (or space) step through what the harness takes; a model or
+    // thinking level the new harness doesn't take goes back to its default.
     if (k !== "\x1b[C" && k !== "\x1b[D" && k !== " ") return;
-    const list = choices(form, field.key), at = Math.max(0, list.indexOf(form[field.key]));
-    form[field.key] = list[(at + (k === "\x1b[D" ? list.length - 1 : 1)) % list.length];
+    form[field.key] = P.stepChoice(choices(form, field.key), form[field.key], k === "\x1b[D" ? -1 : 1);
+    if (!choices(form, "model").includes(form.model)) form.model = "";
     if (!choices(form, "thinking").includes(form.thinking)) form.thinking = "";
     delete st.fieldErrors[field.key];
     return draw();
@@ -1393,6 +1453,14 @@ function hintLines(hints, cols) {
   return lines.map((l) => dim(fit(` ${l.join(" · ")}`, cols)));
 }
 
+// The form's key hints: on Model, + and - for your own models instead of typing.
+function formHints(st) {
+  if (st.adding !== null) return ["type the model", "⏎ add", "esc back"];
+  if (FIELDS[st.field].key !== "model") return ["↑↓ field", "←→ choose", "type to edit", "⏎ save", "esc back"];
+  const own = P.isCustomModel(st.store, st.form.harness, st.form.model);
+  return ["↑↓ field", "←→ choose", ...(P.takesModel(st.form.harness) ? ["+ add model"] : []), ...(own ? ["- remove"] : []), "⏎ save", "esc back"];
+}
+
 // The profile views' lines; their own buttons replace the rows' and the header's.
 function settingsLines(cols, rows) {
   const st = ui.settings, out = [];
@@ -1421,7 +1489,7 @@ function settingsLines(cols, rows) {
   if (st.info) notes.push([green, st.info]);
   for (const w of st.warnings) notes.push([yellow, w]);
   if (st.mode === "edit" && st.form.harness === "opencode" && (st.form.model || st.form.thinking)) notes.push([yellow, OPENCODE_NOTE]);
-  const footer = hintLines(st.mode === "edit" ? ["↑↓ field", "←→ choose", "type to edit", "⏎ save", "esc back"]
+  const footer = hintLines(st.mode === "edit" ? formHints(st)
     : st.mode === "prompt" ? ["type to edit", "⏎ save", "esc back"]
     : st.mode === "confirm" ? ["y delete", "any other key keeps it"]
       : ["↑↓ select", "n new", "e edit", "d delete", "R/V assign", "esc back"], cols);
@@ -1443,17 +1511,23 @@ function settingsLines(cols, rows) {
   if (st.mode === "edit") {
     const valueW = cols - VALUE_AT;
     FIELDS.forEach((f, i) => {
-      const on = i === st.field, value = st.form[f.key], pick = () => { Object.assign(st, { field: i, error: null }); draw(); };
+      const on = i === st.field, value = st.form[f.key], pick = () => { Object.assign(st, { field: i, error: null, adding: f.key === "model" ? st.adding : null }); draw(); };
       const bar = on ? accent("▌") : " ";
       // An empty field shows its hint, the id's rule even while you type in it.
       let shown, below = null;
       if (f.max && value) shown = fit(value, valueW - 1) + (on ? invert(" ") : "");
       else if (f.max && on) shown = invert(" ") + (f.key === "id" ? dim(fit(f.hint, valueW - 1)) : "");
       else if (f.max) shown = dim(fit(f.hint ?? "—", valueW));
-      else {
-        // A choice too wide for the value column goes on a line of its own.
+      else if (f.key === "model" && st.adding !== null) {
+        // The model being added, typed where its choice shows.
+        shown = st.adding ? fit(st.adding, valueW - 1) + invert(" ") : invert(" ") + dim(fit("new model", valueW - 1));
+      } else {
+        // A choice too wide for the value column goes on a line of its own. A model
+        // says it is custom after it, when that fits.
         const name = f.key === "harness" ? P.HARNESS_NAMES[value] : value || "harness default";
-        if (width(`‹ ${name} ›`) <= valueW) shown = `‹ ${name} ›`;
+        const tag = f.key === "model" && P.isCustomModel(st.store, st.form.harness, value) ? " custom" : "";
+        if (width(`‹ ${name} ›${tag}`) <= valueW) shown = `‹ ${name} ›${dim(tag)}`;
+        else if (width(`‹ ${name} ›`) <= valueW) shown = `‹ ${name} ›`;
         else { shown = ""; below = `${bar}  ${choiceText(name, cols - 3)}`; }
       }
       if (on) selStart = body.length;

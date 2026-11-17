@@ -34,22 +34,41 @@ const THINKING = {
   vibe: [],
 };
 
+// The models offered for each harness, before your own (see addCustomModel). Hand-kept:
+// a profile can still hold a model that isn't listed, and it starts as before.
+// OpenCode has no flag for a model when it starts, so it takes none.
+const MODELS = {
+  // Claude Code's aliases, as `claude --help` gives them.
+  mcc: ["fable", "opus", "sonnet", "haiku"],
+  claude: ["fable", "opus", "sonnet", "haiku"],
+  // The models `codex debug models --bundled` lists as visible (codex-cli 0.167.0).
+  codex: ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+  // Pi takes "provider/id". From `pi --list-models` (pi 1.5.2), the anthropic
+  // provider only: other providers depend on your setup, so add them as your own.
+  pi: ["anthropic/claude-fable-5-2", "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"],
+  opencode: [],
+  // Mistral Vibe 3.1.2's model list.
+  vibe: ["mistral-large-4-0-3", "mistral-medium-3.5", "glm-5-3", "zai-glm-5-3-flash"],
+};
+
 // The two actions a profile can be assigned to.
 const ACTION_KEYS = ["resolve", "review"];
 
 // What an action starts when no profile is assigned to it, or its profile is gone.
 const DEFAULT_PROFILE = Object.freeze({ id: "default", name: "Claude Code via mcc run", harness: "mcc" });
 
-// The newest store version this reads and writes. A store without custom prompts
-// is still written as version 1, so an older panel can keep using it.
-const STORE_VERSION = 2;
-const READS = [1, 2];
+// The newest store version this reads and writes. A store is written as the
+// oldest version that holds it, so an older panel can keep using it: version 1
+// without custom prompts, 2 with them, 3 with custom models.
+const STORE_VERSION = 3;
+const READS = [1, 2, 3];
 
 const ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const NAME = /^[^\x00-\x1f\x7f-\x9f\u2028\u2029]{1,40}$/;
 // A model name or alias: no spaces, quotes or shell metacharacters, and no leading
 // "-" that a harness would read as a flag. Aliases such as opus[1m] don't fit.
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
+const MODEL_RULE = "Model: letters, digits and . _ : / @ + - only, starting with a letter or digit";
 // What a prompt can't hold: control, format (bidi, zero-width), private-use,
 // unassigned and surrogate characters, line and paragraph separators, and the
 // backslash, which some shells read inside quotes. Any other text is sent as is:
@@ -73,7 +92,7 @@ function validateProfile(p) {
   if (typeof p.name !== "string" || !NAME.test(p.name) || !p.name.trim()) errors.push("Name: 1-40 printable characters");
   if (!HARNESSES.includes(p.harness)) errors.push(`Harness: one of ${HARNESSES.join(", ")}`);
   if (!blank(p.model) && (typeof p.model !== "string" || !MODEL.test(p.model))) {
-    errors.push("Model: letters, digits and . _ : / @ + - only, starting with a letter or digit");
+    errors.push(MODEL_RULE);
   }
   if (!blank(p.thinking)) {
     // OpenCode ignores the level, so any level of another harness is kept as is.
@@ -167,6 +186,10 @@ function buildLaunch(profile, prompt) {
 // With a custom prompt for either action, it is version 2, and also holds
 //   "prompts": { "resolve": template | null, "review": template | null }
 // A panel from before version 2 shows such a file read only, so never loses them.
+// With a model of your own for a harness, it is version 3, and also holds
+//   "customModels": { harness: [model, …] }
+// with only the harnesses that have one. A panel from before version 3 shows it
+// read only too.
 
 // The same file on both surfaces, on the machine where herdr or the app runs.
 function storePath(home) {
@@ -175,13 +198,14 @@ function storePath(home) {
 }
 
 function emptyStore() {
-  return { version: STORE_VERSION, profiles: [], assign: { resolve: null, review: null }, prompts: { resolve: null, review: null } };
+  return { version: STORE_VERSION, profiles: [], assign: { resolve: null, review: null }, prompts: { resolve: null, review: null }, customModels: {} };
 }
 
-// The store in a file's text, read leniently: a bad profile or prompt is skipped
+// The store in a file's text, read leniently: a bad profile, prompt or model is skipped
 // with a warning. A file that isn't valid JSON, is from another version, or holds
-// a profile or prompt that was skipped is read-only: saving would overwrite what
-// it holds.
+// a profile, prompt or model that was skipped is read-only: saving would overwrite
+// what it holds. Prompts and models are read whatever the version, as from a file
+// edited by hand.
 // No file (null or "") is an empty store.
 function parseStore(text) {
   const warnings = [];
@@ -194,7 +218,7 @@ function parseStore(text) {
   }
   let readOnly = false;
   if (!READS.includes(data.version)) {
-    warnings.push(`The profiles file is version ${JSON.stringify(data.version ?? null)}, not ${READS.join(" or ")}: it is read only here`);
+    warnings.push(`The profiles file is version ${JSON.stringify(data.version ?? null)}, not ${READS.slice(0, -1).join(", ")} or ${READS[READS.length - 1]}: it is read only here`);
     readOnly = true;
   }
   const store = emptyStore();
@@ -226,27 +250,48 @@ function parseStore(text) {
     if (!why.length) store.prompts[action] = raw.trim();
     else { badPrompt = true; warnings.push(`Skipped the ${PROMPT_LABELS[action]}: ${why[0]}`); }
   }
+  // A model of your own that can't be used is skipped; one that is also built in is
+  // kept, so a release that lists it doesn't make the file read only.
+  let badModel = data.customModels !== undefined && data.customModels !== null && (typeof data.customModels !== "object" || Array.isArray(data.customModels));
+  if (badModel) warnings.push("The profiles file's models aren't an object");
+  else for (const [harness, list] of Object.entries(data.customModels ?? {})) {
+    const skip = (why) => { badModel = true; warnings.push(`Skipped the models for ${JSON.stringify(harness)}: ${why}`); };
+    if (!HARNESSES.includes(harness)) { skip("not a harness"); continue; }
+    if (!takesModel(harness)) { skip(`${HARNESS_NAMES[harness]} takes no model`); continue; }
+    if (!Array.isArray(list)) { skip("they aren't a list"); continue; }
+    const kept = [];
+    for (const m of list) {
+      if (typeof m !== "string" || !MODEL.test(m)) { badModel = true; warnings.push(`Skipped the ${HARNESS_NAMES[harness]} model ${JSON.stringify(m)}: ${MODEL_RULE.slice("Model: ".length)}`); }
+      else if (kept.includes(m)) { badModel = true; warnings.push(`Skipped the ${HARNESS_NAMES[harness]} model ${JSON.stringify(m)}: it is listed twice`); }
+      else kept.push(m);
+    }
+    if (kept.length) store.customModels[harness] = kept;
+  }
   // Saving would drop what was skipped, and the actions assigned to it: first say why
   // nothing is saved, as "Not saved: …" shows this first warning.
-  if ((skipped || badPrompt) && !readOnly) {
+  if ((skipped || badPrompt || badModel) && !readOnly) {
     warnings.unshift(skipped
       ? "Some profiles in the file can't be used (see below), so it is read only here: fix or remove them to save"
-      : "A prompt in the file can't be used (see below), so it is read only here: fix or remove it to save");
+      : badPrompt
+        ? "A prompt in the file can't be used (see below), so it is read only here: fix or remove it to save"
+        : "A model in the file can't be used (see below), so it is read only here: fix or remove it to save");
     readOnly = true;
   }
   return { store, warnings, readOnly };
 }
 
 // Version 1, as before custom prompts, unless the store holds one: then version 2,
-// with its prompts.
+// with its prompts. With a model of your own, version 3, with its prompts and models.
 function serializeStore(store) {
   const profiles = (store?.profiles ?? []).map(normalizeProfile);
-  const assign = {}, prompts = {};
+  const assign = {}, prompts = {}, models = {};
   for (const action of ACTION_KEYS) {
     assign[action] = store?.assign?.[action] ?? null;
     prompts[action] = resolvePrompt(store, action);
   }
-  const data = ACTION_KEYS.some((a) => prompts[a] !== null) ? { version: 2, profiles, assign, prompts } : { version: 1, profiles, assign };
+  for (const h of HARNESSES) if (customModels(store, h).length) models[h] = customModels(store, h).slice();
+  const data = Object.keys(models).length ? { version: 3, profiles, assign, prompts, customModels: models }
+    : ACTION_KEYS.some((a) => prompts[a] !== null) ? { version: 2, profiles, assign, prompts } : { version: 1, profiles, assign };
   return `${JSON.stringify(data, null, 2)}\n`;
 }
 
@@ -325,6 +370,89 @@ function setPrompt(store, action, text) {
 function resolvePrompt(store, action) {
   const v = store?.prompts?.[action];
   return typeof v === "string" && v ? v : null;
+}
+
+// ── Models ──────────────────────────────────────────────────────────────────
+// The form offers each harness's models (MODELS), then the ones you added for it,
+// kept in the store as "customModels": { harness: [model, …] }.
+
+// Whether a harness takes a model: OpenCode doesn't.
+function takesModel(harness) {
+  return (MODELS[harness]?.length ?? 0) > 0;
+}
+
+// The models you added for a harness, as the store holds them.
+function customModels(store, harness) {
+  const list = store?.customModels?.[harness];
+  return Array.isArray(list) ? list : [];
+}
+
+// Whether `model` is one you added for the harness, and not also built in: the one
+// the form can remove.
+function isCustomModel(store, harness, model) {
+  return Boolean(model) && customModels(store, harness).includes(model) && !(MODELS[harness] ?? []).includes(model);
+}
+
+// What the form's Model offers for a harness: its default (""), its models, then
+// yours, each once. `keep` is the edited profile's own model (see modelKeep): when
+// neither list has it, it is offered last, so the form shows it unchanged.
+function modelChoices(harness, store, keep = "") {
+  const list = ["", ...(MODELS[harness] ?? [])];
+  for (const m of customModels(store, harness)) if (!list.includes(m)) list.push(m);
+  if (typeof keep === "string" && keep && !list.includes(keep)) list.push(keep);
+  return list;
+}
+
+// The model modelChoices keeps for a form: the edited profile's own, while the form
+// has its harness. `from` is that profile ({ harness, model }), null for a new one.
+function modelKeep(from, harness) {
+  return from && from.harness === harness && typeof from.model === "string" ? from.model : "";
+}
+
+// The value before (by -1) or after (by 1) `value` in a form's choices, round from
+// the last to the first; the first when `value` isn't one of them.
+function stepChoice(list, value, by) {
+  if (!list.length) return value;
+  const at = list.indexOf(value);
+  if (at < 0) return list[0];
+  return list[(at + by + list.length) % list.length];
+}
+
+// Why a harness has no models to add or remove; null when it has.
+function noModels(harness) {
+  if (!HARNESSES.includes(harness)) return `Harness: one of ${HARNESSES.join(", ")}`;
+  return takesModel(harness) ? null : `Model: ${HARNESS_NAMES[harness]} takes no model`;
+}
+
+// Adds a model of your own to a harness's choices, trimmed. Returns a new store;
+// throws, with "Model: " first, when it can't.
+function addCustomModel(store, harness, model) {
+  const why = noModels(harness);
+  if (why) throw new Error(why);
+  const m = typeof model === "string" ? model.trim() : "";
+  if (!MODEL.test(m)) throw new Error(MODEL_RULE);
+  if ((MODELS[harness] ?? []).includes(m) || customModels(store, harness).includes(m)) {
+    throw new Error(`Model: ${m} is already offered for ${HARNESS_NAMES[harness]}`);
+  }
+  return { ...store, customModels: { ...(store?.customModels ?? {}), [harness]: [...customModels(store, harness), m] } };
+}
+
+// Removes a model you added. A built-in one stays. Profiles that use it keep it:
+// they still start with it. Returns a new store; throws, with "Model: " first, when
+// there is nothing to remove.
+function removeCustomModel(store, harness, model) {
+  const why = noModels(harness);
+  if (why) throw new Error(why);
+  const list = customModels(store, harness);
+  if (!list.includes(model)) {
+    if (!model) throw new Error("Model: choose one you added to remove it");
+    throw new Error((MODELS[harness] ?? []).includes(model)
+      ? `Model: ${model} is built in, so it can't be removed`
+      : `Model: ${model} isn't one you added, so it can't be removed`);
+  }
+  const models = { ...(store?.customModels ?? {}) }, rest = list.filter((m) => m !== model);
+  if (rest.length) models[harness] = rest; else delete models[harness];
+  return { ...store, customModels: models };
 }
 
 // ── Shell text ──────────────────────────────────────────────────────────────
@@ -455,4 +583,4 @@ function versionLine(version, commit, room = Infinity) {
   return line.length > room ? tail : line;
 }
 
-module.exports = { HARNESSES, HARNESS_NAMES, THINKING, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice, keyHints, hintRoom, PLUGIN_VERSION, COMMIT_ARGS, parseCommit, versionLine };
+module.exports = { HARNESSES, HARNESS_NAMES, THINKING, MODELS, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, takesModel, customModels, isCustomModel, modelChoices, modelKeep, stepChoice, addCustomModel, removeCustomModel, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice, keyHints, hintRoom, PLUGIN_VERSION, COMMIT_ARGS, parseCommit, versionLine };

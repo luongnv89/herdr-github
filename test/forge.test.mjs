@@ -659,3 +659,53 @@ test("main.js merges through gh on the repo's machine, once a second press confi
   assert.match(body("  onKey(e, cx) {"), /this\.cancelMerge\(cx\);/);
   assert.match(main, /const c = await nextCommand\(\);\n(\s*\/\/[^\n]*\n)*\s*this\.cancelMerge\(cx\);/);
 });
+
+test("main.js offers each harness's models as a chip row, with an add box, Add and Remove that save through change (#54)", () => {
+  const main = readFileSync(new URL("../mods/herdr-github/main.js", import.meta.url), "utf8");
+  const body = (head) => { const fn = main.slice(main.indexOf(head)); return fn.slice(0, fn.indexOf("\n  }\n")); };
+  // It imports the model helpers; the import check above makes sure they exist.
+  const imports = /import \{([^}]*)\} from "\.\/profiles\.js"/.exec(main)[1].split(",").map((n) => n.trim());
+  for (const n of ["takesModel", "isCustomModel", "modelChoices", "modelKeep", "stepChoice", "addCustomModel", "removeCustomModel"]) assert.ok(imports.includes(n), n);
+  // Model is a choice now, not a text field.
+  assert.match(main, /const TEXT_FIELDS = \["name", "id"\];/);
+  assert.doesNotMatch(main, /this\.field\(t, "model"/);
+  assert.match(body("  profileForm(t) {"), /\.child\(this\.modelField\(t\)\)/);
+  // Its choices: the harness's, yours, and the edited profile's own, in a chip row
+  // whose chips go by their place.
+  assert.match(body("  modelValues(f) {"), /modelChoices\(f\.harness, st\.store, modelKeep\(st\.modelFrom, f\.harness\)\)/);
+  const field = body("  modelField(t) {");
+  assert.match(field, /this\.choices\(t, "Model \(optional\)", "model", this\.modelValues\(f\)/);
+  assert.match(field, /\(_v, i\) => i/);
+  assert.match(field, /id\("hg-model-new"\)/);
+  assert.match(field, /Input\.new\(this\.modelInput\)/);
+  assert.match(field, /this\.chip\(t, "hg-model-add", "Add", false, \(_e, cx\) => this\.addOwnModel\(cx\)\)/);
+  assert.match(field, /\.when\(own, \(el\) => el\.child\(this\.chip\(t, "hg-model-remove", "Remove", false, \(_e, cx\) => this\.removeOwnModel\(cx\)\)\)\)/);
+  assert.match(field, /if \(!takes\)/);
+  // Both write through change, which saves only while the file holds what was read.
+  assert.match(body("  addOwnModel(cx) {"), /this\.change\(\(s\) => addCustomModel\(s, harness, m\)/);
+  assert.match(body("  removeOwnModel(cx) {"), /this\.change\(\(s\) => removeCustomModel\(s, harness, m\)/);
+  // Once added, focus leaves the add box for Model, as the terminal leaves add mode,
+  // so the next enter saves the profile instead of adding an empty model.
+  assert.match(body("  addOwnModel(cx) {"), /if \(this\.settings === st && st\.form === f && this\.inputFocus === "add-model"\) \{\s*this\.inputFocus = null;\s*this\.handle\.focus\(\);/);
+  // Removing the edited profile's own model keeps it chosen, so saving keeps it.
+  assert.match(body("  removeOwnModel(cx) {"), /m !== modelKeep\(st\.modelFrom, harness\)\) f\.model = "";/);
+  // A new harness resets a model it doesn't take; ← and → step through the models.
+  assert.match(body("  pickChoice(key, value, cx) {"), /if \(!this\.modelValues\(f\)\.includes\(f\.model\)\) f\.model = "";/);
+  assert.match(body("  stepChoice(by, cx) {"), /key === "model" \? this\.modelValues\(f\)/);
+  // The add box's enter adds, and its esc goes back to the form, not the list.
+  assert.match(main, /this\.modelInput\.on\("submit", \(_e, cx\) => this\.addOwnModel\(cx\)\);/);
+  assert.match(body("  settingsKey(k, m, cx) {"), /if \(k === "escape" && st\.mode === "edit" && this\.inputFocus === "add-model"\)/);
+  // Its key hints say so while it has the keys, as the terminal's do, before the form's own.
+  const hints = /const hints = [\s\S]*?;\n/.exec(body("  render(cx) {"))[0];
+  assert.match(hints, /st\.mode === "edit" && this\.inputFocus === "add-model" \? "↑↓ field · type the model · ⏎ add · esc to Model"/);
+  assert.ok(hints.indexOf('this.inputFocus === "add-model"') < hints.indexOf("⏎ save · esc back"));
+  // A long model's chip fits the row: it shrinks, its name truncates, "custom" stays
+  // after it, and the tooltip holds the full name. Only the model row does this.
+  assert.match(body("  choices(t, "), /\.when\(Boolean\(fit\), \(el\) => el\.flex_shrink\(1\)\.min_w\(0\)\.max_w_full\(\)\.tooltip\(fit\(v\)\)\)/);
+  assert.match(field, /div\(\)\.min_w\(0\)\.truncate\(\)\.child\(v \|\| "harness default"\)/);
+  assert.match(field, /isCustomModel\(st\.store, f\.harness, v\), \(el\) => el\.child\(div\(\)\.flex_none\(\)[^\n]*"· custom"/);
+  assert.match(field, /"← → to change", \(v\) => v \|\| "harness default"\);/);
+  const form = body("  profileForm(t) {");
+  assert.match(form, /this\.choices\(t, "Harness", "harness", HARNESSES, \(h\) => HARNESS_NAMES\[h\]\)\)/);
+  assert.match(form, /this\.choices\(t, "Thinking \(optional\)", "thinking", levels, \(v\) => v \|\| "harness default"\)/);
+});
