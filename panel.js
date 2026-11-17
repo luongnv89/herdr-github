@@ -1244,7 +1244,7 @@ function addModelKey(st, k) {
   if (k === "\r" || k === "\n") {
     const m = st.adding.trim(), name = P.HARNESS_NAMES[form.harness];
     return modelChange(() => {
-      saveStore(P.addModel(st.store, form.harness, m));
+      saveStore(P.addCustomModel(st.store, form.harness, m));
       Object.assign(st, { adding: null });
       form.model = m;
     }, `Added ${m} to ${name}'s models`);
@@ -1263,7 +1263,7 @@ function addModelKey(st, k) {
 function removeModelKey(st) {
   const form = st.form, m = form.model;
   modelChange(() => {
-    saveStore(P.removeModel(st.store, form.harness, m));
+    saveStore(P.removeCustomModel(st.store, form.harness, m));
     // The edited profile's own model stays chosen, so saving keeps it; any other
     // goes back to the harness default.
     if (m !== P.modelKeep(st.modelFrom, form.harness)) form.model = "";
@@ -1406,7 +1406,7 @@ function formKey(st, k) {
     // On Model, + adds a model of your own and - removes one.
     if (field.key === "model" && k === "+") {
       if (P.takesModel(form.harness)) { st.adding = ""; delete st.fieldErrors.model; return draw(); }
-      return modelChange(() => P.addModel(st.store, form.harness, ""), null);
+      return modelChange(() => P.addCustomModel(st.store, form.harness, ""), null);
     }
     if (field.key === "model" && k === "-") return removeModelKey(st);
     // A choice: ← and → (or space) step through what the harness takes; a model or

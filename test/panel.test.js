@@ -1624,14 +1624,14 @@ test("+ adds a model of yours: chosen, kept as version 3, and the profile then s
   assert.ok(text(lines.slice(-3)).includes("- remove"), lines.join("\n"));
   assert.deepEqual(stored(), {
     version: 3, profiles: [{ id: "cc", name: "Claude Code", harness: "claude" }], assign: { resolve: "cc", review: "cc" },
-    prompts: { resolve: null, review: null }, models: { pi: ["openai/gpt-5.5"] },
+    prompts: { resolve: null, review: null }, customModels: { pi: ["openai/gpt-5.5"] },
   });
   // Enter saves the profile: what was just written isn't taken for a change elsewhere.
   lines = screen(() => onInput(Buffer.from("\r")));
   assert.ok(!text(lines).includes("changed elsewhere"), lines.join("\n"));
   assert.equal(ui.settings.mode, "list");
   assert.deepEqual(stored().profiles.at(-1), { id: "mine", name: "Mine", harness: "pi", model: "openai/gpt-5.5" });
-  assert.deepEqual(stored().models, { pi: ["openai/gpt-5.5"] });
+  assert.deepEqual(stored().customModels, { pi: ["openai/gpt-5.5"] });
   // Offered again once the view opens anew, after Pi's own, for a new profile.
   screen(() => onInput(Buffer.from("\x1b")));
   screen(() => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[C\x1b[C\x1b[C\x1b[B")));
@@ -1643,14 +1643,14 @@ test("+ adds a model of yours: chosen, kept as version 3, and the profile then s
   assert.ok(text(lines).includes(`Model: ${P.MODELS.pi[0]} is already offered for Pi`), lines.join("\n"));
   lines = screen(() => onInput(Buffer.from("\x1b+opus[1m]\r")));
   assert.ok(text(lines).replace(/\s+/g, " ").includes("Model: letters, digits and . _ : / @ + - only"), lines.join("\n"));
-  assert.deepEqual(stored().models, { pi: ["openai/gpt-5.5"] });
+  assert.deepEqual(stored().customModels, { pi: ["openai/gpt-5.5"] });
 });
 
 test("- removes a model of yours; a profile that uses it keeps it, and the last one gone writes version 1 (#54)", (t) => {
   const dir = home(t);
   useStore(dir, {
     version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {},
-    prompts: { resolve: null, review: null }, models: { pi: ["openai/x", "openai/y"] },
+    prompts: { resolve: null, review: null }, customModels: { pi: ["openai/x", "openai/y"] },
   });
   setupGitHub("issues");
   const stored = () => JSON.parse(fs.readFileSync(storeFile(), "utf8"));
@@ -1660,7 +1660,7 @@ test("- removes a model of yours; a profile that uses it keeps it, and the last 
   assert.ok(text(lines).includes("Removed openai/x from Pi's models"), lines.join("\n"));
   // The edited profile's own model stays chosen: saving now would keep it.
   assert.equal(ui.settings.form.model, "openai/x");
-  assert.deepEqual(stored().models, { pi: ["openai/y"] });
+  assert.deepEqual(stored().customModels, { pi: ["openai/y"] });
   assert.deepEqual(stored().profiles, [{ id: "p", name: "P", harness: "pi", model: "openai/x" }]);
   // It is still offered, last, as its own and not as yours.
   assert.deepEqual(stepModels(2, "\x1b[C"), ["", P.MODELS.pi[0]]);
@@ -1691,7 +1691,7 @@ test("- on the edited profile's own model, then enter: the profile keeps it (#54
   const dir = home(t);
   useStore(dir, {
     version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {},
-    prompts: { resolve: null, review: null }, models: { pi: ["openai/x"] },
+    prompts: { resolve: null, review: null }, customModels: { pi: ["openai/x"] },
   });
   setupGitHub("issues");
   const stored = () => JSON.parse(fs.readFileSync(storeFile(), "utf8"));
@@ -1704,7 +1704,7 @@ test("a read-only store: + and - change nothing and say why, as Not saved (#54)"
   const dir = home(t);
   const file = useStore(dir, {
     version: 3, profiles: [{ id: "g", name: "G", harness: "pi", model: "openai/x" }, { id: "bad", name: "Bad", harness: "claude", model: "opus[1m]" }],
-    assign: {}, prompts: { resolve: null, review: null }, models: { pi: ["openai/x"] },
+    assign: {}, prompts: { resolve: null, review: null }, customModels: { pi: ["openai/x"] },
   });
   const before = fs.readFileSync(file, "utf8");
   setupGitHub("issues");
@@ -1724,12 +1724,12 @@ test("+ and - never overwrite a change made elsewhere: the file is read again, a
   const dir = home(t);
   const file = useStore(dir, {
     version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {},
-    prompts: { resolve: null, review: null }, models: { pi: ["openai/x"] },
+    prompts: { resolve: null, review: null }, customModels: { pi: ["openai/x"] },
   });
   setupGitHub("issues");
   screen(() => onInput(Buffer.from(`sje${DOWN3}+openai/z`)));
   // The app saves meanwhile: a model of its own.
-  const theirs = JSON.stringify({ version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {}, models: { pi: ["openai/x", "app/m"] } });
+  const theirs = JSON.stringify({ version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {}, customModels: { pi: ["openai/x", "app/m"] } });
   fs.writeFileSync(file, theirs);
   let lines = screen(() => onInput(Buffer.from("\r")));
   assert.equal(fs.readFileSync(file, "utf8"), theirs);
@@ -1738,7 +1738,7 @@ test("+ and - never overwrite a change made elsewhere: the file is read again, a
   // Read again, theirs is offered; enter now adds yours beside it.
   assert.ok(P.modelChoices("pi", ui.settings.store).includes("app/m"));
   screen(() => onInput(Buffer.from("\r")));
-  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).models, { pi: ["openai/x", "app/m", "openai/z"] });
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).customModels, { pi: ["openai/x", "app/m", "openai/z"] });
   // The same for -: nothing written over theirs, the model still chosen.
   const again = JSON.stringify({ version: 1, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: { resolve: "p" } });
   fs.writeFileSync(file, again);
@@ -1781,7 +1781,7 @@ test("esc while a model is typed goes back to the form, not the list, with the f
   assert.equal(ui.settings.adding, null);
   assert.deepEqual([ui.settings.form.name, ui.settings.form.id, ui.settings.form.model], ["Half", "half", ""]);
   assert.ok(lines.some((l) => /^▌ Model +‹ harness default ›/.test(l ?? "")), lines.join("\n"));
-  assert.deepEqual(JSON.parse(fs.readFileSync(storeFile(), "utf8")).models, undefined);
+  assert.deepEqual(JSON.parse(fs.readFileSync(storeFile(), "utf8")).customModels, undefined);
   screen(() => onInput(Buffer.from("\x1b")));
   assert.equal(ui.settings.mode, "list");
 });

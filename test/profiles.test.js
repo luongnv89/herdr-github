@@ -563,7 +563,7 @@ test("MODELS: a list for each harness that takes a model, none for OpenCode, eac
 
 test("modelChoices: the default first, the harness's models, yours once, then the profile's own when unlisted", () => {
   assert.deepEqual(P.modelChoices("vibe", P.emptyStore()), ["", ...P.MODELS.vibe]);
-  const store = { ...P.emptyStore(), models: { pi: ["openai/x", P.MODELS.pi[0], "openai/y"], vibe: ["mine"] } };
+  const store = { ...P.emptyStore(), customModels: { pi: ["openai/x", P.MODELS.pi[0], "openai/y"], vibe: ["mine"] } };
   // A model of yours that is also built in shows once, where the built-in one is.
   assert.deepEqual(P.modelChoices("pi", store), ["", ...P.MODELS.pi, "openai/x", "openai/y"]);
   // The profile's own model: added when neither list has it, never twice.
@@ -597,42 +597,42 @@ test("modelKeep and stepChoice: the profile's own model on its harness only, and
   assert.equal(P.stepChoice([], "x", 1), "x");
 });
 
-test("addModel: trimmed, checked as a profile's model is, never twice, and not for OpenCode", () => {
+test("addCustomModel: trimmed, checked as a profile's model is, never twice, and not for OpenCode", () => {
   const base = P.upsertProfile(P.emptyStore(), ok({ id: "a", harness: "pi" }));
-  const s = P.addModel(base, "pi", "  openai/gpt-x ");
-  assert.deepEqual(s.models, { pi: ["openai/gpt-x"] });
-  assert.deepEqual(base.models, {}, "the store passed in is left as it was");
-  assert.deepEqual(P.addModel(s, "pi", "openai/gpt-y").models, { pi: ["openai/gpt-x", "openai/gpt-y"] });
+  const s = P.addCustomModel(base, "pi", "  openai/gpt-x ");
+  assert.deepEqual(s.customModels, { pi: ["openai/gpt-x"] });
+  assert.deepEqual(base.customModels, {}, "the store passed in is left as it was");
+  assert.deepEqual(P.addCustomModel(s, "pi", "openai/gpt-y").customModels, { pi: ["openai/gpt-x", "openai/gpt-y"] });
   assert.deepEqual(s.profiles, base.profiles);
   // The same reason as a profile's model, for shell text, aliases and nothing at all.
   const rule = P.validateProfile(ok({ harness: "claude", model: "opus[1m]" }))[0];
   assert.equal(rule, "Model: letters, digits and . _ : / @ + - only, starting with a letter or digit");
-  for (const bad of ["opus[1m]", "$(id)", "a b", "-x", "", "   ", null, 5]) assert.throws(() => P.addModel(base, "claude", bad), { message: rule }, JSON.stringify(bad));
+  for (const bad of ["opus[1m]", "$(id)", "a b", "-x", "", "   ", null, 5]) assert.throws(() => P.addCustomModel(base, "claude", bad), { message: rule }, JSON.stringify(bad));
   // Already offered, built in or yours.
-  assert.throws(() => P.addModel(base, "claude", "opus"), { message: "Model: opus is already offered for Claude Code" });
-  assert.throws(() => P.addModel(s, "pi", "openai/gpt-x"), { message: "Model: openai/gpt-x is already offered for Pi" });
+  assert.throws(() => P.addCustomModel(base, "claude", "opus"), { message: "Model: opus is already offered for Claude Code" });
+  assert.throws(() => P.addCustomModel(s, "pi", "openai/gpt-x"), { message: "Model: openai/gpt-x is already offered for Pi" });
   // The same name for another harness is fine.
-  assert.deepEqual(P.addModel(s, "codex", "openai/gpt-x").models, { pi: ["openai/gpt-x"], codex: ["openai/gpt-x"] });
-  assert.throws(() => P.addModel(base, "opencode", "m"), { message: "Model: OpenCode takes no model" });
-  assert.throws(() => P.addModel(base, "gemini", "m"), /^Error: Harness: one of/);
+  assert.deepEqual(P.addCustomModel(s, "codex", "openai/gpt-x").customModels, { pi: ["openai/gpt-x"], codex: ["openai/gpt-x"] });
+  assert.throws(() => P.addCustomModel(base, "opencode", "m"), { message: "Model: OpenCode takes no model" });
+  assert.throws(() => P.addCustomModel(base, "gemini", "m"), /^Error: Harness: one of/);
 });
 
-test("removeModel: one of yours goes, a built-in one stays, and profiles keep the model they use", () => {
+test("removeCustomModel: one of yours goes, a built-in one stays, and profiles keep the model they use", () => {
   let s = P.upsertProfile(P.emptyStore(), ok({ id: "a", harness: "pi", model: "openai/x" }));
-  s = P.addModel(P.addModel(s, "pi", "openai/x"), "pi", "openai/y");
-  const r = P.removeModel(s, "pi", "openai/x");
-  assert.deepEqual(r.models, { pi: ["openai/y"] });
+  s = P.addCustomModel(P.addCustomModel(s, "pi", "openai/x"), "pi", "openai/y");
+  const r = P.removeCustomModel(s, "pi", "openai/x");
+  assert.deepEqual(r.customModels, { pi: ["openai/y"] });
   assert.deepEqual(r.profiles, [{ id: "a", name: "Profile", harness: "pi", model: "openai/x" }]);
-  assert.deepEqual(s.models, { pi: ["openai/x", "openai/y"] }, "the store passed in is left as it was");
+  assert.deepEqual(s.customModels, { pi: ["openai/x", "openai/y"] }, "the store passed in is left as it was");
   // The last one gone takes the harness's list with it.
-  assert.deepEqual(P.removeModel(r, "pi", "openai/y").models, {});
-  assert.throws(() => P.removeModel(s, "pi", P.MODELS.pi[0]), { message: `Model: ${P.MODELS.pi[0]} is built in, so it can't be removed` });
-  assert.throws(() => P.removeModel(s, "pi", "local/z"), { message: "Model: local/z isn't one you added, so it can't be removed" });
-  assert.throws(() => P.removeModel(s, "pi", ""), { message: "Model: choose one you added to remove it" });
-  assert.throws(() => P.removeModel(s, "opencode", "m"), { message: "Model: OpenCode takes no model" });
+  assert.deepEqual(P.removeCustomModel(r, "pi", "openai/y").customModels, {});
+  assert.throws(() => P.removeCustomModel(s, "pi", P.MODELS.pi[0]), { message: `Model: ${P.MODELS.pi[0]} is built in, so it can't be removed` });
+  assert.throws(() => P.removeCustomModel(s, "pi", "local/z"), { message: "Model: local/z isn't one you added, so it can't be removed" });
+  assert.throws(() => P.removeCustomModel(s, "pi", ""), { message: "Model: choose one you added to remove it" });
+  assert.throws(() => P.removeCustomModel(s, "opencode", "m"), { message: "Model: OpenCode takes no model" });
   // One you added that a release then built in can still be removed from the file.
-  const both = { ...P.emptyStore(), models: { claude: ["opus", "mine"] } };
-  assert.deepEqual(P.removeModel(both, "claude", "opus").models, { claude: ["mine"] });
+  const both = { ...P.emptyStore(), customModels: { claude: ["opus", "mine"] } };
+  assert.deepEqual(P.removeCustomModel(both, "claude", "opus").customModels, { claude: ["mine"] });
 });
 
 test("the store: version 3 only with models of yours; the last one gone writes it as before", () => {
@@ -644,27 +644,27 @@ test("the store: version 3 only with models of yours; the last one gone writes i
   const v2 = P.serializeStore(prompted);
   assert.equal(v2, `${JSON.stringify({ version: 2, profiles: [{ id: "a", name: "Profile", harness: "pi" }], assign: { resolve: null, review: null }, prompts: { resolve: null, review: "Review {number}" } }, null, 2)}\n`);
   // With one: version 3, its prompts and models, read back the same.
-  const custom = P.addModel(P.addModel(base, "vibe", "my-vibe"), "pi", "openai/x");
+  const custom = P.addCustomModel(P.addCustomModel(base, "vibe", "my-vibe"), "pi", "openai/x");
   const v3 = P.serializeStore(custom);
-  assert.deepEqual(JSON.parse(v3), { ...JSON.parse(v1), version: 3, prompts: { resolve: null, review: null }, models: { pi: ["openai/x"], vibe: ["my-vibe"] } });
+  assert.deepEqual(JSON.parse(v3), { ...JSON.parse(v1), version: 3, prompts: { resolve: null, review: null }, customModels: { pi: ["openai/x"], vibe: ["my-vibe"] } });
   assert.deepEqual(P.parseStore(v3), { store: custom, warnings: [], readOnly: false });
-  const both = P.serializeStore(P.addModel(prompted, "pi", "openai/x"));
+  const both = P.serializeStore(P.addCustomModel(prompted, "pi", "openai/x"));
   assert.deepEqual(P.parseStore(both).store.prompts, prompted.prompts);
   // Removing the last one: back to version 1, or 2 with a prompt, with no models key.
-  assert.equal(P.serializeStore(P.removeModel(P.removeModel(custom, "pi", "openai/x"), "vibe", "my-vibe")), v1);
-  assert.equal(P.serializeStore(P.removeModel(P.addModel(prompted, "pi", "openai/x"), "pi", "openai/x")), v2);
+  assert.equal(P.serializeStore(P.removeCustomModel(P.removeCustomModel(custom, "pi", "openai/x"), "vibe", "my-vibe")), v1);
+  assert.equal(P.serializeStore(P.removeCustomModel(P.addCustomModel(prompted, "pi", "openai/x"), "pi", "openai/x")), v2);
   // An empty list for a harness is no model of yours.
-  assert.equal(P.serializeStore({ ...base, models: { pi: [] } }), v1);
+  assert.equal(P.serializeStore({ ...base, customModels: { pi: [] } }), v1);
   // Profiles, assignments and prompts keep the models.
   let s = P.assignProfile(custom, "resolve", "a");
   s = P.setPrompt(P.removeProfile(P.upsertProfile(s, ok({ id: "b", harness: "codex" })), "b"), "resolve", "Go {number}");
-  assert.deepEqual(s.models, custom.models);
+  assert.deepEqual(s.customModels, custom.customModels);
 });
 
 test("the store: models it can't use make the file read only; one also built in is kept", () => {
-  const hand = (models, version = 3) => P.parseStore(JSON.stringify({ version, profiles: [], assign: {}, models }));
+  const hand = (models, version = 3) => P.parseStore(JSON.stringify({ version, profiles: [], assign: {}, customModels: models }));
   // Also built in: read, no warning, still writable.
-  assert.deepEqual(hand({ claude: ["opus", "mine"] }), { store: { ...P.emptyStore(), models: { claude: ["opus", "mine"] } }, warnings: [], readOnly: false });
+  assert.deepEqual(hand({ claude: ["opus", "mine"] }), { store: { ...P.emptyStore(), customModels: { claude: ["opus", "mine"] } }, warnings: [], readOnly: false });
   const headline = "A model in the file can't be used (see below), so it is read only here: fix or remove it to save";
   for (const [models, why] of [
     [[], "The profiles file's models aren't an object"],
@@ -681,20 +681,33 @@ test("the store: models it can't use make the file read only; one also built in 
     assert.deepEqual(r.warnings, [headline, why], JSON.stringify(models));
   }
   // The good ones are still read, so the form offers them.
-  assert.deepEqual(hand({ pi: ["ok/1", "bad model"], vibe: ["v"] }).store.models, { pi: ["ok/1"], vibe: ["v"] });
+  assert.deepEqual(hand({ pi: ["ok/1", "bad model"], vibe: ["v"] }).store.customModels, { pi: ["ok/1"], vibe: ["v"] });
   // Null or missing is none. Like prompts, models are read from an older version's
   // file too (edited by hand), and saved as version 3.
   assert.deepEqual(hand(null), { store: P.emptyStore(), warnings: [], readOnly: false });
-  assert.deepEqual(hand({ pi: ["openai/x"] }, 1).store.models, { pi: ["openai/x"] });
+  assert.deepEqual(hand({ pi: ["openai/x"] }, 1).store.customModels, { pi: ["openai/x"] });
   // A newer version is read only, with its models still read.
   const r = hand({ pi: ["openai/x"] }, 4);
   assert.equal(r.readOnly, true);
   assert.equal(r.warnings[0], "The profiles file is version 4, not 1, 2 or 3: it is read only here");
-  assert.deepEqual(r.store.models, { pi: ["openai/x"] });
+  assert.deepEqual(r.store.customModels, { pi: ["openai/x"] });
   // A skipped profile, then a skipped prompt, says so first, once.
-  const mixed = P.parseStore(JSON.stringify({ version: 3, profiles: ["x"], prompts: { resolve: "no" }, models: { pi: ["a b"] } }));
+  const mixed = P.parseStore(JSON.stringify({ version: 3, profiles: ["x"], prompts: { resolve: "no" }, customModels: { pi: ["a b"] } }));
   assert.match(mixed.warnings[0], /Some profiles in the file can't be used/);
   assert.ok(!mixed.warnings.some((w) => w === headline));
+});
+
+test("the store: custom models are kept under customModels, as rex-extensions' github extension keeps them", () => {
+  // A version 3 file as rex-extensions writes it reads as writable, with its model.
+  const theirs = JSON.stringify({ version: 3, profiles: [], assign: { resolve: null, review: null }, prompts: { resolve: null, review: null }, customModels: { pi: ["x/y"] } });
+  const r = P.parseStore(theirs);
+  assert.deepEqual(r, { store: { ...P.emptyStore(), customModels: { pi: ["x/y"] } }, warnings: [], readOnly: false });
+  assert.deepEqual(P.modelChoices("pi", r.store).slice(-1), ["x/y"]);
+  // Saved again, it is the same file: customModels intact, no "models" key.
+  const saved = JSON.parse(P.serializeStore(r.store));
+  assert.deepEqual(saved, JSON.parse(theirs));
+  assert.equal(Object.hasOwn(saved, "models"), false);
+  assert.equal(P.serializeStore(r.store), `${JSON.stringify(JSON.parse(theirs), null, 2)}\n`);
 });
 
 test("the CommonJS copy behaves as the app mod's module", async () => {
@@ -737,13 +750,13 @@ test("the CommonJS copy behaves as the app mod's module", async () => {
   }
   // Models (#54).
   assert.deepEqual(E.MODELS, P.MODELS);
-  const own = P.addModel(P.emptyStore(), "pi", "openai/x");
+  const own = P.addCustomModel(P.emptyStore(), "pi", "openai/x");
   for (const h of P.HARNESSES) {
     assert.equal(E.takesModel(h), P.takesModel(h), h);
     assert.deepEqual(E.modelChoices(h, own, "kept"), P.modelChoices(h, own, "kept"), h);
     assert.equal(E.isCustomModel(own, h, "openai/x"), P.isCustomModel(own, h, "openai/x"), h);
     assert.deepEqual(E.customModels(own, h), P.customModels(own, h), h);
-    for (const [fn, m] of [["addModel", "openai/y"], ["addModel", "opus[1m]"], ["removeModel", "openai/x"], ["removeModel", "opus"]]) {
+    for (const [fn, m] of [["addCustomModel", "openai/y"], ["addCustomModel", "opus[1m]"], ["removeCustomModel", "openai/x"], ["removeCustomModel", "opus"]]) {
       let a, b;
       try { a = E.serializeStore(E[fn](own, h, m)); } catch (e) { a = e.message; }
       try { b = P.serializeStore(P[fn](own, h, m)); } catch (e) { b = e.message; }
@@ -752,7 +765,7 @@ test("the CommonJS copy behaves as the app mod's module", async () => {
   }
   assert.equal(E.modelKeep({ harness: "pi", model: "x" }, "pi"), P.modelKeep({ harness: "pi", model: "x" }, "pi"));
   assert.equal(E.stepChoice(["", "a"], "a", 1), P.stepChoice(["", "a"], "a", 1));
-  const models = JSON.stringify({ version: 3, profiles: [], assign: {}, models: { pi: ["ok/1", "bad model"], opencode: ["m"] } });
+  const models = JSON.stringify({ version: 3, profiles: [], assign: {}, customModels: { pi: ["ok/1", "bad model"], opencode: ["m"] } });
   assert.deepEqual(E.parseStore(models), P.parseStore(models));
 });
 

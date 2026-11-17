@@ -17,7 +17,7 @@ import {
   PROMPT_TOKEN, PROMPT_LABELS, validatePrompt, expandPrompt, setPrompt, resolvePrompt, profileChoices, findChoice,
   parseRefresh, nextRefresh, refreshDue, refreshNotice, keyHints, hintRoom,
   PLUGIN_VERSION, COMMIT_ARGS, parseCommit, versionLine,
-  takesModel, isCustomModel, modelChoices, modelKeep, stepChoice, addModel, removeModel,
+  takesModel, isCustomModel, modelChoices, modelKeep, stepChoice, addCustomModel, removeCustomModel,
 } from "./profiles.js";
 
 const MOD = "herdr-github";
@@ -692,7 +692,7 @@ export default class GitHub extends View {
     const st = this.settings, f = st?.form;
     if (!f) return;
     const m = this.modelInput.value().trim(), harness = f.harness;
-    this.change((s) => addModel(s, harness, m), `Added ${m} to ${HARNESS_NAMES[harness]}'s models`, cx, () => {
+    this.change((s) => addCustomModel(s, harness, m), `Added ${m} to ${HARNESS_NAMES[harness]}'s models`, cx, () => {
       this.modelInput.set_value("");
       if (st.form === f && f.harness === harness) f.model = m;
     });
@@ -704,7 +704,7 @@ export default class GitHub extends View {
     const st = this.settings, f = st?.form;
     if (!f) return;
     const m = f.model, harness = f.harness;
-    this.change((s) => removeModel(s, harness, m), `Removed ${m} from ${HARNESS_NAMES[harness]}'s models`, cx, () => {
+    this.change((s) => removeCustomModel(s, harness, m), `Removed ${m} from ${HARNESS_NAMES[harness]}'s models`, cx, () => {
       // The edited profile's own model stays chosen, so saving keeps it; any other
       // goes back to the harness default.
       if (st.form === f && f.harness === harness && f.model === m && m !== modelKeep(st.modelFrom, harness)) f.model = "";

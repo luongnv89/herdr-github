@@ -34,7 +34,7 @@ const THINKING = {
   vibe: [],
 };
 
-// The models offered for each harness, before your own (see addModel). Hand-kept:
+// The models offered for each harness, before your own (see addCustomModel). Hand-kept:
 // a profile can still hold a model that isn't listed, and it starts as before.
 // OpenCode has no flag for a model when it starts, so it takes none.
 const MODELS = {
@@ -187,7 +187,7 @@ function buildLaunch(profile, prompt) {
 //   "prompts": { "resolve": template | null, "review": template | null }
 // A panel from before version 2 shows such a file read only, so never loses them.
 // With a model of your own for a harness, it is version 3, and also holds
-//   "models": { harness: [model, …] }
+//   "customModels": { harness: [model, …] }
 // with only the harnesses that have one. A panel from before version 3 shows it
 // read only too.
 
@@ -198,7 +198,7 @@ function storePath(home) {
 }
 
 function emptyStore() {
-  return { version: STORE_VERSION, profiles: [], assign: { resolve: null, review: null }, prompts: { resolve: null, review: null }, models: {} };
+  return { version: STORE_VERSION, profiles: [], assign: { resolve: null, review: null }, prompts: { resolve: null, review: null }, customModels: {} };
 }
 
 // The store in a file's text, read leniently: a bad profile, prompt or model is skipped
@@ -252,9 +252,9 @@ function parseStore(text) {
   }
   // A model of your own that can't be used is skipped; one that is also built in is
   // kept, so a release that lists it doesn't make the file read only.
-  let badModel = data.models !== undefined && data.models !== null && (typeof data.models !== "object" || Array.isArray(data.models));
+  let badModel = data.customModels !== undefined && data.customModels !== null && (typeof data.customModels !== "object" || Array.isArray(data.customModels));
   if (badModel) warnings.push("The profiles file's models aren't an object");
-  else for (const [harness, list] of Object.entries(data.models ?? {})) {
+  else for (const [harness, list] of Object.entries(data.customModels ?? {})) {
     const skip = (why) => { badModel = true; warnings.push(`Skipped the models for ${JSON.stringify(harness)}: ${why}`); };
     if (!HARNESSES.includes(harness)) { skip("not a harness"); continue; }
     if (!takesModel(harness)) { skip(`${HARNESS_NAMES[harness]} takes no model`); continue; }
@@ -265,7 +265,7 @@ function parseStore(text) {
       else if (kept.includes(m)) { badModel = true; warnings.push(`Skipped the ${HARNESS_NAMES[harness]} model ${JSON.stringify(m)}: it is listed twice`); }
       else kept.push(m);
     }
-    if (kept.length) store.models[harness] = kept;
+    if (kept.length) store.customModels[harness] = kept;
   }
   // Saving would drop what was skipped, and the actions assigned to it: first say why
   // nothing is saved, as "Not saved: …" shows this first warning.
@@ -290,7 +290,7 @@ function serializeStore(store) {
     prompts[action] = resolvePrompt(store, action);
   }
   for (const h of HARNESSES) if (customModels(store, h).length) models[h] = customModels(store, h).slice();
-  const data = Object.keys(models).length ? { version: 3, profiles, assign, prompts, models }
+  const data = Object.keys(models).length ? { version: 3, profiles, assign, prompts, customModels: models }
     : ACTION_KEYS.some((a) => prompts[a] !== null) ? { version: 2, profiles, assign, prompts } : { version: 1, profiles, assign };
   return `${JSON.stringify(data, null, 2)}\n`;
 }
@@ -374,7 +374,7 @@ function resolvePrompt(store, action) {
 
 // ── Models ──────────────────────────────────────────────────────────────────
 // The form offers each harness's models (MODELS), then the ones you added for it,
-// kept in the store as "models": { harness: [model, …] }.
+// kept in the store as "customModels": { harness: [model, …] }.
 
 // Whether a harness takes a model: OpenCode doesn't.
 function takesModel(harness) {
@@ -383,7 +383,7 @@ function takesModel(harness) {
 
 // The models you added for a harness, as the store holds them.
 function customModels(store, harness) {
-  const list = store?.models?.[harness];
+  const list = store?.customModels?.[harness];
   return Array.isArray(list) ? list : [];
 }
 
@@ -426,7 +426,7 @@ function noModels(harness) {
 
 // Adds a model of your own to a harness's choices, trimmed. Returns a new store;
 // throws, with "Model: " first, when it can't.
-function addModel(store, harness, model) {
+function addCustomModel(store, harness, model) {
   const why = noModels(harness);
   if (why) throw new Error(why);
   const m = typeof model === "string" ? model.trim() : "";
@@ -434,13 +434,13 @@ function addModel(store, harness, model) {
   if ((MODELS[harness] ?? []).includes(m) || customModels(store, harness).includes(m)) {
     throw new Error(`Model: ${m} is already offered for ${HARNESS_NAMES[harness]}`);
   }
-  return { ...store, models: { ...(store?.models ?? {}), [harness]: [...customModels(store, harness), m] } };
+  return { ...store, customModels: { ...(store?.customModels ?? {}), [harness]: [...customModels(store, harness), m] } };
 }
 
 // Removes a model you added. A built-in one stays. Profiles that use it keep it:
 // they still start with it. Returns a new store; throws, with "Model: " first, when
 // there is nothing to remove.
-function removeModel(store, harness, model) {
+function removeCustomModel(store, harness, model) {
   const why = noModels(harness);
   if (why) throw new Error(why);
   const list = customModels(store, harness);
@@ -450,9 +450,9 @@ function removeModel(store, harness, model) {
       ? `Model: ${model} is built in, so it can't be removed`
       : `Model: ${model} isn't one you added, so it can't be removed`);
   }
-  const models = { ...(store?.models ?? {}) }, rest = list.filter((m) => m !== model);
+  const models = { ...(store?.customModels ?? {}) }, rest = list.filter((m) => m !== model);
   if (rest.length) models[harness] = rest; else delete models[harness];
-  return { ...store, models };
+  return { ...store, customModels: models };
 }
 
 // ── Shell text ──────────────────────────────────────────────────────────────
@@ -583,4 +583,4 @@ function versionLine(version, commit, room = Infinity) {
   return line.length > room ? tail : line;
 }
 
-module.exports = { HARNESSES, HARNESS_NAMES, THINKING, MODELS, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, takesModel, customModels, isCustomModel, modelChoices, modelKeep, stepChoice, addModel, removeModel, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice, keyHints, hintRoom, PLUGIN_VERSION, COMMIT_ARGS, parseCommit, versionLine };
+module.exports = { HARNESSES, HARNESS_NAMES, THINKING, MODELS, ACTION_KEYS, DEFAULT_PROFILE, STORE_VERSION, PROMPT_MAX, PROMPT_TOKEN, PROMPT_LABELS, validateProfile, normalizeProfile, validatePrompt, validatePromptTemplate, expandPrompt, buildLaunch, storePath, emptyStore, parseStore, serializeStore, upsertProfile, removeProfile, assignProfile, resolveProfile, profileChoices, findChoice, setPrompt, resolvePrompt, takesModel, customModels, isCustomModel, modelChoices, modelKeep, stepChoice, addCustomModel, removeCustomModel, shellQuote, shellJoin, parseMccEnv, REFRESH_CHOICES, DEFAULT_REFRESH, parseRefresh, nextRefresh, refreshDue, refreshLabel, refreshNotice, keyHints, hintRoom, PLUGIN_VERSION, COMMIT_ARGS, parseCommit, versionLine };

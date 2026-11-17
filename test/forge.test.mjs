@@ -665,7 +665,7 @@ test("main.js offers each harness's models as a chip row, with an add box, Add a
   const body = (head) => { const fn = main.slice(main.indexOf(head)); return fn.slice(0, fn.indexOf("\n  }\n")); };
   // It imports the model helpers; the import check above makes sure they exist.
   const imports = /import \{([^}]*)\} from "\.\/profiles\.js"/.exec(main)[1].split(",").map((n) => n.trim());
-  for (const n of ["takesModel", "isCustomModel", "modelChoices", "modelKeep", "stepChoice", "addModel", "removeModel"]) assert.ok(imports.includes(n), n);
+  for (const n of ["takesModel", "isCustomModel", "modelChoices", "modelKeep", "stepChoice", "addCustomModel", "removeCustomModel"]) assert.ok(imports.includes(n), n);
   // Model is a choice now, not a text field.
   assert.match(main, /const TEXT_FIELDS = \["name", "id"\];/);
   assert.doesNotMatch(main, /this\.field\(t, "model"/);
@@ -682,8 +682,8 @@ test("main.js offers each harness's models as a chip row, with an add box, Add a
   assert.match(field, /\.when\(own, \(el\) => el\.child\(this\.chip\(t, "hg-model-remove", "Remove", false, \(_e, cx\) => this\.removeOwnModel\(cx\)\)\)\)/);
   assert.match(field, /if \(!takes\)/);
   // Both write through change, which saves only while the file holds what was read.
-  assert.match(body("  addOwnModel(cx) {"), /this\.change\(\(s\) => addModel\(s, harness, m\)/);
-  assert.match(body("  removeOwnModel(cx) {"), /this\.change\(\(s\) => removeModel\(s, harness, m\)/);
+  assert.match(body("  addOwnModel(cx) {"), /this\.change\(\(s\) => addCustomModel\(s, harness, m\)/);
+  assert.match(body("  removeOwnModel(cx) {"), /this\.change\(\(s\) => removeCustomModel\(s, harness, m\)/);
   // Removing the edited profile's own model keeps it chosen, so saving keeps it.
   assert.match(body("  removeOwnModel(cx) {"), /m !== modelKeep\(st\.modelFrom, harness\)\) f\.model = "";/);
   // A new harness resets a model it doesn't take; ← and → step through the models.
