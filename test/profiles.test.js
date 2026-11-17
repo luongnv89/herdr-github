@@ -184,10 +184,10 @@ test("parseStore: no file is empty; bad JSON or another version is read only", (
     assert.deepEqual(r.store, P.emptyStore());
     assert.match(r.warnings[0], /isn't valid JSON/);
   }
-  // Version 2 holds custom prompts (#20) and is read; a newer one is read only.
-  const newer = P.parseStore(JSON.stringify({ version: 3, profiles: [ok({ harness: "pi" })], assign: { resolve: "p" } }));
+  // Version 2 holds custom prompts (#20), 3 custom models (#54); a newer one is read only.
+  const newer = P.parseStore(JSON.stringify({ version: 4, profiles: [ok({ harness: "pi" })], assign: { resolve: "p" } }));
   assert.equal(newer.readOnly, true);
-  assert.equal(newer.warnings[0], "The profiles file is version 3, not 1 or 2: it is read only here");
+  assert.equal(newer.warnings[0], "The profiles file is version 4, not 1, 2 or 3: it is read only here");
   assert.equal(P.resolveProfile(newer.store, "resolve").harness, "pi");
 });
 
@@ -224,9 +224,9 @@ test("parseStore skips bad, duplicate and reserved profiles, drops a missing ass
   const notList = P.parseStore(JSON.stringify({ version: 1, profiles: { a: 1 } }));
   assert.equal(notList.readOnly, true);
   assert.match(notList.warnings[0], /read only here/);
-  // Another version says so first, and only once (version 2 is read since #20).
-  const both = P.parseStore(JSON.stringify({ version: 3, profiles: ["x"] }));
-  assert.match(both.warnings[0], /version 3/);
+  // Another version says so first, and only once (version 3 is read since #54).
+  const both = P.parseStore(JSON.stringify({ version: 4, profiles: ["x"] }));
+  assert.match(both.warnings[0], /version 4/);
   assert.ok(!both.warnings.some((w) => /fix or remove them/.test(w)));
   // What it writes, it reads back the same.
   const again = P.parseStore(P.serializeStore(store));
@@ -345,7 +345,7 @@ test("prompts: version 1 without them, version 2 with them, and a bad one makes 
   assert.match(r.warnings[0], /Some profiles in the file can't be used/);
   assert.ok(!r.warnings.some((w) => /A prompt in the file/.test(w)));
   // A newer version is read only, with its prompts still read.
-  r = hand({ resolve: "Go {number}" }, 3);
+  r = hand({ resolve: "Go {number}" }, 4);
   assert.equal(r.readOnly, true);
   assert.equal(r.store.prompts.resolve, "Go {number}");
 });
