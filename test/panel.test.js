@@ -1592,7 +1592,7 @@ test("Model steps through the harness's models: Mistral Vibe lists its own, and 
   assert.deepEqual([ui.settings.form.harness, ui.settings.form.model], ["mcc", ""]);
   screen(() => onInput(Buffer.from("\x1b[B")));
   assert.deepEqual(stepModels(4), P.MODELS.mcc);
-  // One both take stays: mcc's opus is Claude Code's too.
+  // One both take stays: mcc's haiku is Claude Code's too.
   screen(() => onInput(Buffer.from("\x1b[A\x1b[C")));
   assert.deepEqual([ui.settings.form.harness, ui.settings.form.model], ["claude", "haiku"]);
   // OpenCode takes none: + says so, and adds nothing.
@@ -1701,6 +1701,34 @@ test("a read-only store: + and - change nothing and say why, as Not saved (#54)"
   assert.ok(text(lines).includes("Not saved: Some profiles in the file can't be used"), lines.join("\n"));
   assert.equal(ui.settings.adding, "openai/z");
   assert.equal(fs.readFileSync(file, "utf8"), before);
+});
+
+test("+ and - never overwrite a change made elsewhere: the file is read again, and what you typed stays (#54)", (t) => {
+  const dir = home(t);
+  const file = useStore(dir, {
+    version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {},
+    prompts: { resolve: null, review: null }, models: { pi: ["openai/x"] },
+  });
+  setupGitHub("issues");
+  screen(() => onInput(Buffer.from(`sje${DOWN3}+openai/z`)));
+  // The app saves meanwhile: a model of its own.
+  const theirs = JSON.stringify({ version: 3, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: {}, models: { pi: ["openai/x", "app/m"] } });
+  fs.writeFileSync(file, theirs);
+  let lines = screen(() => onInput(Buffer.from("\r")));
+  assert.equal(fs.readFileSync(file, "utf8"), theirs);
+  assert.ok(text(lines).includes("changed elsewhere"), lines.join("\n"));
+  assert.equal(ui.settings.adding, "openai/z");
+  // Read again, theirs is offered; enter now adds yours beside it.
+  assert.ok(P.modelChoices("pi", ui.settings.store).includes("app/m"));
+  screen(() => onInput(Buffer.from("\r")));
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).models, { pi: ["openai/x", "app/m", "openai/z"] });
+  // The same for -: nothing written over theirs, the model still chosen.
+  const again = JSON.stringify({ version: 1, profiles: [{ id: "p", name: "P", harness: "pi", model: "openai/x" }], assign: { resolve: "p" } });
+  fs.writeFileSync(file, again);
+  lines = screen(() => onInput(Buffer.from("-")));
+  assert.equal(fs.readFileSync(file, "utf8"), again);
+  assert.ok(text(lines).includes("changed elsewhere"), lines.join("\n"));
+  assert.equal(ui.settings.form.model, "openai/z");
 });
 
 test("a profile whose model is in neither list shows it unchanged, and offers it again after another harness (#54)", (t) => {
