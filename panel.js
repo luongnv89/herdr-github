@@ -735,6 +735,9 @@ async function launch(action, root, profile, template = null) {
   if (harness === "mcc" && !mcc) {
     return say("error", `mcc isn't on your PATH: press s to pick another profile for ${action.label}, or install mcc.`);
   }
+  if (harness === "vibe" && !which("vibe")) {
+    return say("error", `Mistral Vibe (vibe) isn't on your PATH: press s to pick another profile for ${action.label}, or install it.`);
+  }
   say("info", `Finding where to ${action.key} ${what}…`);
   const list = await herdr(["agent", "list"], 10000);
   if (list.code !== 0) return say("error", `Can't list agents: ${herdrError(list, "herdr").message}`);
@@ -768,7 +771,8 @@ async function launch(action, root, profile, template = null) {
   let pane = null;
   try { const r = JSON.parse(split.stdout).result; pane = r?.pane?.pane_id ?? r?.pane_id ?? null; } catch {}
   if (split.code !== 0 || !pane) return say("error", `Can't open a pane for ${shown}: ${herdrError(split, "herdr").message}`);
-  if (plan.mode === "command") return runMcc(herdr, pane, [mcc, ...plan.argv.slice(1)], text);
+  if (plan.mode === "command" && harness === "mcc") return runMcc(herdr, pane, [mcc, ...plan.argv.slice(1)], text);
+  if (plan.mode === "command") return runCommand(herdr, pane, shown, plan.argv, text, note);
 
   const kind = plan.kind;
   const names = new Set(agents.map((a) => a.name).filter(Boolean));
@@ -824,6 +828,20 @@ async function runMcc(herdr, pane, argv, text) {
   const status = await statusIn();
   if (status !== "idle" && status !== "working") return waiting();
   say("ok", `Started ${P.HARNESS_NAMES.mcc} in a new pane: ${text}`);
+}
+
+// An agent herdr has no kind for, such as Mistral Vibe, run as its own command
+// line in the new pane, prompt last: herdr types it into the pane's shell, every
+// word quoted. herdr doesn't list such an agent, so the panel can't tell when it
+// is ready: it says it opened it, and a question the agent asks first, such as
+// whether you trust the folder, is answered in the pane, the prompt then running.
+async function runCommand(herdr, pane, shown, argv, text, note = "") {
+  const ran = await herdr(["pane", "run", pane, P.shellJoin(argv)], 10000);
+  if (ran.code !== 0) {
+    await herdr(["pane", "close", pane], 5000);
+    return say("error", `Can't run ${shown} in the new pane: ${herdrError(ran, "herdr").message}`);
+  }
+  say("ok", `Opened ${shown} in a new pane. If it asks something first, such as whether you trust the folder, answer it there; it then works on: ${text}${note}`);
 }
 
 // How long the panel waits for you to answer an agent's startup question.

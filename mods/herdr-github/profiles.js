@@ -8,23 +8,26 @@
 
 // The harnesses a profile can start. "mcc" is Claude Code started by `mcc run`,
 // which picks the Claude Code account (profile) set for the project.
-export const HARNESSES = ["mcc", "claude", "codex", "pi", "opencode"];
+export const HARNESSES = ["mcc", "claude", "codex", "pi", "opencode", "vibe"];
 export const HARNESS_NAMES = {
   mcc: "Claude Code via mcc run",
   claude: "Claude Code",
   codex: "Codex",
   pi: "Pi",
   opencode: "OpenCode",
+  vibe: "Mistral Vibe",
 };
 
 // The thinking levels each harness accepts. OpenCode has no flag for one when it
-// starts interactively, so it takes none.
+// starts interactively, so it takes none. Neither does Mistral Vibe: its thinking
+// level is set per model in its own config.toml.
 export const THINKING = {
   mcc: ["low", "medium", "high", "xhigh", "max"],
   claude: ["low", "medium", "high", "xhigh", "max"],
   codex: ["low", "medium", "high", "xhigh"],
   pi: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
   opencode: [],
+  vibe: [],
 };
 
 // The two actions a profile can be assigned to.
@@ -125,7 +128,10 @@ export function expandPrompt(template, number) {
 // unchecked profile never reaches a command line:
 //   { mode: "agent", kind, extraArgs, warnings } — herdr starts `kind` itself,
 //     with extraArgs after `--`, and the prompt is sent once it is ready;
-//   { mode: "command", argv, warnings } — the command to run, prompt last.
+//   { mode: "command", argv, warnings } — the command to run, prompt last: mcc,
+//     and Mistral Vibe, which herdr has no agent kind for. Vibe's --model flag
+//     works only in headless mode, so its model goes in VIBE_ACTIVE_MODEL, set by
+//     env(1); a checked model holds no = or space, so it stays one word.
 // An empty model or thinking level adds no flag: the harness's own default holds.
 export function buildLaunch(profile, prompt) {
   const errors = validateProfile(profile);
@@ -148,6 +154,7 @@ export function buildLaunch(profile, prompt) {
     warnings.push("OpenCode ignores this profile's model and thinking level: it has no flag for them when it starts");
   }
   if (harness === "mcc") return { mode: "command", argv: ["mcc", "run", "--", ...flags, prompt], warnings };
+  if (harness === "vibe") return { mode: "command", argv: [...(model ? ["env", `VIBE_ACTIVE_MODEL=${model}`] : []), "vibe", prompt], warnings };
   return { mode: "agent", kind: harness, extraArgs: flags, warnings };
 }
 

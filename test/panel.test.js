@@ -979,6 +979,53 @@ test("each harness starts with its own model and thinking flags; empty ones add 
   }
 });
 
+// A vibe on PATH, as mccOnPath puts mcc there; `present` false leaves PATH empty.
+function vibeOnPath(t, present = true) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-github-bin-"));
+  if (present) {
+    fs.writeFileSync(path.join(dir, "vibe"), "#!/bin/sh\nexit 0\n");
+    fs.chmodSync(path.join(dir, "vibe"), 0o755);
+  }
+  process.env.PATH = dir;
+  t.after(() => { process.env.PATH = PATH; fs.rmSync(dir, { recursive: true, force: true }); });
+}
+
+test("Mistral Vibe runs as its own command line in the new pane, its model in VIBE_ACTIVE_MODEL", async (t) => {
+  // herdr has no agent kind for Vibe, so it isn't started with agent start.
+  const dir = home(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  vibeOnPath(t);
+  const use = "Use the issue-resolver skill on issue #12.";
+  for (const [p, line] of [
+    [{ harness: "vibe", model: "mistral-medium-3.5" }, `pane run w1:p7 'env' 'VIBE_ACTIVE_MODEL=mistral-medium-3.5' 'vibe' '${use}'`],
+    [{ harness: "vibe" }, `pane run w1:p7 'vibe' '${use}'`],
+  ]) {
+    useProfiles(dir, [{ id: "p", name: "P", ...p }], { resolve: "p" });
+    setupGitHub("issues");
+    fakeHerdr(claudeHere);
+    const after = await screenAsync(() => startWithMenu(), 200);
+    assert.deepEqual(herdrCalls(), ["agent list", "pane split w1:p1 --direction down --cwd /repo --no-focus", line], JSON.stringify(p));
+    assert.equal(calls.find((c) => c[1] === "pane" && c[2] === "run").length, 5, "the command line is one argument");
+    assert.ok(text(after).includes(`Opened Mistral Vibe in a new pane. If it asks something first, such as whether you trust the folder, answer it there; it then works on: ${use}`), after.join("\n"));
+  }
+});
+
+test("Mistral Vibe not on PATH starts nothing; a pane run that fails closes the pane", async (t) => {
+  const dir = home(t, { ".agents/skills/issue-resolver/SKILL.md": "x" });
+  vibeOnPath(t, false);
+  useProfiles(dir, [{ id: "p", name: "P", harness: "vibe" }], { resolve: "p" });
+  setupGitHub("issues");
+  fakeHerdr(claudeHere);
+  let after = await screenAsync(() => startWithMenu(), 200);
+  assert.deepEqual(calls, []);
+  assert.ok(text(after).includes("Mistral Vibe (vibe) isn't on your PATH"), after.join("\n"));
+  vibeOnPath(t);
+  setupGitHub("issues");
+  fakeHerdr(claudeHere, { "pane run": herdrFail("pane_not_found", "pane w1:p7 not found") });
+  after = await screenAsync(() => startWithMenu(), 200);
+  assert.equal(herdrCalls().at(-1), "pane close w1:p7");
+  assert.ok(text(after).includes("Can't run Mistral Vibe in the new pane: pane w1:p7 not found"), after.join("\n"));
+});
+
 test("each issue row has its own Resolve button, which resolves that issue", async (t) => {
   claudeHome(t, { ".claude/skills/issue-resolver/SKILL.md": "x" });
   const lines = setupGitHub("issues");
@@ -1585,7 +1632,7 @@ test("at 28, 30 and 40 cells the profiles show each warning, note and question w
     // The OpenCode note, in the form, under an OpenCode profile with a model.
     useProfiles(dir, []);
     setupGitHub("issues");
-    let lines = at(() => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[Bx")));
+    let lines = at(() => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[D\x1b[Bx")));
     assert.equal(ui.settings.form.harness, "opencode");
     assert.ok(shows(lines, note), `${cols}:\n${lines.join("\n")}`);
     assert.ok(lines.at(-1).trimEnd().endsWith("esc back"), `${cols}:\n${lines.join("\n")}`);
@@ -1698,7 +1745,7 @@ test("the profiles keep their key hints however much there is to say, and cut it
   // The OpenCode form on a 28x10 pane: the field, the note cut, the key hints whole.
   useProfiles(dir, []);
   setupGitHub("issues");
-  const lines = screenAt(28, 10, () => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[Bx")));
+  const lines = screenAt(28, 10, () => onInput(Buffer.from("sn\x1b[B\x1b[B\x1b[D\x1b[D\x1b[Bx")));
   assert.equal(ui.settings.form.harness, "opencode");
   fitsWithHints(lines, 28, 10, "↑↓ field", "esc back");
   assert.ok(lines.some((l) => l?.startsWith("▌ Model")), lines.join("\n"));

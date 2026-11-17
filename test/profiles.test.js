@@ -64,6 +64,20 @@ test("OpenCode starts without flags, and says its model and thinking level are i
   assert.deepEqual(P.buildLaunch(ok({ harness: "opencode" }), PROMPT).warnings, []);
 });
 
+test("Mistral Vibe runs as a command, its model in VIBE_ACTIVE_MODEL, with no thinking levels", () => {
+  // herdr has no agent kind for Vibe, and its --model flag works only in headless mode.
+  assert.deepEqual(P.buildLaunch({ id: "v", name: "V", harness: "vibe", model: "mistral-medium-3.5" }, "/issue-resolver 12"),
+    { mode: "command", argv: ["env", "VIBE_ACTIVE_MODEL=mistral-medium-3.5", "vibe", "/issue-resolver 12"], warnings: [] });
+  assert.deepEqual(P.buildLaunch({ id: "v", name: "V", harness: "vibe" }, "/issue-resolver 12"), { mode: "command", argv: ["vibe", "/issue-resolver 12"], warnings: [] });
+  assert.equal(P.HARNESS_NAMES.vibe, "Mistral Vibe");
+  assert.deepEqual(P.THINKING.vibe, []);
+  for (const thinking of ["high", "off", "max"]) {
+    assert.deepEqual(P.validateProfile({ id: "v", name: "V", harness: "vibe", thinking }), ["Thinking: not available for this harness"], thinking);
+  }
+  // A model is one env(1) word: no = or space can split it.
+  for (const model of ["a=b", "a b", "-x"]) assert.ok(P.validateProfile({ id: "v", name: "V", harness: "vibe", model }).some((e) => e.startsWith("Model")), model);
+});
+
 test("buildLaunch checks its own input and throws on a bad profile or prompt", () => {
   for (const bad of ["$(id)", "a;id", "a`id`", "a'b", "a\nb", "a b"]) {
     for (const harness of P.HARNESSES) {
